@@ -4,15 +4,17 @@ These instructions apply to every file in this repository unless a more specific
 
 ## Mission and current scope
 
-Build Tramontana Phase 1 as a local-first desktop AI and agent environment for macOS, Windows, and Linux. The product shell must remain independent of model location and provider. Phase 1 is a personal desktop application; enterprise control planes, centralized inference, workstation pools, and distributed compute are later work.
+Build Tramontana Phase 1 as the portable, trustworthy control plane for personal AI work on macOS, Windows, and Linux. The product shell and durable project/task model must remain independent of model location and specialist worker. Phase 1 is a personal desktop application; enterprise control planes, centralized inference, workstation pools, and distributed compute are later work.
 
 Read these before implementing architecture or security-sensitive work:
 
 1. `docs/PHASE_1_SPEC.md`
-2. `docs/ARCHITECTURE.md`
-3. `docs/SECURITY_AND_PERMISSIONS.md`
-4. `docs/CONFIGURATION.md`
-5. `docs/PHASE_1_ACCEPTANCE_CRITERIA.md`
+2. `docs/STRATEGIC_POSITIONING.md`
+3. `docs/ARCHITECTURE.md`
+4. `docs/PROJECT_FORMAT.md`
+5. `docs/SECURITY_AND_PERMISSIONS.md`
+6. `docs/CONFIGURATION.md`
+7. `docs/PHASE_1_ACCEPTANCE_CRITERIA.md`
 
 ## Architectural boundaries
 
@@ -22,8 +24,17 @@ Read these before implementing architecture or security-sensitive work:
 - `packages/shared` contains versioned schemas/types generated or mirrored from the core boundary. Do not create a second source of truth for domain rules.
 - All side effects cross explicit interfaces. UI components never spawn unrestricted commands, read arbitrary files, or call model APIs directly.
 - Keep model selection separate from compute placement. `ModelRouter` chooses model/provider capabilities; `ComputeRouter` chooses an execution target. Phase 1 may map both to the same local process, but their contracts stay distinct.
+- Treat `AgentProvider` as the stable worker boundary for internal and external specialist agents. Tramontana owns task identity, lifecycle, approvals, audit, context-release policy, and normalized events; workers own their specialist execution strategy.
+- Do not duplicate mature coding-agent runtimes without an explicit reason. Prefer adapters for Codex, Goose, OpenCode, OpenHands, Claude Code, or ACP-compatible agents where their process/tool behavior can be governed through Tramontana's policy boundary.
+- Tramontana owns the versioned project/work format: source references, instructions, skills, policy references, memory/artifact references, task records, and handoff checkpoints. No worker-specific session format is the canonical record.
 - Tools, skills, workflows, and agent definitions are model-provider-neutral.
 - MCP is the primary third-party tool/App integration boundary. Avoid one-off integration APIs in the runtime when an MCP adapter is appropriate.
+
+## Build versus integrate
+
+- **Build and own:** portable project/work format, desktop work surface, task/event state, handoff/checkpoints, routing policy, permissions, approvals, secrets references, audit/provenance, and stable model/worker/execution interfaces.
+- **Integrate behind adapters:** local inference runtimes, cloud APIs/gateways, coding-agent workers, browser/computer drivers, and enterprise retrieval/connectors.
+- **Monitor or prototype later:** workstation pools, split-model inference, and distributed runtimes. They must not shape Phase 1 implementation details beyond the stable compute interface.
 
 If an implementation needs to violate one of these boundaries, stop and propose an architecture change before coding it.
 
@@ -33,6 +44,7 @@ If an implementation needs to violate one of these boundaries, stop and propose 
 - Prefer explicit types, deterministic state transitions, structured events, and dependency injection over global state or hidden side effects.
 - Keep Tauri commands thin and version their request/response payloads.
 - Design long-running work as cancellable tasks with progress events and durable state.
+- Design worker sessions as supervised, replaceable executions. Normalize their events and checkpoint enough state to stop, inspect, and resume or hand off without making a worker's private transcript canonical.
 - Use deterministic filesystem/search/edit/Git/test tools before visual computer control.
 - Feature-detect model and tool capabilities; do not infer them from provider names.
 - Preserve unknown fields where practical when loading forward-compatible configuration.
@@ -63,7 +75,7 @@ If an implementation needs to violate one of these boundaries, stop and propose 
 
 ## Documentation discipline
 
-When a change affects component ownership, stable interfaces, event schemas, routing, permissions, persistence, configuration precedence, or Phase 1 scope, update the relevant files under `docs/` in the same commit.
+When a change affects component ownership, the project/work format, stable interfaces, event schemas, worker lifecycle, handoff, routing, permissions, persistence, configuration precedence, or Phase 1 scope, update the relevant files under `docs/` in the same commit.
 
 For a significant architecture decision, add a dated decision section to `docs/ARCHITECTURE.md` (or introduce `docs/decisions/` once decisions become numerous) with context, decision, alternatives, and consequences. Do not let code silently become the architecture.
 
