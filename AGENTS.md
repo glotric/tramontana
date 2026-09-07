@@ -24,6 +24,8 @@ Read these before implementing architecture or security-sensitive work:
 
 For a narrow change, read the current milestone plus all documents governing the affected boundary; do not treat this list as permission to skip relevant contracts.
 
+These documents were written before the code existed and some of them are wrong. They are strong defaults, not law. When one contradicts reality, fix it in the same change and note it in the milestone evidence — see `docs/BUILD_ORDER.md` §3. The exceptions are the boundaries in `docs/SECURITY_AND_PERMISSIONS.md` and the rule that shipped capability is described honestly.
+
 ## Architectural boundaries
 
 - `apps/desktop` owns presentation, user interaction, and Tauri command adapters. It must not contain model-routing policy, permission policy, secret storage, or provider business logic.
@@ -51,6 +53,7 @@ If an implementation needs to violate one of these boundaries, stop and propose 
 
 - Make small, reviewable vertical slices that leave the repository buildable.
 - Follow `docs/BUILD_ORDER.md`. Work on a later milestone only when its prerequisites pass or an architecture decision records the exception.
+- Do not cross a validation gate (`V1`–`V6`) without its evidence note. A gate exists to answer one question before more work is stacked on the answer; hitting a gate's re-plan trigger is a result, not a failure, and it is reported rather than worked around.
 - Prefer explicit types, deterministic state transitions, structured events, and dependency injection over global state or hidden side effects.
 - Keep Tauri commands thin and version their request/response payloads.
 - Design long-running work as cancellable tasks with progress events and durable state.
@@ -106,3 +109,5 @@ Update `docs/PHASE_1_ACCEPTANCE_CRITERIA.md` only when the product contract inte
 Report what changed, which checks ran, any checks not run, remaining risks, and any architecture/documentation decisions. A task is not complete merely because code was written; it must satisfy the relevant acceptance criteria and preserve the security boundaries above.
 
 For milestone work, report the milestone exit criteria individually. Do not claim that Beta 1 or Phase 1 is complete when only the current slice passes.
+
+For a validation gate, answer the gate's question in plain language and say what the evidence actually showed — a list of passing checks is not an answer.

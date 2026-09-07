@@ -22,6 +22,8 @@ Phase 1 has no enterprise server dependency. The default architecture is persona
 
 This repository contains the implementation contract and starter structure, not the full application. The documentation package is ready for milestone M0; exact dependency versions and commands must be created and verified during that milestone rather than guessed in advance.
 
+Work is sequenced so the differentiating capability — stop a task, inspect it, resume it safely, hand it to another worker, and export the record — is built and proven in M4 against fakes, before model adapters and workers exist. Validation gates `V1`–`V6` sit between stages; each answers one question with evidence before the next stage begins.
+
 Implementation agents should start in this order:
 
 - [Implementation order and agent execution guide](docs/BUILD_ORDER.md)
