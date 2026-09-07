@@ -20,7 +20,17 @@ Phase 1 has no enterprise server dependency. The default architecture is persona
 
 ## Status
 
-This repository contains the implementation contract and starter structure, not the full application. The documentation package is ready for milestone M0; exact dependency versions and commands must be created and verified during that milestone rather than guessed in advance.
+Milestone M0 is complete. The repository is a buildable Rust/TypeScript/Tauri workspace with pinned toolchains, generated contract types, root commands, and three-OS CI — and no application behavior yet. The desktop shell opens and verifies its handshake with the Rust core; the CLI reports its version. Everything else is still contract.
+
+```bash
+corepack enable pnpm     # Node 24.x; Node 25 removed Corepack
+pnpm install
+pnpm bootstrap           # validates the toolchain, generates contract artifacts
+pnpm check               # format, contracts, lint, types, tests, build
+pnpm dev                 # desktop shell
+```
+
+Prerequisites, root commands, and known gaps: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 Work is sequenced so the differentiating capability — stop a task, inspect it, resume it safely, hand it to another worker, and export the record — is built and proven in M4 against fakes, before model adapters and workers exist. Validation gates `V1`–`V6` sit between stages; each answers one question with evidence before the next stage begins.
 
@@ -50,12 +60,17 @@ Product and architecture references:
 
 ```text
 apps/desktop/       Tauri application and React user interface
-apps/cli/           Headless development/recovery adapter (created in M0)
+apps/cli/           Headless development and recovery adapter
 crates/core/        Provider-neutral Rust domain and application services
-packages/shared/    Generated/shared schemas and TypeScript client types
+packages/shared/    Generated schemas and TypeScript client types
+xtask/              Repository build tooling; not shipped
+scripts/            Repository checks that are not tests
+docs/decisions/     Architecture decision records
 .tramontana/        Portable Markdown customization examples
 docs/               Product, architecture, security, and delivery contracts
 ```
+
+Crates for persistence, platform capabilities, and each adapter family are created when their first code lands, not in advance.
 
 Implementation agents must read `AGENTS.md` and the milestone entry in `docs/BUILD_ORDER.md` before making changes. Architecture changes require corresponding documentation and, where specified, a decision record in the same change.
 

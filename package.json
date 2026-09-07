@@ -1,0 +1,41 @@
+{
+  "name": "tramontana",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@12.3.4",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "scripts": {
+    "bootstrap": "node scripts/bootstrap.mjs",
+    "dev": "pnpm dev:desktop",
+    "dev:desktop": "pnpm --filter @tramontana/desktop dev",
+    "dev:cli": "cargo run --quiet -p tramontana-cli --",
+    "format": "prettier --write . && cargo fmt --all",
+    "format:check": "prettier --check . && cargo fmt --all --check",
+    "lint": "eslint . && cargo clippy --workspace --all-targets -- -D warnings",
+    "typecheck": "pnpm -r run --sequential typecheck",
+    "contracts:generate": "node scripts/contracts.mjs generate",
+    "contracts:check": "node scripts/contracts.mjs check",
+    "test": "pnpm test:rust && pnpm test:ts",
+    "test:rust": "cargo test --workspace",
+    "test:ts": "pnpm -r run --sequential test",
+    "build": "pnpm --filter @tramontana/desktop build:ui && cargo build --release --workspace",
+    "package": "pnpm --filter @tramontana/desktop package",
+    "check:fast": "pnpm format:check && pnpm contracts:check && pnpm lint && pnpm typecheck && pnpm test",
+    "check": "pnpm check:fast && pnpm build"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.10.0",
+    "eslint-config-prettier": "10.1.8",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.12.0",
+    "json-schema-to-typescript": "16.0.0",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.69.0"
+  }
+}

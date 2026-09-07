@@ -1,0 +1,6 @@
+# Pinned so every developer and CI job builds first-party Rust identically.
+# Changing this is a deliberate change with test evidence (ADR 0002).
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -1,0 +1,197 @@
+{
+  "$defs": {
+    "DataClass": {
+      "description": "Sensitivity of a piece of content, used to decide what may leave the device.",
+      "oneOf": [
+        {
+          "const": "public",
+          "description": "Not derived from the user's project or conversation.",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "description": "Derived from an opened project.",
+          "type": "string"
+        },
+        {
+          "const": "sensitive",
+          "description": "Explicitly marked sensitive by the user or a policy.",
+          "type": "string"
+        },
+        {
+          "const": "secret",
+          "description": "A credential or token. Never serialized; see [`SecretRef`].",
+          "type": "string"
+        }
+      ]
+    },
+    "ExecutionLocation": {
+      "description": "Where work ran.\n\nRecorded on routing decisions and shown to the user, so \"did this leave my\nmachine?\" is answerable from the durable record alone.",
+      "oneOf": [
+        {
+          "description": "A device the user controls.",
+          "properties": {
+            "displayName": {
+              "description": "Human-readable name for the interface.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "local",
+              "type": "string"
+            },
+            "targetId": {
+              "description": "Stable identifier for the compute target.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "targetId",
+            "displayName"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A third-party endpoint. Reaching one is a data-release decision.",
+          "properties": {
+            "kind": {
+              "const": "cloud",
+              "type": "string"
+            },
+            "providerId": {
+              "description": "Stable provider identifier.",
+              "type": "string"
+            },
+            "region": {
+              "description": "Provider region, when the provider exposes one.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "providerId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RiskClass": {
+      "description": "How much damage a tool invocation could do if the model asked for it wrongly.",
+      "oneOf": [
+        {
+          "const": "read",
+          "description": "Observes data without intended mutation.",
+          "type": "string"
+        },
+        {
+          "const": "modify",
+          "description": "Changes recoverable project state.",
+          "type": "string"
+        },
+        {
+          "const": "dangerous",
+          "description": "Hard to reverse, broad, privileged, external, or destructive.",
+          "type": "string"
+        }
+      ]
+    },
+    "RoutingMode": {
+      "description": "The user's standing policy for where inference may run.",
+      "oneOf": [
+        {
+          "const": "localOnly",
+          "description": "Hard egress prohibition for inference and cloud-derived context.",
+          "type": "string"
+        },
+        {
+          "const": "automatic",
+          "description": "Deterministic policy chooses an eligible route and shows its reasons.",
+          "type": "string"
+        },
+        {
+          "const": "cloudPreferred",
+          "description": "Prefer a configured cloud route where policy and availability allow.",
+          "type": "string"
+        }
+      ]
+    },
+    "SecretRef": {
+      "description": "An opaque handle to a credential.\n\nThis is the only representation of a secret that may be persisted, logged,\nexported, or sent over IPC. `key` is an application-generated identifier\nand never carries any part of the value it refers to\n(`SECURITY_AND_PERMISSIONS.md` §7).",
+      "properties": {
+        "key": {
+          "description": "Opaque application-generated key. Never the secret.",
+          "type": "string"
+        },
+        "store": {
+          "$ref": "#/$defs/SecretStore",
+          "description": "Which store resolves this reference."
+        }
+      },
+      "required": [
+        "key",
+        "store"
+      ],
+      "type": "object"
+    },
+    "SecretStore": {
+      "description": "Where a resolvable secret lives.\n\nOnly `Platform` exists today. It is an enum rather than a bare marker so\nthat adding a store later is an additive schema change.",
+      "oneOf": [
+        {
+          "const": "platform",
+          "description": "The operating system credential store.",
+          "type": "string"
+        }
+      ]
+    },
+    "SideEffect": {
+      "description": "What an invocation actually changed, recorded alongside its result.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "Nothing outside Tramontana's own records changed.",
+          "type": "string"
+        },
+        {
+          "const": "localReversible",
+          "description": "A local change that can be undone.",
+          "type": "string"
+        },
+        {
+          "const": "localIrreversible",
+          "description": "A local change that cannot be undone.",
+          "type": "string"
+        },
+        {
+          "const": "external",
+          "description": "Something outside this device changed.",
+          "type": "string"
+        }
+      ]
+    },
+    "Visibility": {
+      "description": "Who an event is for.\n\nRedaction happens in core before delivery, so `Secret` events are internal\naudit markers holding references and hashes only, and never reach a webview\n(`CORE_CONTRACTS.md` §5).",
+      "oneOf": [
+        {
+          "const": "user",
+          "description": "Shown in the normal activity stream.",
+          "type": "string"
+        },
+        {
+          "const": "diagnostic",
+          "description": "Available in diagnostics, not in the primary stream.",
+          "type": "string"
+        },
+        {
+          "const": "secret",
+          "description": "Internal audit marker; never delivered to the user interface.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://tramontana.app/schema/tramontana-contracts.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Generated from crates/core/src/contracts. Do not edit by hand; run `pnpm contracts:generate`.",
+  "title": "TramontanaContracts",
+  "x-schemaVersion": 1
+}
