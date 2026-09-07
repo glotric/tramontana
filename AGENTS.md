@@ -8,13 +8,21 @@ Build Tramontana Phase 1 as the portable, trustworthy control plane for personal
 
 Read these before implementing architecture or security-sensitive work:
 
-1. `docs/PHASE_1_SPEC.md`
-2. `docs/STRATEGIC_POSITIONING.md`
-3. `docs/ARCHITECTURE.md`
-4. `docs/PROJECT_FORMAT.md`
-5. `docs/SECURITY_AND_PERMISSIONS.md`
-6. `docs/CONFIGURATION.md`
-7. `docs/PHASE_1_ACCEPTANCE_CRITERIA.md`
+1. `docs/BUILD_ORDER.md` — current milestone, dependencies, and exit gate
+2. `docs/BETA_1_SCOPE.md` — first beta boundary; it does not replace Phase 1 acceptance
+3. `docs/PHASE_1_SPEC.md`
+4. `docs/STRATEGIC_POSITIONING.md`
+5. `docs/ARCHITECTURE.md`
+6. `docs/CORE_CONTRACTS.md`
+7. `docs/PROJECT_FORMAT.md`
+8. `docs/SECURITY_AND_PERMISSIONS.md`
+9. `docs/CONFIGURATION.md`
+10. `docs/DEVELOPMENT.md`
+11. `docs/TESTING_STRATEGY.md`
+12. `docs/DEPENDENCY_ADOPTION.md`
+13. `docs/PHASE_1_ACCEPTANCE_CRITERIA.md`
+
+For a narrow change, read the current milestone plus all documents governing the affected boundary; do not treat this list as permission to skip relevant contracts.
 
 ## Architectural boundaries
 
@@ -29,6 +37,7 @@ Read these before implementing architecture or security-sensitive work:
 - Tramontana owns the versioned project/work format: source references, instructions, skills, policy references, memory/artifact references, task records, and handoff checkpoints. No worker-specific session format is the canonical record.
 - Tools, skills, workflows, and agent definitions are model-provider-neutral.
 - MCP is the primary third-party tool/App integration boundary. Avoid one-off integration APIs in the runtime when an MCP adapter is appropriate.
+- `apps/cli` and `apps/desktop` are peer adapters over the same Rust application services. Never duplicate policy or task behavior in the CLI to make a milestone demonstration pass.
 
 ## Build versus integrate
 
@@ -41,6 +50,7 @@ If an implementation needs to violate one of these boundaries, stop and propose 
 ## Implementation approach
 
 - Make small, reviewable vertical slices that leave the repository buildable.
+- Follow `docs/BUILD_ORDER.md`. Work on a later milestone only when its prerequisites pass or an architecture decision records the exception.
 - Prefer explicit types, deterministic state transitions, structured events, and dependency injection over global state or hidden side effects.
 - Keep Tauri commands thin and version their request/response payloads.
 - Design long-running work as cancellable tasks with progress events and durable state.
@@ -60,6 +70,7 @@ If an implementation needs to violate one of these boundaries, stop and propose 
 - Tests must not require paid APIs by default. Cloud adapter tests use fakes/recorded fixtures unless explicitly enabled by a developer.
 - Avoid snapshot tests for security policy and business rules when direct assertions are clearer.
 - Any bug fix includes a regression test when practical.
+- Default automated tests are offline, secret-free, and free of paid API calls. Follow the contract, security, concurrency, and platform matrices in `docs/TESTING_STRATEGY.md`.
 
 ## Security and privacy
 
@@ -77,7 +88,9 @@ If an implementation needs to violate one of these boundaries, stop and propose 
 
 When a change affects component ownership, the project/work format, stable interfaces, event schemas, worker lifecycle, handoff, routing, permissions, persistence, configuration precedence, or Phase 1 scope, update the relevant files under `docs/` in the same commit.
 
-For a significant architecture decision, add a dated decision section to `docs/ARCHITECTURE.md` (or introduce `docs/decisions/` once decisions become numerous) with context, decision, alternatives, and consequences. Do not let code silently become the architecture.
+For a significant architecture, dependency, security, compatibility, or acceptance exception, add a record under `docs/decisions/` using its template. Keep the short architectural summary in `docs/ARCHITECTURE.md` when it helps readers. Do not let code silently become the architecture.
+
+When adopting or studying an upstream repository, follow `docs/DEPENDENCY_ADOPTION.md`. Do not clone, vendor, add a submodule, copy source, download an executable, or make a package a production dependency merely because it appears in `OPEN_SOURCE_FOUNDATIONS.md`.
 
 Update `docs/PHASE_1_ACCEPTANCE_CRITERIA.md` only when the product contract intentionally changes, not to make incomplete work appear complete.
 
@@ -91,3 +104,5 @@ Update `docs/PHASE_1_ACCEPTANCE_CRITERIA.md` only when the product contract inte
 ## Definition of handoff
 
 Report what changed, which checks ran, any checks not run, remaining risks, and any architecture/documentation decisions. A task is not complete merely because code was written; it must satisfy the relevant acceptance criteria and preserve the security boundaries above.
+
+For milestone work, report the milestone exit criteria individually. Do not claim that Beta 1 or Phase 1 is complete when only the current slice passes.

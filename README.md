@@ -20,7 +20,18 @@ Phase 1 has no enterprise server dependency. The default architecture is persona
 
 ## Status
 
-This repository currently contains the implementation contract and starter structure, not the full application. Start with:
+This repository contains the implementation contract and starter structure, not the full application. The documentation package is ready for milestone M0; exact dependency versions and commands must be created and verified during that milestone rather than guessed in advance.
+
+Implementation agents should start in this order:
+
+- [Implementation order and agent execution guide](docs/BUILD_ORDER.md)
+- [Beta 1 product contract](docs/BETA_1_SCOPE.md)
+- [Development environment and repository contract](docs/DEVELOPMENT.md)
+- [Core contracts and event protocol](docs/CORE_CONTRACTS.md)
+- [Testing and verification strategy](docs/TESTING_STRATEGY.md)
+- [Dependency and repository adoption guide](docs/DEPENDENCY_ADOPTION.md)
+
+Product and architecture references:
 
 - [Phase 1 specification](docs/PHASE_1_SPEC.md)
 - [Strategic positioning and build/integrate choices](docs/STRATEGIC_POSITIONING.md)
@@ -31,18 +42,20 @@ This repository currently contains the implementation contract and starter struc
 - [Acceptance criteria](docs/PHASE_1_ACCEPTANCE_CRITERIA.md)
 - [Roadmap and explicit scope boundaries](docs/ROADMAP.md)
 - [Open-source foundations](docs/OPEN_SOURCE_FOUNDATIONS.md)
+- [Architecture decision records](docs/decisions/README.md)
 
 ## Intended repository layout
 
 ```text
 apps/desktop/       Tauri application and React user interface
+apps/cli/           Headless development/recovery adapter (created in M0)
 crates/core/        Provider-neutral Rust domain and application services
 packages/shared/    Generated/shared schemas and TypeScript client types
 .tramontana/        Portable Markdown customization examples
 docs/               Product, architecture, security, and delivery contracts
 ```
 
-Implementation agents must read `AGENTS.md` before making changes. Architecture changes require corresponding documentation updates in the same change.
+Implementation agents must read `AGENTS.md` and the milestone entry in `docs/BUILD_ORDER.md` before making changes. Architecture changes require corresponding documentation and, where specified, a decision record in the same change.
 
 ## License
 
