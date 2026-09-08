@@ -92,9 +92,221 @@
         }
       ]
     },
+    "ConfigurationDiagnostic": {
+      "description": "Something noticed while loading a source.\n\n`CONFIGURATION.md` §5: an invalid or duplicate definition disables the\naffected item and shows a validation error. It never crashes startup, and a\nbroken file in one project must not make the application unusable.",
+      "properties": {
+        "message": {
+          "description": "Human-readable explanation.",
+          "type": "string"
+        },
+        "relativePath": {
+          "description": "Project-relative path of the file concerned.",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/DiagnosticSeverity",
+          "description": "How serious it is."
+        }
+      },
+      "required": [
+        "severity",
+        "relativePath",
+        "message"
+      ],
+      "type": "object"
+    },
+    "ConfigurationKind": {
+      "description": "What kind of instruction file a source is.",
+      "oneOf": [
+        {
+          "const": "rootAgents",
+          "description": "`AGENTS.md` at the project root.",
+          "type": "string"
+        },
+        {
+          "const": "scopedAgents",
+          "description": "`AGENTS.md` in a subdirectory, applying to that subtree.",
+          "type": "string"
+        },
+        {
+          "const": "claude",
+          "description": "`CLAUDE.md`, loaded as lower-precedence compatibility content.",
+          "type": "string"
+        },
+        {
+          "const": "projectOverview",
+          "description": "`.tramontana/project.md`.",
+          "type": "string"
+        },
+        {
+          "const": "rule",
+          "description": "A file under `.tramontana/rules/`.",
+          "type": "string"
+        },
+        {
+          "const": "skill",
+          "description": "A file under `.tramontana/skills/`.",
+          "type": "string"
+        },
+        {
+          "const": "agentProfile",
+          "description": "A file under `.tramontana/agents/`.",
+          "type": "string"
+        },
+        {
+          "const": "workflow",
+          "description": "A file under `.tramontana/workflows/`.",
+          "type": "string"
+        }
+      ]
+    },
+    "ConfigurationSource": {
+      "description": "One loaded instruction file.",
+      "properties": {
+        "active": {
+          "description": "Whether this enabled source participates in this resolved manifest.\n\nNested instructions can be out of scope, while skills, agents, and\nworkflows must be explicitly selected. Keeping this separate from\n`enabled` makes the effective-configuration view honest about both.",
+          "type": "boolean"
+        },
+        "byteCount": {
+          "description": "Size in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "contentHash": {
+          "description": "SHA-256 of the file's bytes, for reproducibility.",
+          "type": "string"
+        },
+        "declaredId": {
+          "description": "Declared `id` from front matter, when present.",
+          "type": "string"
+        },
+        "declaredName": {
+          "description": "Declared `name` from front matter, when present.",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "Whether the item is active. Front matter may set `enabled: false`, and\na validation error also disables it.",
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/ConfigurationKind",
+          "description": "What kind of file it is."
+        },
+        "precedence": {
+          "description": "Precedence rank; lower wins.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "priority": {
+          "description": "Author-defined rule priority. Higher values apply first within the\nnative rule layer.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "relativePath": {
+          "description": "Project-relative path. Never absolute: an absolute path names a machine.",
+          "type": "string"
+        },
+        "requestedCapabilities": {
+          "description": "Capabilities requested by a native definition.\n\nThese are informational. Loading Markdown never grants a capability.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "scopes": {
+          "description": "Project-relative scopes declared by the source.\n\nA nested `AGENTS.md` contributes its parent directory. Native rules\ncontribute their `applies_to` patterns. An empty list means the whole\nproject.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "selectionOrder": {
+          "description": "Explicit selection order for skills, agents, and workflows.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sourceId": {
+          "description": "Stable project-scoped key for this source (currently its relative path).",
+          "type": "string"
+        },
+        "unknownKeys": {
+          "description": "Front matter keys this build does not recognize.\n\nPreserved rather than dropped, so a file authored for a newer version\nsurvives a round trip through an older one (`CONFIGURATION.md` §5).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sourceId",
+        "relativePath",
+        "kind",
+        "enabled",
+        "active",
+        "precedence",
+        "contentHash",
+        "byteCount"
+      ],
+      "type": "object"
+    },
     "ConversationId": {
       "description": "A conversation within a project, or a projectless conversation.",
       "type": "string"
+    },
+    "ConversationRecord": {
+      "description": "A conversation, optionally scoped to a project.",
+      "properties": {
+        "archivedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When it was archived, if it has been."
+        },
+        "conversationId": {
+          "$ref": "#/$defs/ConversationId",
+          "description": "Stable identifier."
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it was created."
+        },
+        "projectId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Project this belongs to. Absent means projectless, which carries no\nimplicit filesystem access (`PHASE_1_ACCEPTANCE_CRITERIA.md` §8)."
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "title": {
+          "description": "Display title.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "conversationId",
+        "title",
+        "createdAt"
+      ],
+      "type": "object"
     },
     "CorrelationId": {
       "description": "A correlation identifier shared by everything caused by one request.",
@@ -124,6 +336,62 @@
           "type": "string"
         }
       ]
+    },
+    "DiagnosticSeverity": {
+      "description": "Why a source was rejected or flagged.",
+      "oneOf": [
+        {
+          "const": "warning",
+          "description": "Loaded, but something is worth knowing.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "Not loaded. The item is disabled, and startup continues.",
+          "type": "string"
+        }
+      ]
+    },
+    "EffectiveConfiguration": {
+      "description": "Everything loaded for a project, in precedence order.",
+      "properties": {
+        "diagnostics": {
+          "description": "Problems found while loading.",
+          "items": {
+            "$ref": "#/$defs/ConfigurationDiagnostic"
+          },
+          "type": "array"
+        },
+        "manifestHash": {
+          "description": "Hash over the ordered source hashes.\n\nOne value that changes whenever the effective configuration changes, so\na task can record what it started with in a single field\n(`CONFIGURATION.md` §11).",
+          "type": "string"
+        },
+        "resolvedAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When this was resolved."
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sources": {
+          "description": "Sources, strongest precedence first.",
+          "items": {
+            "$ref": "#/$defs/ConfigurationSource"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "sources",
+        "diagnostics",
+        "manifestHash",
+        "resolvedAt"
+      ],
+      "type": "object"
     },
     "ErrorCode": {
       "description": "Stable error categories.\n\nAdapters choose the closest category rather than inventing one; a new\nvariant is a contract change (`CORE_CONTRACTS.md` §15).",
@@ -1048,6 +1316,48 @@
       ],
       "type": "object"
     },
+    "ProjectId": {
+      "description": "A project: one or more user-approved roots and the work done against them.",
+      "type": "string"
+    },
+    "ProjectRecord": {
+      "description": "A project and the roots the user approved for it.",
+      "properties": {
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the project was created."
+        },
+        "name": {
+          "description": "Display name.",
+          "type": "string"
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId",
+          "description": "Stable identifier."
+        },
+        "roots": {
+          "description": "Canonical approved roots. Device-local bindings, redacted on export.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "projectId",
+        "name",
+        "roots",
+        "createdAt"
+      ],
+      "type": "object"
+    },
     "RiskClass": {
       "description": "How much damage a tool invocation could do if the model asked for it wrongly.",
       "oneOf": [
@@ -1284,6 +1594,75 @@
     "TaskId": {
       "description": "A unit of work with its own event stream and exactly one terminal state.",
       "type": "string"
+    },
+    "TaskRecord": {
+      "description": "A task row.\n\n`state` and `last_sequence` are a cache of the event stream, not a second\nsource of truth. After an unclean stop they are rebuilt from the events.",
+      "properties": {
+        "conversationId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConversationId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Conversation this belongs to, when it has one."
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the task was created."
+        },
+        "goalSummary": {
+          "description": "Secret-free summary of what was asked for.",
+          "type": "string"
+        },
+        "lastSequence": {
+          "description": "Highest durable sequence written.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "projectId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Project this belongs to, when it has one."
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/TaskState",
+          "description": "Cached state, projected from the events."
+        },
+        "taskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "Stable identifier."
+        },
+        "updatedAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the projection was last updated."
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "taskId",
+        "goalSummary",
+        "state",
+        "lastSequence",
+        "createdAt",
+        "updatedAt"
+      ],
+      "type": "object"
     },
     "TaskSnapshot": {
       "description": "The current view of a task.\n\nA projection of the event stream, not a second source of truth: it exists\nso reading a task's state does not require replaying every event.",

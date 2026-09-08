@@ -22,6 +22,18 @@ pub struct FrontMatter {
     pub tags: Vec<String>,
     /// Priority for rules; higher applies first within the native rule layer.
     pub priority: Option<i64>,
+    /// Portable glob scopes for native rules and skills.
+    pub applies_to: Vec<String>,
+    /// Capabilities the definition says it needs. Informational only.
+    pub required_capabilities: Vec<String>,
+    /// Capabilities the definition would prefer. Informational only.
+    pub preferred_capabilities: Vec<String>,
+    /// Keywords which may suggest a skill. Informational only.
+    pub suggest_when: Vec<String>,
+    /// Maximum workflow/agent step hint.
+    pub max_steps: Option<i64>,
+    /// Portable project format version.
+    pub format_version: Option<i64>,
     /// Keys this build does not recognize, preserved for portability.
     pub unknown_keys: Vec<String>,
 }
@@ -47,6 +59,12 @@ pub enum FrontMatterError {
         /// What was expected.
         expected: &'static str,
     },
+    /// Mapping keys must be strings so none are silently discarded.
+    #[error("front-matter keys must be strings")]
+    NonStringKey,
+    /// An identifier does not satisfy the portable identifier grammar.
+    #[error("`id` must match [a-z0-9][a-z0-9._-]*")]
+    InvalidId,
     /// The document exceeds a safety limit.
     #[error("front matter exceeds the {limit} limit")]
     TooLarge {
@@ -68,6 +86,9 @@ const MAX_KEYS: usize = 128;
 /// Largest number of tags accepted.
 const MAX_TAGS: usize = 64;
 
+/// Largest nesting depth accepted from YAML input.
+const MAX_DEPTH: usize = 16;
+
 /// Split a document into its front matter and its Markdown body.
 ///
 /// A document with no leading `---` has no front matter, which is normal:
@@ -78,12 +99,14 @@ const MAX_TAGS: usize = 64;
 /// [`FrontMatterError`] when a block is opened but cannot be read. The caller
 /// disables the item and records a diagnostic rather than failing.
 pub fn split_front_matter(document: &str) -> Result<(FrontMatter, &str), FrontMatterError> {
-    let Some(rest) = document.strip_prefix("---") else {
+    let Some(rest) = document
+        .strip_prefix("---\n")
+        .or_else(|| document.strip_prefix("---\r\n"))
+    else {
         return Ok((FrontMatter::default(), document));
     };
-    let rest = rest.strip_prefix('\n').unwrap_or(rest);
 
-    let Some(end) = find_closing_fence(rest) else {
+    let Some((end, fence_len)) = find_closing_fence(rest) else {
         return Err(FrontMatterError::Unterminated);
     };
     let (block, remainder) = rest.split_at(end);
@@ -92,21 +115,17 @@ pub fn split_front_matter(document: &str) -> Result<(FrontMatter, &str), FrontMa
         return Err(FrontMatterError::TooLarge { limit: "size" });
     }
 
-    let body = remainder
-        .strip_prefix("---")
-        .unwrap_or(remainder)
-        .strip_prefix('\n')
-        .unwrap_or("");
+    let body = &remainder[fence_len..];
 
     Ok((parse(block)?, body))
 }
 
 /// Find the offset of the closing `---` line.
-fn find_closing_fence(rest: &str) -> Option<usize> {
+fn find_closing_fence(rest: &str) -> Option<(usize, usize)> {
     let mut offset = 0;
     for line in rest.split_inclusive('\n') {
-        if line.trim_end() == "---" {
-            return Some(offset);
+        if line == "---\n" || line == "---\r\n" || line == "---" {
+            return Some((offset, line.len()));
         }
         offset += line.len();
     }
@@ -127,22 +146,32 @@ fn parse(block: &str) -> Result<FrontMatter, FrontMatterError> {
     let Yaml::Hash(mapping) = document else {
         return Err(FrontMatterError::NotAMapping);
     };
+    if yaml_depth(document) > MAX_DEPTH {
+        return Err(FrontMatterError::TooLarge { limit: "depth" });
+    }
     if mapping.len() > MAX_KEYS {
         return Err(FrontMatterError::TooLarge { limit: "key count" });
     }
 
     let mut fields: BTreeMap<String, &Yaml> = BTreeMap::new();
     for (key, value) in mapping {
-        if let Yaml::String(name) = key {
-            fields.insert(name.clone(), value);
-        }
+        let Yaml::String(name) = key else {
+            return Err(FrontMatterError::NonStringKey);
+        };
+        fields.insert(name.clone(), value);
     }
 
     let mut parsed = FrontMatter::default();
 
     for (key, value) in &fields {
         match key.as_str() {
-            "id" => parsed.id = Some(string(value, "id")?),
+            "id" => {
+                let id = string(value, "id")?;
+                if !valid_id(&id) {
+                    return Err(FrontMatterError::InvalidId);
+                }
+                parsed.id = Some(id);
+            }
             "name" => parsed.name = Some(string(value, "name")?),
             "description" => parsed.description = Some(string(value, "description")?),
             "version" => parsed.version = Some(integer(value, "version")?),
@@ -163,26 +192,115 @@ fn parse(block: &str) -> Result<FrontMatter, FrontMatterError> {
                 if items.len() > MAX_TAGS {
                     return Err(FrontMatterError::TooLarge { limit: "tag count" });
                 }
-                parsed.tags = items
-                    .iter()
-                    .filter_map(|item| item.as_str().map(str::to_owned))
-                    .collect();
+                parsed.tags = string_list(items, "tags")?;
             }
             // Documented per-kind keys that this milestone records but does not
             // yet act on. Listing them keeps them out of `unknown_keys`, so a
             // valid example file does not produce a spurious warning.
-            "applies_to"
-            | "suggest_when"
-            | "required_capabilities"
-            | "preferred_capabilities"
-            | "max_steps"
-            | "inputs"
-            | "format_version" => {}
+            "applies_to" => {
+                parsed.applies_to = string_array(value, "applies_to")?;
+            }
+            "required_capabilities" => {
+                parsed.required_capabilities = string_array(value, "required_capabilities")?;
+            }
+            "preferred_capabilities" => {
+                parsed.preferred_capabilities = string_array(value, "preferred_capabilities")?;
+            }
+            "suggest_when" => {
+                parsed.suggest_when = string_array(value, "suggest_when")?;
+            }
+            "max_steps" => {
+                let steps = integer(value, "max_steps")?;
+                if steps < 1 {
+                    return Err(FrontMatterError::WrongType {
+                        key: "max_steps",
+                        expected: "a positive integer",
+                    });
+                }
+                parsed.max_steps = Some(steps);
+            }
+            "format_version" => {
+                parsed.format_version = Some(integer(value, "format_version")?);
+            }
+            "inputs" => {
+                let yaml_rust2::Yaml::Array(items) = value else {
+                    return Err(FrontMatterError::WrongType {
+                        key: "inputs",
+                        expected: "a list",
+                    });
+                };
+                if items.len() > MAX_TAGS {
+                    return Err(FrontMatterError::TooLarge {
+                        limit: "list length",
+                    });
+                }
+            }
             other => parsed.unknown_keys.push(other.to_owned()),
         }
     }
 
     Ok(parsed)
+}
+
+fn string_array(
+    value: &yaml_rust2::Yaml,
+    key: &'static str,
+) -> Result<Vec<String>, FrontMatterError> {
+    let yaml_rust2::Yaml::Array(items) = value else {
+        return Err(FrontMatterError::WrongType {
+            key,
+            expected: "a list of strings",
+        });
+    };
+    if items.len() > MAX_TAGS {
+        return Err(FrontMatterError::TooLarge {
+            limit: "list length",
+        });
+    }
+    string_list(items, key)
+}
+
+fn string_list(
+    items: &[yaml_rust2::Yaml],
+    key: &'static str,
+) -> Result<Vec<String>, FrontMatterError> {
+    items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::to_owned)
+                .ok_or(FrontMatterError::WrongType {
+                    key,
+                    expected: "a list of strings",
+                })
+        })
+        .collect()
+}
+
+fn valid_id(id: &str) -> bool {
+    let mut bytes = id.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    (first.is_ascii_lowercase() || first.is_ascii_digit())
+        && bytes.all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
+}
+
+fn yaml_depth(value: &yaml_rust2::Yaml) -> usize {
+    use yaml_rust2::Yaml;
+    match value {
+        Yaml::Array(items) => 1 + items.iter().map(yaml_depth).max().unwrap_or(0),
+        Yaml::Hash(items) => {
+            1 + items
+                .iter()
+                .map(|(key, value)| yaml_depth(key).max(yaml_depth(value)))
+                .max()
+                .unwrap_or(0)
+        }
+        _ => 1,
+    }
 }
 
 fn string(value: &yaml_rust2::Yaml, key: &'static str) -> Result<String, FrontMatterError> {
@@ -285,6 +403,61 @@ mod tests {
                 expected: "an integer"
             }
         );
+
+        let error = split_front_matter("---\ntags: [rust, 42]\n---\nbody\n").unwrap_err();
+        assert_eq!(
+            error,
+            FrontMatterError::WrongType {
+                key: "tags",
+                expected: "a list of strings"
+            }
+        );
+
+        let error =
+            split_front_matter("---\nrequired_capabilities: [filesystem.read, false]\n---\nbody\n")
+                .unwrap_err();
+        assert_eq!(
+            error,
+            FrontMatterError::WrongType {
+                key: "required_capabilities",
+                expected: "a list of strings"
+            }
+        );
+    }
+
+    #[test]
+    fn fences_are_exact_and_crlf_is_supported() {
+        let (matter, body) = split_front_matter("---\r\nid: portable\r\n---\r\nbody\r\n").unwrap();
+        assert_eq!(matter.id.as_deref(), Some("portable"));
+        assert_eq!(body, "body\r\n");
+
+        let document = "----\nid: prose\n----\n";
+        let (matter, body) = split_front_matter(document).unwrap();
+        assert_eq!(matter, FrontMatter::default());
+        assert_eq!(body, document);
+    }
+
+    #[test]
+    fn identifiers_use_the_documented_portable_grammar() {
+        for invalid in ["", "Uppercase", "-leading", "contains space", "naïve"] {
+            let yaml_id = if invalid.is_empty() {
+                "\"\"".to_owned()
+            } else {
+                invalid.to_owned()
+            };
+            assert_eq!(
+                split_front_matter(&format!("---\nid: {yaml_id}\n---\n")).unwrap_err(),
+                FrontMatterError::InvalidId,
+                "accepted {invalid:?}"
+            );
+        }
+        split_front_matter("---\nid: rust.review_2\n---\n").unwrap();
+    }
+
+    #[test]
+    fn non_string_mapping_keys_are_rejected() {
+        let error = split_front_matter("---\n1: value\n---\n").unwrap_err();
+        assert_eq!(error, FrontMatterError::NonStringKey);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::Path;
 
 use tramontana_core::config::RawSource;
@@ -35,6 +36,10 @@ const MAX_DEPTH: usize = 12;
 
 /// Largest number of files a single discovery will return.
 const MAX_SOURCES: usize = 512;
+
+/// Read one byte beyond the core loader's 1 MiB limit so it can record an
+/// oversized-source diagnostic without allocating the entire hostile file.
+const MAX_READ_BYTES: u64 = 1024 * 1024 + 1;
 
 /// Find the instruction files for a project.
 ///
@@ -95,8 +100,10 @@ fn collect_scoped_agents(
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;
     };
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(std::fs::DirEntry::path);
 
-    for entry in entries.flatten() {
+    for entry in entries {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
@@ -173,9 +180,15 @@ fn push_file(
     if !metadata.is_file() {
         return;
     }
-    let Ok(content) = std::fs::read(path) else {
+    let Ok(file) = std::fs::File::open(path) else {
         return;
     };
+    let mut content = Vec::with_capacity(
+        usize::try_from(metadata.len().min(MAX_READ_BYTES)).unwrap_or(1024 * 1024 + 1),
+    );
+    if file.take(MAX_READ_BYTES).read_to_end(&mut content).is_err() {
+        return;
+    }
     let Some(relative) = relative_to(root, path) else {
         return;
     };
@@ -372,5 +385,24 @@ mod tests {
 
         let root = canonicalize_root(temp.path()).unwrap();
         assert_eq!(paths_of(&discover(&root)), vec!["sørc e/AGENTS.md"]);
+    }
+
+    #[test]
+    fn oversized_files_are_bounded_before_the_loader_rejects_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let oversized = "x".repeat(2 * 1024 * 1024);
+        write(temp.path(), "AGENTS.md", &oversized);
+
+        let root = canonicalize_root(temp.path()).unwrap();
+        let found = discover(&root);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].content.len(), 1024 * 1024 + 1);
+
+        let resolved = tramontana_core::config::resolve(
+            found,
+            tramontana_core::contracts::Timestamp::new("2026-01-01T00:00:00.000Z"),
+        );
+        assert!(!resolved.sources[0].enabled);
+        assert!(resolved.has_errors());
     }
 }

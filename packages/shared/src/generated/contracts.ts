@@ -65,9 +65,149 @@ export type CancellationOrigin = "user" | "system";
 export type CheckpointSupport = "none" | "sameWorker" | "portable";
 
 /**
+ * Something noticed while loading a source.
+ *
+ * `CONFIGURATION.md` §5: an invalid or duplicate definition disables the
+ * affected item and shows a validation error. It never crashes startup, and a
+ * broken file in one project must not make the application unusable.
+ */
+export interface ConfigurationDiagnostic {
+  /**
+   * Human-readable explanation.
+   */
+  message: string;
+  /**
+   * Project-relative path of the file concerned.
+   */
+  relativePath: string;
+  /**
+   * How serious it is.
+   */
+  severity: "warning" | "error";
+}
+
+/**
+ * What kind of instruction file a source is.
+ */
+export type ConfigurationKind =
+  "rootAgents" | "scopedAgents" | "claude" | "projectOverview" | "rule" | "skill" | "agentProfile" | "workflow";
+
+/**
+ * One loaded instruction file.
+ */
+export interface ConfigurationSource {
+  /**
+   * Whether this enabled source participates in this resolved manifest.
+   *
+   * Nested instructions can be out of scope, while skills, agents, and
+   * workflows must be explicitly selected. Keeping this separate from
+   * `enabled` makes the effective-configuration view honest about both.
+   */
+  active: boolean;
+  /**
+   * Size in bytes.
+   */
+  byteCount: number;
+  /**
+   * SHA-256 of the file's bytes, for reproducibility.
+   */
+  contentHash: string;
+  /**
+   * Declared `id` from front matter, when present.
+   */
+  declaredId?: string;
+  /**
+   * Declared `name` from front matter, when present.
+   */
+  declaredName?: string;
+  /**
+   * Whether the item is active. Front matter may set `enabled: false`, and
+   * a validation error also disables it.
+   */
+  enabled: boolean;
+  /**
+   * What kind of file it is.
+   */
+  kind: "rootAgents" | "scopedAgents" | "claude" | "projectOverview" | "rule" | "skill" | "agentProfile" | "workflow";
+  /**
+   * Precedence rank; lower wins.
+   */
+  precedence: number;
+  /**
+   * Author-defined rule priority. Higher values apply first within the
+   * native rule layer.
+   */
+  priority?: number;
+  /**
+   * Project-relative path. Never absolute: an absolute path names a machine.
+   */
+  relativePath: string;
+  /**
+   * Capabilities requested by a native definition.
+   *
+   * These are informational. Loading Markdown never grants a capability.
+   */
+  requestedCapabilities?: string[];
+  /**
+   * Project-relative scopes declared by the source.
+   *
+   * A nested `AGENTS.md` contributes its parent directory. Native rules
+   * contribute their `applies_to` patterns. An empty list means the whole
+   * project.
+   */
+  scopes?: string[];
+  /**
+   * Explicit selection order for skills, agents, and workflows.
+   */
+  selectionOrder?: number;
+  /**
+   * Stable project-scoped key for this source (currently its relative path).
+   */
+  sourceId: string;
+  /**
+   * Front matter keys this build does not recognize.
+   *
+   * Preserved rather than dropped, so a file authored for a newer version
+   * survives a round trip through an older one (`CONFIGURATION.md` §5).
+   */
+  unknownKeys?: string[];
+}
+
+/**
  * A conversation within a project, or a projectless conversation.
  */
 export type ConversationId = string;
+
+/**
+ * A conversation, optionally scoped to a project.
+ */
+export interface ConversationRecord {
+  /**
+   * When it was archived, if it has been.
+   */
+  archivedAt?: Timestamp | null;
+  /**
+   * Stable identifier.
+   */
+  conversationId: string;
+  /**
+   * An instant, serialized as a UTC RFC 3339 string.
+   */
+  createdAt: string;
+  /**
+   * Project this belongs to. Absent means projectless, which carries no
+   * implicit filesystem access (`PHASE_1_ACCEPTANCE_CRITERIA.md` §8).
+   */
+  projectId?: ProjectId | null;
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  /**
+   * Display title.
+   */
+  title: string;
+}
 
 /**
  * A correlation identifier shared by everything caused by one request.
@@ -78,6 +218,41 @@ export type CorrelationId = string;
  * Sensitivity of a piece of content, used to decide what may leave the device.
  */
 export type DataClass = "public" | "project" | "sensitive" | "secret";
+
+/**
+ * Why a source was rejected or flagged.
+ */
+export type DiagnosticSeverity = "warning" | "error";
+
+/**
+ * Everything loaded for a project, in precedence order.
+ */
+export interface EffectiveConfiguration {
+  /**
+   * Problems found while loading.
+   */
+  diagnostics: ConfigurationDiagnostic[];
+  /**
+   * Hash over the ordered source hashes.
+   *
+   * One value that changes whenever the effective configuration changes, so
+   * a task can record what it started with in a single field
+   * (`CONFIGURATION.md` §11).
+   */
+  manifestHash: string;
+  /**
+   * When this was resolved.
+   */
+  resolvedAt: string;
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  /**
+   * Sources, strongest precedence first.
+   */
+  sources: ConfigurationSource[];
+}
 
 /**
  * Stable error categories.
@@ -724,6 +899,37 @@ export interface NormalizedMessage {
 }
 
 /**
+ * A project: one or more user-approved roots and the work done against them.
+ */
+export type ProjectId = string;
+
+/**
+ * A project and the roots the user approved for it.
+ */
+export interface ProjectRecord {
+  /**
+   * When the project was created.
+   */
+  createdAt: string;
+  /**
+   * Display name.
+   */
+  name: string;
+  /**
+   * Stable identifier.
+   */
+  projectId: string;
+  /**
+   * Canonical approved roots. Device-local bindings, redacted on export.
+   */
+  roots: string[];
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+}
+
+/**
  * How much damage a tool invocation could do if the model asked for it wrongly.
  */
 export type RiskClass = "read" | "modify" | "dangerous";
@@ -824,6 +1030,63 @@ export type TaskEventKind =
  * A unit of work with its own event stream and exactly one terminal state.
  */
 export type TaskId = string;
+
+/**
+ * A task row.
+ *
+ * `state` and `last_sequence` are a cache of the event stream, not a second
+ * source of truth. After an unclean stop they are rebuilt from the events.
+ */
+export interface TaskRecord {
+  /**
+   * Conversation this belongs to, when it has one.
+   */
+  conversationId?: ConversationId | null;
+  /**
+   * When the task was created.
+   */
+  createdAt: string;
+  /**
+   * Secret-free summary of what was asked for.
+   */
+  goalSummary: string;
+  /**
+   * Highest durable sequence written.
+   */
+  lastSequence: number;
+  /**
+   * Project this belongs to, when it has one.
+   */
+  projectId?: ProjectId | null;
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  /**
+   * Cached state, projected from the events.
+   */
+  state:
+    | "queued"
+    | "preparing"
+    | "routing"
+    | "startingWorker"
+    | "running"
+    | "awaitingApproval"
+    | "checkpointing"
+    | "cancelling"
+    | "interrupted"
+    | "completed"
+    | "failed"
+    | "cancelled";
+  /**
+   * Stable identifier.
+   */
+  taskId: string;
+  /**
+   * When the projection was last updated.
+   */
+  updatedAt: string;
+}
 
 /**
  * The current view of a task.

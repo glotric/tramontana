@@ -88,7 +88,7 @@ pub struct ConfigurationDiagnostic {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigurationSource {
-    /// Stable identifier for this source within the project.
+    /// Stable project-scoped key for this source (currently its relative path).
     pub source_id: String,
     /// Project-relative path. Never absolute: an absolute path names a machine.
     pub relative_path: String,
@@ -100,9 +100,34 @@ pub struct ConfigurationSource {
     /// Declared `name` from front matter, when present.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub declared_name: Option<String>,
+    /// Project-relative scopes declared by the source.
+    ///
+    /// A nested `AGENTS.md` contributes its parent directory. Native rules
+    /// contribute their `applies_to` patterns. An empty list means the whole
+    /// project.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub scopes: Vec<String>,
+    /// Capabilities requested by a native definition.
+    ///
+    /// These are informational. Loading Markdown never grants a capability.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub requested_capabilities: Vec<String>,
+    /// Author-defined rule priority. Higher values apply first within the
+    /// native rule layer.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub priority: Option<i64>,
+    /// Explicit selection order for skills, agents, and workflows.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub selection_order: Option<u32>,
     /// Whether the item is active. Front matter may set `enabled: false`, and
     /// a validation error also disables it.
     pub enabled: bool,
+    /// Whether this enabled source participates in this resolved manifest.
+    ///
+    /// Nested instructions can be out of scope, while skills, agents, and
+    /// workflows must be explicitly selected. Keeping this separate from
+    /// `enabled` makes the effective-configuration view honest about both.
+    pub active: bool,
     /// Precedence rank; lower wins.
     pub precedence: u32,
     /// SHA-256 of the file's bytes, for reproducibility.
@@ -178,6 +203,20 @@ fn manifest_hash(sources: &[ConfigurationSource]) -> String {
         hasher.update([0]);
         hasher.update(source.enabled.to_string().as_bytes());
         hasher.update([0]);
+        hasher.update(source.active.to_string().as_bytes());
+        hasher.update([0]);
+        hasher.update(source.priority.unwrap_or_default().to_be_bytes());
+        hasher.update([0]);
+        hasher.update(source.selection_order.unwrap_or(u32::MAX).to_be_bytes());
+        hasher.update([0]);
+        for scope in &source.scopes {
+            hasher.update(scope.as_bytes());
+            hasher.update([0]);
+        }
+        for capability in &source.requested_capabilities {
+            hasher.update(capability.as_bytes());
+            hasher.update([0]);
+        }
     }
     hex(&hasher.finalize())
 }
@@ -212,7 +251,12 @@ mod tests {
             kind,
             declared_id: None,
             declared_name: None,
+            scopes: Vec::new(),
+            requested_capabilities: Vec::new(),
+            priority: None,
+            selection_order: None,
             enabled: true,
+            active: true,
             precedence: kind.precedence(),
             content_hash: hash.to_owned(),
             byte_count: 0,

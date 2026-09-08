@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use sha2::{Digest, Sha256};
 
@@ -22,6 +22,25 @@ pub struct RawSource {
     pub content: Vec<u8>,
 }
 
+/// The task-specific choices that turn discovered definitions into an
+/// effective configuration.
+///
+/// Discovery is an inventory. A nested `AGENTS.md` only becomes active for a
+/// path in its subtree, and reusable definitions only become active when they
+/// are explicitly selected. Keeping those choices out of filesystem discovery
+/// makes resolution deterministic and easy to replay.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfigurationSelection {
+    /// Project-relative file or directory the task is working on.
+    pub active_path: Option<String>,
+    /// Selected agent-profile identifier.
+    pub agent_id: Option<String>,
+    /// Selected workflow identifier.
+    pub workflow_id: Option<String>,
+    /// Selected skill identifiers, in explicit precedence order.
+    pub skill_ids: Vec<String>,
+}
+
 /// Largest instruction file accepted, in bytes.
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 
@@ -32,6 +51,16 @@ const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 /// unusable (`CONFIGURATION.md` §5).
 #[must_use]
 pub fn resolve(sources: Vec<RawSource>, resolved_at: Timestamp) -> EffectiveConfiguration {
+    resolve_with_selection(sources, &ConfigurationSelection::default(), resolved_at)
+}
+
+/// Interpret discovered files for a particular task context.
+#[must_use]
+pub fn resolve_with_selection(
+    sources: Vec<RawSource>,
+    selection: &ConfigurationSelection,
+    resolved_at: Timestamp,
+) -> EffectiveConfiguration {
     let mut resolved = Vec::with_capacity(sources.len());
     let mut diagnostics = Vec::new();
 
@@ -40,6 +69,7 @@ pub fn resolve(sources: Vec<RawSource>, resolved_at: Timestamp) -> EffectiveConf
     }
 
     disable_duplicate_ids(&mut resolved, &mut diagnostics);
+    apply_selection(&mut resolved, selection, &mut diagnostics);
     order(&mut resolved);
 
     EffectiveConfiguration::new(resolved, diagnostics, resolved_at)
@@ -59,7 +89,12 @@ fn interpret(
         kind: raw.kind,
         declared_id: None,
         declared_name: None,
+        scopes: Vec::new(),
+        requested_capabilities: Vec::new(),
+        priority: None,
+        selection_order: None,
         enabled: true,
+        active: false,
         precedence: raw.kind.precedence(),
         content_hash,
         byte_count,
@@ -87,10 +122,34 @@ fn interpret(
         Ok((matter, _body)) => {
             source.declared_id = matter.id.clone();
             source.declared_name = matter.name.clone();
+            source.scopes = if raw.kind == ConfigurationKind::ScopedAgents {
+                scoped_directory(&raw.relative_path).into_iter().collect()
+            } else {
+                matter.applies_to.clone()
+            };
+            source.requested_capabilities = matter.required_capabilities.clone();
+            for capability in matter.preferred_capabilities {
+                if !source.requested_capabilities.contains(&capability) {
+                    source.requested_capabilities.push(capability);
+                }
+            }
+            source.priority = if raw.kind == ConfigurationKind::Rule {
+                matter.priority
+            } else {
+                None
+            };
             source.unknown_keys = matter.unknown_keys.clone();
             // Absent `enabled` means enabled; the example files in this
             // repository set it to false deliberately.
             source.enabled = matter.enabled.unwrap_or(true);
+
+            if source.scopes.iter().any(|scope| !valid_scope(scope)) {
+                diagnostics.push(error(
+                    &raw.relative_path,
+                    "scope must be a non-empty project-relative portable glob without `..`",
+                ));
+                source.enabled = false;
+            }
 
             for key in &matter.unknown_keys {
                 diagnostics.push(warning(
@@ -109,6 +168,192 @@ fn interpret(
     }
 
     source
+}
+
+/// Decide which valid inventory items contribute to this task.
+fn apply_selection(
+    sources: &mut [ConfigurationSource],
+    selection: &ConfigurationSelection,
+    diagnostics: &mut Vec<ConfigurationDiagnostic>,
+) {
+    let active_path = selection
+        .active_path
+        .as_deref()
+        .filter(|path| valid_relative_path(path));
+    if selection.active_path.is_some() && active_path.is_none() {
+        diagnostics.push(error(
+            "<selection>",
+            "active path must be project-relative and cannot contain `..`",
+        ));
+    }
+
+    let skill_order: HashMap<&str, u32> = selection
+        .skill_ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (id.as_str(), u32::try_from(index).unwrap_or(u32::MAX)))
+        .collect();
+
+    for source in &mut *sources {
+        if !source.enabled {
+            source.active = false;
+            continue;
+        }
+
+        let in_scope = scopes_match(&source.scopes, active_path);
+        let selected = match source.kind {
+            ConfigurationKind::Skill => {
+                let order = source
+                    .declared_id
+                    .as_deref()
+                    .and_then(|id| skill_order.get(id).copied());
+                source.selection_order = order;
+                order.is_some()
+            }
+            ConfigurationKind::AgentProfile => {
+                source.declared_id.as_deref() == selection.agent_id.as_deref()
+            }
+            ConfigurationKind::Workflow => {
+                source.declared_id.as_deref() == selection.workflow_id.as_deref()
+            }
+            ConfigurationKind::ScopedAgents => active_path.is_some(),
+            ConfigurationKind::RootAgents
+            | ConfigurationKind::Claude
+            | ConfigurationKind::ProjectOverview
+            | ConfigurationKind::Rule => true,
+        };
+        source.active = selected && in_scope;
+    }
+
+    warn_missing_selection(
+        sources,
+        ConfigurationKind::AgentProfile,
+        selection.agent_id.as_deref(),
+        diagnostics,
+    );
+    warn_missing_selection(
+        sources,
+        ConfigurationKind::Workflow,
+        selection.workflow_id.as_deref(),
+        diagnostics,
+    );
+    for id in &selection.skill_ids {
+        warn_missing_selection(sources, ConfigurationKind::Skill, Some(id), diagnostics);
+    }
+}
+
+fn warn_missing_selection(
+    sources: &[ConfigurationSource],
+    kind: ConfigurationKind,
+    selected_id: Option<&str>,
+    diagnostics: &mut Vec<ConfigurationDiagnostic>,
+) {
+    let Some(id) = selected_id else { return };
+    if !sources
+        .iter()
+        .any(|source| source.kind == kind && source.declared_id.as_deref() == Some(id))
+    {
+        diagnostics.push(error(
+            "<selection>",
+            format!("selected {kind:?} id `{id}` was not found"),
+        ));
+    }
+}
+
+fn scoped_directory(relative_path: &str) -> Option<String> {
+    relative_path
+        .rsplit_once('/')
+        .map(|(directory, _)| directory.to_owned())
+}
+
+fn valid_relative_path(path: &str) -> bool {
+    !path.starts_with('/')
+        && !path.contains('\\')
+        && !path
+            .split('/')
+            .any(|component| component == ".." || component.is_empty())
+}
+
+fn valid_scope(scope: &str) -> bool {
+    !scope.is_empty()
+        && valid_relative_path(scope)
+        && !scope
+            .split('/')
+            .any(|component| component == "." || component == "..")
+}
+
+fn scopes_match(scopes: &[String], active_path: Option<&str>) -> bool {
+    if scopes.is_empty() {
+        return true;
+    }
+    let Some(path) = active_path else {
+        return false;
+    };
+    scopes.iter().any(|scope| {
+        if scope.contains('*') || scope.contains('?') {
+            glob_matches(scope, path)
+        } else {
+            path == scope
+                || path
+                    .strip_prefix(scope)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        }
+    })
+}
+
+/// Match the documented portable glob subset: `?` matches one non-separator,
+/// `*` matches within one path component, and `**` crosses separators.
+fn glob_matches(pattern: &str, path: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let path: Vec<char> = path.chars().collect();
+    let mut seen = HashSet::new();
+    glob_matches_from(&pattern, &path, 0, 0, &mut seen)
+}
+
+fn glob_matches_from(
+    pattern: &[char],
+    path: &[char],
+    pattern_index: usize,
+    path_index: usize,
+    seen: &mut HashSet<(usize, usize)>,
+) -> bool {
+    if !seen.insert((pattern_index, path_index)) {
+        return false;
+    }
+    if pattern_index == pattern.len() {
+        return path_index == path.len();
+    }
+
+    match pattern[pattern_index] {
+        '*' if pattern.get(pattern_index + 1) == Some(&'*')
+            && pattern.get(pattern_index + 2) == Some(&'/') =>
+        {
+            glob_matches_from(pattern, path, pattern_index + 3, path_index, seen)
+                || (path_index < path.len()
+                    && glob_matches_from(pattern, path, pattern_index, path_index + 1, seen))
+        }
+        '*' if pattern.get(pattern_index + 1) == Some(&'*') => {
+            glob_matches_from(pattern, path, pattern_index + 2, path_index, seen)
+                || (path_index < path.len()
+                    && glob_matches_from(pattern, path, pattern_index, path_index + 1, seen))
+        }
+        '*' => {
+            glob_matches_from(pattern, path, pattern_index + 1, path_index, seen)
+                || (path
+                    .get(path_index)
+                    .is_some_and(|character| *character != '/')
+                    && glob_matches_from(pattern, path, pattern_index, path_index + 1, seen))
+        }
+        '?' => {
+            path.get(path_index)
+                .is_some_and(|character| *character != '/')
+                && glob_matches_from(pattern, path, pattern_index + 1, path_index + 1, seen)
+        }
+        literal => {
+            path.get(path_index) == Some(&literal)
+                && glob_matches_from(pattern, path, pattern_index + 1, path_index + 1, seen)
+        }
+    }
 }
 
 /// Disable every member of a duplicated `(kind, id)` pair.
@@ -162,6 +407,16 @@ fn order(sources: &mut [ConfigurationSource]) {
     sources.sort_by(|a, b| {
         a.precedence
             .cmp(&b.precedence)
+            .then_with(|| {
+                b.priority
+                    .unwrap_or_default()
+                    .cmp(&a.priority.unwrap_or_default())
+            })
+            .then_with(|| {
+                a.selection_order
+                    .unwrap_or(u32::MAX)
+                    .cmp(&b.selection_order.unwrap_or(u32::MAX))
+            })
             .then_with(|| depth(&b.relative_path).cmp(&depth(&a.relative_path)))
             .then_with(|| a.relative_path.cmp(&b.relative_path))
     });
@@ -433,5 +688,142 @@ mod tests {
         );
         assert_ne!(a.sources[0].content_hash, b.sources[0].content_hash);
         assert_ne!(a.manifest_hash, b.manifest_hash);
+    }
+
+    #[test]
+    fn only_nested_agents_files_which_contain_the_active_path_are_active() {
+        let resolved = resolve_with_selection(
+            vec![
+                raw("AGENTS.md", ConfigurationKind::RootAgents, "root"),
+                raw("apps/AGENTS.md", ConfigurationKind::ScopedAgents, "apps"),
+                raw(
+                    "apps/desktop/AGENTS.md",
+                    ConfigurationKind::ScopedAgents,
+                    "desktop",
+                ),
+                raw(
+                    "crates/AGENTS.md",
+                    ConfigurationKind::ScopedAgents,
+                    "crates",
+                ),
+            ],
+            &ConfigurationSelection {
+                active_path: Some("apps/desktop/src/App.tsx".to_owned()),
+                ..ConfigurationSelection::default()
+            },
+            at(),
+        );
+
+        let active: Vec<&str> = resolved
+            .sources
+            .iter()
+            .filter(|source| source.active)
+            .map(|source| source.relative_path.as_str())
+            .collect();
+        assert_eq!(
+            active,
+            vec!["apps/desktop/AGENTS.md", "apps/AGENTS.md", "AGENTS.md"]
+        );
+    }
+
+    #[test]
+    fn rules_use_priority_then_path_and_honor_portable_globs() {
+        let resolved = resolve_with_selection(
+            vec![
+                raw(
+                    ".tramontana/rules/low.md",
+                    ConfigurationKind::Rule,
+                    "---\nid: low\npriority: 1\napplies_to: [\"apps/**/*.rs\"]\n---\nlow",
+                ),
+                raw(
+                    ".tramontana/rules/high.md",
+                    ConfigurationKind::Rule,
+                    "---\nid: high\npriority: 100\napplies_to: [\"apps/**/*.rs\"]\n---\nhigh",
+                ),
+                raw(
+                    ".tramontana/rules/web.md",
+                    ConfigurationKind::Rule,
+                    "---\nid: web\npriority: 200\napplies_to: [\"apps/**/*.tsx\"]\n---\nweb",
+                ),
+            ],
+            &ConfigurationSelection {
+                active_path: Some("apps/main.rs".to_owned()),
+                ..ConfigurationSelection::default()
+            },
+            at(),
+        );
+
+        assert_eq!(resolved.sources[0].declared_id.as_deref(), Some("web"));
+        assert!(!resolved.sources[0].active);
+        assert_eq!(resolved.sources[1].declared_id.as_deref(), Some("high"));
+        assert!(resolved.sources[1].active);
+        assert_eq!(resolved.sources[2].declared_id.as_deref(), Some("low"));
+        assert!(resolved.sources[2].active);
+    }
+
+    #[test]
+    fn reusable_definitions_are_inert_until_explicitly_selected() {
+        let sources = vec![
+            raw(
+                ".tramontana/skills/rust.md",
+                ConfigurationKind::Skill,
+                "---\nid: rust\nrequired_capabilities: [filesystem.read]\n---\nbody",
+            ),
+            raw(
+                ".tramontana/agents/coder.md",
+                ConfigurationKind::AgentProfile,
+                "---\nid: coder\npreferred_capabilities: [process.run]\n---\nbody",
+            ),
+        ];
+        let inventory = resolve(sources.clone(), at());
+        assert!(inventory.sources.iter().all(|source| !source.active));
+
+        let selected = resolve_with_selection(
+            sources,
+            &ConfigurationSelection {
+                agent_id: Some("coder".to_owned()),
+                skill_ids: vec!["rust".to_owned()],
+                ..ConfigurationSelection::default()
+            },
+            at(),
+        );
+        assert!(selected.sources.iter().all(|source| source.active));
+        assert_eq!(
+            selected.sources[0].requested_capabilities,
+            vec!["filesystem.read"]
+        );
+        assert_eq!(
+            selected.sources[1].requested_capabilities,
+            vec!["process.run"]
+        );
+    }
+
+    #[test]
+    fn invalid_scope_and_selection_are_diagnostics_not_panics() {
+        let resolved = resolve_with_selection(
+            vec![raw(
+                ".tramontana/rules/escape.md",
+                ConfigurationKind::Rule,
+                "---\nid: escape\napplies_to: [\"../outside/**\"]\n---\nbody",
+            )],
+            &ConfigurationSelection {
+                active_path: Some("../outside/secret".to_owned()),
+                skill_ids: vec!["missing".to_owned()],
+                ..ConfigurationSelection::default()
+            },
+            at(),
+        );
+        assert!(!resolved.sources[0].enabled);
+        assert!(!resolved.sources[0].active);
+        assert!(resolved.has_errors());
+        assert_eq!(resolved.diagnostics.len(), 3);
+    }
+
+    #[test]
+    fn portable_globs_match_root_and_nested_paths() {
+        assert!(glob_matches("**/*.rs", "main.rs"));
+        assert!(glob_matches("**/*.rs", "src/main.rs"));
+        assert!(glob_matches("apps/*/src/**", "apps/desktop/src/App.tsx"));
+        assert!(!glob_matches("apps/*/src/**", "crates/core/src/lib.rs"));
     }
 }

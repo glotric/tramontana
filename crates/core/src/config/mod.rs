@@ -18,4 +18,4 @@ mod front_matter;
 mod loader;
 
 pub use front_matter::{FrontMatter, FrontMatterError, split_front_matter};
-pub use loader::{RawSource, resolve};
+pub use loader::{ConfigurationSelection, RawSource, resolve, resolve_with_selection};
