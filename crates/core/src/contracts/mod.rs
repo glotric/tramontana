@@ -9,14 +9,40 @@
 //! - JSON field names and enum values are `camelCase`;
 //! - every top-level command, response, event, checkpoint, and export object
 //!   carries a `schemaVersion`;
+//! - absent is absent: an optional field is omitted, not sent as `null`;
+//! - unknown additive fields are ignored, and an unknown *event* kind is read
+//!   as unsupported rather than failing the parse;
 //! - secrets are never serialized — only an opaque [`SecretRef`].
 
+mod descriptor;
+mod error;
+mod event;
+mod ids;
+mod message;
 mod primitives;
+mod task;
+mod time;
 
+pub use descriptor::{
+    AgentDescriptor, CheckpointSupport, Health, IntegrationMode, ModelCapability, ModelControl,
+    ModelDescriptor, ModelLocation, NetworkControl, ToolControl, ToolDescriptor,
+};
+pub use error::{ErrorCode, ErrorEnvelope};
+pub use event::{
+    CancellationOrigin, EventDraft, EventEnvelope, EventPayload, StreamFrame, TaskEventKind,
+    TaskUpdate,
+};
+pub use ids::{
+    AgentId, AgentProviderId, ApprovalId, CheckpointId, ConversationId, CorrelationId, EventId,
+    InvocationId, MessageId, ModelId, ProjectId, ProviderId, TaskId, WorkerSessionId,
+};
+pub use message::{MessagePart, MessageRole, MessageStatus, NormalizedMessage};
 pub use primitives::{
     DataClass, ExecutionLocation, RiskClass, RoutingMode, SecretRef, SecretStore, SideEffect,
     Visibility,
 };
+pub use task::{InvalidTransition, TaskSnapshot, TaskState};
+pub use time::Timestamp;
 
 /// Version of the schemas exchanged across the IPC and export boundaries.
 ///

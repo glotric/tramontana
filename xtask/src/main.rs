@@ -14,8 +14,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings};
 use tramontana_core::contracts::{
-    DataClass, ExecutionLocation, RiskClass, RoutingMode, SecretRef, SecretStore, SideEffect,
-    Visibility,
+    AgentDescriptor, DataClass, ErrorCode, ErrorEnvelope, EventEnvelope, EventPayload,
+    ExecutionLocation, ModelDescriptor, NormalizedMessage, RiskClass, RoutingMode, SecretRef,
+    SecretStore, SideEffect, StreamFrame, TaskEventKind, TaskSnapshot, TaskState, TaskUpdate,
+    ToolDescriptor, Visibility,
 };
 
 /// Filename of the single bundled contract schema.
@@ -78,6 +80,20 @@ fn emit_schema(dir: &Path) -> Result<PathBuf> {
     register::<SecretStore>(&mut generator);
     register::<SecretRef>(&mut generator);
     register::<ExecutionLocation>(&mut generator);
+
+    register::<TaskState>(&mut generator);
+    register::<TaskSnapshot>(&mut generator);
+    register::<ErrorCode>(&mut generator);
+    register::<ErrorEnvelope>(&mut generator);
+    register::<TaskEventKind>(&mut generator);
+    register::<EventPayload>(&mut generator);
+    register::<EventEnvelope>(&mut generator);
+    register::<StreamFrame>(&mut generator);
+    register::<TaskUpdate>(&mut generator);
+    register::<NormalizedMessage>(&mut generator);
+    register::<ModelDescriptor>(&mut generator);
+    register::<AgentDescriptor>(&mut generator);
+    register::<ToolDescriptor>(&mut generator);
 
     let mut defs = generator.take_definitions(true);
     for schema in defs.values_mut() {
@@ -185,6 +201,19 @@ mod tests {
             "SecretStore",
             "SecretRef",
             "ExecutionLocation",
+            "TaskState",
+            "TaskSnapshot",
+            "ErrorCode",
+            "ErrorEnvelope",
+            "TaskEventKind",
+            "EventPayload",
+            "EventEnvelope",
+            "StreamFrame",
+            "TaskUpdate",
+            "NormalizedMessage",
+            "ModelDescriptor",
+            "AgentDescriptor",
+            "ToolDescriptor",
         ] {
             assert!(defs.contains_key(name), "missing definition for {name}");
         }

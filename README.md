@@ -20,14 +20,18 @@ Phase 1 has no enterprise server dependency. The default architecture is persona
 
 ## Status
 
-Milestone M0 is complete. The repository is a buildable Rust/TypeScript/Tauri workspace with pinned toolchains, generated contract types, root commands, and three-OS CI — and no application behavior yet. The desktop shell opens and verifies its handshake with the Rust core; the CLI reports its version. Everything else is still contract.
+Milestone M1 is complete. One task now travels the whole length of the system — application service, task state machine, durable event stream, persistence port, IPC boundary, CLI, and React interface — driven by deterministic fakes. It streams, it cancels, and it reaches exactly one terminal state.
+
+There is still no real model, no persistence beyond memory, no permission boundary, and no project on disk. Those arrive in M2 onward.
 
 ```bash
 corepack enable pnpm     # Node 24.x; Node 25 removed Corepack
 pnpm install
 pnpm bootstrap           # validates the toolchain, generates contract artifacts
-pnpm check               # format, contracts, lint, types, tests, build
+pnpm check:fast          # format, contracts, lint, types, tests (~5s)
+pnpm check               # the above plus the release build
 pnpm dev                 # desktop shell
+pnpm dev:cli task "Say hello"   # the same task from a terminal
 ```
 
 Prerequisites, root commands, and known gaps: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).

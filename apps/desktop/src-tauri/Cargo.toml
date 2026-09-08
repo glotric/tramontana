@@ -21,6 +21,7 @@ tauri-build = { version = "2.6.3", features = [] }
 tramontana-core = { workspace = true }
 tauri = { version = "2.11.5", features = [] }
 serde = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true }
 
 [lints]

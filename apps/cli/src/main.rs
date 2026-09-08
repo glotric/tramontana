@@ -1,12 +1,13 @@
 //! Headless adapter over the Tramontana application services.
 //!
-//! This is a development, test, and recovery surface — a peer of the desktop
-//! shell over the same Rust services, never a second implementation of them
-//! (`AGENTS.md`, "Architectural boundaries"). Any behavior it appears to own
-//! belongs in `tramontana-core`.
-//!
-//! M0 provides only version reporting. Project, task, event, and configuration
-//! commands arrive with the milestones that implement them.
+//! A development, test, and recovery surface — a peer of the desktop shell over
+//! the same Rust services, never a second implementation of them
+//! (`AGENTS.md`, "Architectural boundaries"). Every command here translates
+//! arguments into an application call and renders the result; no routing,
+//! permission, or task behavior lives in this crate.
+
+mod render;
+mod run;
 
 use clap::{Parser, Subcommand};
 
@@ -26,13 +27,23 @@ struct Cli {
 enum Command {
     /// Print version and contract-schema information as JSON.
     Info,
+    /// Run one task against the fake providers and stream its activity.
+    ///
+    /// M1's walking skeleton: the same application service the desktop shell
+    /// calls, driven from a terminal so the event contract can be inspected
+    /// without a window.
+    Task(run::TaskArgs),
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Info) | None => print_info(),
+        Some(Command::Task(args)) => run::execute(args),
+        Some(Command::Info) | None => {
+            print_info();
+            std::process::ExitCode::SUCCESS
+        }
     }
 }
 

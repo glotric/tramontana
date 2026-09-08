@@ -1,21 +1,25 @@
 :root {
   --surface: #14161a;
+  --surface-raised: #1c1f25;
   --border: #2a2f38;
   --text: #e8eaee;
   --text-muted: #9aa3b0;
   --accent: #6ea8fe;
   --danger: #ff9aa5;
+  --success: #7ee0a8;
   color-scheme: dark light;
 }
 
 @media (prefers-color-scheme: light) {
   :root {
     --surface: #f7f8fa;
+    --surface-raised: #ffffff;
     --border: #d9dde3;
     --text: #1a1d22;
     --text-muted: #5b6472;
     --accent: #1f5fd0;
     --danger: #a8323f;
+    --success: #1c7a49;
   }
 }
 
@@ -35,52 +39,191 @@ body {
 }
 
 .shell {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  align-items: flex-start;
-  justify-content: center;
-  min-height: 100vh;
-  padding: 48px;
-  max-width: 64ch;
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
+  gap: 16px;
+  height: 100vh;
+  padding: 24px 28px;
+  max-width: 900px;
   margin: 0 auto;
 }
 
 .shell__brand {
   margin: 0;
-  font-size: 28px;
+  font-size: 20px;
   letter-spacing: -0.01em;
 }
 
 .shell__tagline {
-  margin: 0;
+  margin: 4px 0 0;
   color: var(--text-muted);
-}
-
-.shell__note {
-  margin: 12px 0 0;
-  padding: 16px;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  color: var(--text-muted);
+  font-size: 13px;
   line-height: 1.5;
 }
 
-.shell__status {
+.shell__controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.shell__label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.shell__input {
+  flex: 1 1 240px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+}
+
+.shell__button {
+  padding: 8px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--surface);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.shell__button--secondary {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.shell__button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.shell__input:focus-visible,
+.shell__button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.shell__failure {
   margin: 0;
-  padding: 4px 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.shell__activity {
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--surface-raised);
+}
+
+.shell__section-title {
+  margin: 0 0 10px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.shell__empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.shell__events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shell__event {
+  display: grid;
+  grid-template-columns: 2.5rem 12rem 1fr;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell__event-sequence {
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.shell__event-kind {
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.shell__stream {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.shell__stream-label {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 6px;
   border: 1px solid var(--border);
   border-radius: 999px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.shell__status {
+  display: flex;
+  gap: 8px;
+  align-items: center;
   font-size: 12px;
   color: var(--text-muted);
 }
 
-.shell__status[data-state="ready"] {
+.shell__badge {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-raised);
+}
+
+.shell__badge[data-state="ready"] {
   border-color: var(--accent);
   color: var(--accent);
 }
 
-.shell__status[data-state="incompatible"] {
+.shell__badge[data-state="incompatible"] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.shell__badge[data-task-state="completed"] {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.shell__badge[data-task-state="failed"],
+.shell__badge[data-task-state="cancelled"] {
   border-color: var(--danger);
   color: var(--danger);
 }

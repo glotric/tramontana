@@ -51,6 +51,25 @@ export default tseslint.config(
     languageOptions: { globals: globals.browser },
   },
   {
+    // Node types are available in this package for the fixture test, so make
+    // the boundary explicit: shipped shared code stays runtime-neutral.
+    files: ["packages/shared/src/**/*.ts"],
+    ignores: ["packages/shared/src/**/*.test.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["node:*"],
+              message: "Shared contract code must run in the browser as well as Node.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ["**/*.test.{ts,tsx}", "apps/desktop/tests/**/*.ts"],
     rules: {
       // Test doubles are intentionally loosely typed.
