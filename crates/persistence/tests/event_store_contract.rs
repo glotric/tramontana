@@ -113,3 +113,34 @@ async fn migrating_an_already_migrated_database_is_a_no_op() {
         0
     );
 }
+
+#[tokio::test]
+async fn ten_thousand_events_replay_within_the_m2_budget() {
+    const EVENT_COUNT: u64 = 10_000;
+    const REPLAY_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+    let directory = tempfile::tempdir().unwrap();
+    let store = fresh_store(&directory, "large-replay").await;
+    let task = TaskId::new("task-large");
+    let events = (1..=EVENT_COUNT)
+        .map(|sequence| event_at(&task, sequence))
+        .collect();
+    store.append(&task, 0, events).await.unwrap();
+
+    let started = std::time::Instant::now();
+    let replayed = store.replay(&task, 0).await.unwrap();
+    let elapsed = started.elapsed();
+    eprintln!(
+        "M2 replay evidence: {EVENT_COUNT} events in {} ms (budget {} ms)",
+        elapsed.as_millis(),
+        REPLAY_BUDGET.as_millis()
+    );
+
+    assert_eq!(replayed.len(), EVENT_COUNT as usize);
+    assert_eq!(replayed.first().unwrap().sequence, 1);
+    assert_eq!(replayed.last().unwrap().sequence, EVENT_COUNT);
+    assert!(
+        elapsed <= REPLAY_BUDGET,
+        "replay took {elapsed:?}, above the recorded {REPLAY_BUDGET:?} budget"
+    );
+}

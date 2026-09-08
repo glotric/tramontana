@@ -8,16 +8,17 @@
 )]
 
 use tramontana_core::contracts::{
-    ConversationId, ConversationRecord, EventPayload, ProjectId, ProjectRecord, TaskId, TaskRecord,
-    TaskState, Timestamp,
+    ConfigurationKind, ConversationId, ConversationRecord, EventPayload, ProjectId, ProjectRecord,
+    TaskId, TaskRecord, TaskState, Timestamp,
 };
 use tramontana_core::ports::{
-    ConversationRepository, EventStore, ProjectRepository, RepositoryError, TaskRepository,
+    ConfigurationRepository, ConversationRepository, EventStore, ProjectRepository,
+    RepositoryError, TaskRepository,
 };
 use tramontana_core::testing::contract_suites::event_at;
 use tramontana_persistence::{
-    Database, SqliteConversationRepository, SqliteEventStore, SqliteProjectRepository,
-    SqliteTaskRepository,
+    Database, SqliteConfigurationRepository, SqliteConversationRepository, SqliteEventStore,
+    SqliteProjectRepository, SqliteTaskRepository,
 };
 
 fn at(seconds: u32) -> Timestamp {
@@ -28,6 +29,72 @@ async fn database(directory: &tempfile::TempDir, name: &str) -> Database {
     Database::open(&directory.path().join(format!("{name}.sqlite")))
         .await
         .unwrap()
+}
+
+#[tokio::test]
+async fn the_committed_v1_fixture_migrates_to_the_current_schema() {
+    use sqlx::{Connection, Executor};
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("migrate-v1.sqlite");
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&path)
+        .create_if_missing(true);
+    let mut connection = sqlx::SqliteConnection::connect_with(&options)
+        .await
+        .unwrap();
+    connection
+        .execute(sqlx::raw_sql(include_str!(
+            "fixtures/database/v1/schema.sql"
+        )))
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
+
+    let db = Database::open(&path).await.unwrap();
+    let project_id = ProjectId::new("fixture-project");
+    let project = SqliteProjectRepository::new(db.clone())
+        .get(&project_id)
+        .await
+        .unwrap();
+    assert_eq!(project.name, "Fixture project");
+    let existing_task = SqliteTaskRepository::new(db.clone())
+        .get(&TaskId::new("fixture-existing-task"))
+        .await
+        .unwrap();
+    assert_eq!(existing_task.goal_summary, "Existing fixture goal");
+    assert_eq!(existing_task.last_sequence, 1);
+    let existing_events = SqliteEventStore::new(db.clone())
+        .replay(&existing_task.task_id, 0)
+        .await
+        .unwrap();
+    assert_eq!(existing_events.len(), 1);
+
+    let manifest = tramontana_core::config::resolve(Vec::new(), at(1));
+    let configurations = SqliteConfigurationRepository::new(db.clone());
+    configurations.save(&project_id, &manifest).await.unwrap();
+    assert_eq!(
+        configurations.latest(&project_id).await.unwrap(),
+        Some(manifest)
+    );
+
+    // Migration 0002 also added the task manifest column.
+    let task = TaskRecord::new(
+        TaskId::new("fixture-task"),
+        None,
+        Some(project_id),
+        "fixture goal",
+        at(2),
+    )
+    .with_configuration_manifest(
+        configurations
+            .latest(&ProjectId::new("fixture-project"))
+            .await
+            .unwrap()
+            .unwrap()
+            .manifest_hash,
+    );
+    SqliteTaskRepository::new(db).create(&task).await.unwrap();
 }
 
 #[tokio::test]
@@ -285,4 +352,95 @@ async fn rebuilding_a_consistent_database_corrects_nothing() {
         .unwrap();
 
     assert_eq!(tasks.rebuild_from_events().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn task_and_initial_events_commit_as_one_transaction() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(&directory, "atomic-task-create").await;
+    let tasks = SqliteTaskRepository::new(db.clone());
+    let events = SqliteEventStore::new(db);
+
+    // Occupy event-1 in another stream. The task insert succeeds first, then
+    // the duplicate event ID forces the event insert to fail. The transaction
+    // must roll the task row back as well.
+    let occupied_task = TaskId::new("occupied");
+    let occupied_event = event_at(&occupied_task, 1);
+    let occupied_event_id = occupied_event.event_id.clone();
+    events
+        .append(&occupied_task, 0, vec![occupied_event])
+        .await
+        .unwrap();
+
+    let task_id = TaskId::new("new-task");
+    let record = TaskRecord::new(task_id.clone(), None, None, "goal", at(0));
+    let mut event = event_at(&task_id, 1);
+    event.event_id = occupied_event_id;
+    event.kind = tramontana_core::contracts::TaskEventKind::TaskCreated;
+    event.payload = EventPayload::TaskCreated {
+        goal_summary: "goal".to_owned(),
+        conversation_id: None,
+    };
+    let error = tasks
+        .create_with_initial_events(&record, &[event])
+        .await
+        .unwrap_err();
+    assert!(matches!(error, RepositoryError::Conflict { .. }));
+    assert!(matches!(
+        tasks.get(&task_id).await.unwrap_err(),
+        RepositoryError::NotFound { .. }
+    ));
+    assert_eq!(events.last_sequence(&task_id).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn configuration_manifests_round_trip_and_are_scoped_by_project() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(&directory, "configuration").await;
+    let projects = SqliteProjectRepository::new(db.clone());
+    let configurations = SqliteConfigurationRepository::new(db);
+
+    for project_id in ["p1", "p2"] {
+        projects
+            .create(&ProjectRecord::new(
+                ProjectId::new(project_id),
+                project_id,
+                vec![format!("/projects/{project_id}")],
+                at(0),
+            ))
+            .await
+            .unwrap();
+    }
+
+    let manifest = tramontana_core::config::resolve(
+        vec![tramontana_core::config::RawSource {
+            relative_path: "AGENTS.md".to_owned(),
+            kind: ConfigurationKind::RootAgents,
+            content: b"# Instructions".to_vec(),
+        }],
+        at(1),
+    );
+
+    // `source_id` is project-scoped. The same portable relative path in two
+    // projects must not collide in the database.
+    configurations
+        .save(&ProjectId::new("p1"), &manifest)
+        .await
+        .unwrap();
+    configurations
+        .save(&ProjectId::new("p2"), &manifest)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        configurations
+            .get(&ProjectId::new("p1"), &manifest.manifest_hash)
+            .await
+            .unwrap(),
+        manifest
+    );
+    assert_eq!(
+        configurations.latest(&ProjectId::new("p2")).await.unwrap(),
+        Some(manifest)
+    );
 }

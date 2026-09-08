@@ -1,11 +1,13 @@
 use async_trait::async_trait;
 use sqlx::Row;
 use tramontana_core::contracts::{
-    ConversationId, ConversationRecord, ProjectId, ProjectRecord, TaskId, TaskRecord, TaskState,
-    Timestamp,
+    ConfigurationDiagnostic, ConfigurationKind, ConfigurationSource, ConversationId,
+    ConversationRecord, DiagnosticSeverity, EffectiveConfiguration, EventEnvelope, ProjectId,
+    ProjectRecord, TaskEventKind, TaskId, TaskRecord, TaskState, Timestamp,
 };
 use tramontana_core::ports::{
-    ConversationRepository, ProjectRepository, RepositoryError, TaskRepository,
+    ConfigurationRepository, ConversationRepository, ProjectRepository, RepositoryError,
+    TaskRepository,
 };
 
 use crate::Database;
@@ -13,6 +15,24 @@ use crate::Database;
 /// Map a database failure to the port's error type.
 fn unavailable(error: &sqlx::Error) -> RepositoryError {
     RepositoryError::Unavailable(error.to_string())
+}
+
+fn conflict_or_unavailable(
+    error: &sqlx::Error,
+    kind: &'static str,
+    id: impl Into<String>,
+) -> RepositoryError {
+    if error
+        .as_database_error()
+        .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
+    {
+        RepositoryError::Conflict {
+            kind,
+            id: id.into(),
+        }
+    } else {
+        unavailable(error)
+    }
 }
 
 fn not_found(kind: &'static str, id: impl std::fmt::Display) -> RepositoryError {
@@ -282,6 +302,277 @@ impl SqliteTaskRepository {
     }
 }
 
+/// Secret-free effective-configuration manifests.
+#[derive(Debug, Clone)]
+pub struct SqliteConfigurationRepository {
+    database: Database,
+}
+
+impl SqliteConfigurationRepository {
+    /// Wrap an open, migrated database.
+    #[must_use]
+    pub fn new(database: Database) -> Self {
+        Self { database }
+    }
+
+    async fn read(
+        &self,
+        project_id: &ProjectId,
+        manifest_hash: &str,
+    ) -> Result<EffectiveConfiguration, RepositoryError> {
+        let manifest = sqlx::query(
+            "SELECT schema_version, resolved_at FROM configuration_manifest
+             WHERE project_id = ? AND manifest_hash = ?",
+        )
+        .bind(project_id.as_str())
+        .bind(manifest_hash)
+        .fetch_optional(self.database.pool())
+        .await
+        .map_err(|error| unavailable(&error))?
+        .ok_or_else(|| not_found("configuration manifest", manifest_hash))?;
+
+        let source_rows = sqlx::query(
+            "SELECT source_id, relative_path, kind, declared_id, declared_name, scopes,
+                    requested_capabilities, priority, selection_order, enabled, active,
+                    precedence, content_hash, byte_count, unknown_keys
+             FROM configuration_source
+             WHERE project_id = ? AND manifest_hash = ?
+             ORDER BY position",
+        )
+        .bind(project_id.as_str())
+        .bind(manifest_hash)
+        .fetch_all(self.database.pool())
+        .await
+        .map_err(|error| unavailable(&error))?;
+
+        let mut sources = Vec::with_capacity(source_rows.len());
+        for row in source_rows {
+            let kind: String = row.try_get("kind").map_err(|e| unavailable(&e))?;
+            let scopes: String = row.try_get("scopes").map_err(|e| unavailable(&e))?;
+            let requested: String = row
+                .try_get("requested_capabilities")
+                .map_err(|e| unavailable(&e))?;
+            let unknown: String = row.try_get("unknown_keys").map_err(|e| unavailable(&e))?;
+            let priority: Option<i64> = row.try_get("priority").map_err(|e| unavailable(&e))?;
+            let selection_order: Option<i64> = row
+                .try_get("selection_order")
+                .map_err(|e| unavailable(&e))?;
+            let precedence: i64 = row.try_get("precedence").map_err(|e| unavailable(&e))?;
+            let byte_count: i64 = row.try_get("byte_count").map_err(|e| unavailable(&e))?;
+
+            sources.push(ConfigurationSource {
+                source_id: row.try_get("source_id").map_err(|e| unavailable(&e))?,
+                relative_path: row.try_get("relative_path").map_err(|e| unavailable(&e))?,
+                kind: parse_scalar(&kind).unwrap_or(ConfigurationKind::Unsupported),
+                declared_id: row.try_get("declared_id").map_err(|e| unavailable(&e))?,
+                declared_name: row.try_get("declared_name").map_err(|e| unavailable(&e))?,
+                scopes: parse_json(&scopes, "configuration scopes")?,
+                requested_capabilities: parse_json(
+                    &requested,
+                    "configuration requested capabilities",
+                )?,
+                priority,
+                selection_order: selection_order.and_then(|value| u32::try_from(value).ok()),
+                enabled: row
+                    .try_get::<bool, _>("enabled")
+                    .map_err(|e| unavailable(&e))?,
+                active: row
+                    .try_get::<bool, _>("active")
+                    .map_err(|e| unavailable(&e))?,
+                precedence: u32::try_from(precedence).unwrap_or(u32::MAX),
+                content_hash: row.try_get("content_hash").map_err(|e| unavailable(&e))?,
+                byte_count: u64::try_from(byte_count).unwrap_or(0),
+                unknown_keys: parse_json(&unknown, "configuration unknown keys")?,
+            });
+        }
+
+        let diagnostic_rows = sqlx::query(
+            "SELECT severity, relative_path, message
+             FROM configuration_diagnostic
+             WHERE project_id = ? AND manifest_hash = ?
+             ORDER BY position",
+        )
+        .bind(project_id.as_str())
+        .bind(manifest_hash)
+        .fetch_all(self.database.pool())
+        .await
+        .map_err(|error| unavailable(&error))?;
+        let mut diagnostics = Vec::with_capacity(diagnostic_rows.len());
+        for row in diagnostic_rows {
+            let severity: String = row.try_get("severity").map_err(|e| unavailable(&e))?;
+            diagnostics.push(ConfigurationDiagnostic {
+                severity: parse_scalar(&severity).unwrap_or(DiagnosticSeverity::Warning),
+                relative_path: row.try_get("relative_path").map_err(|e| unavailable(&e))?,
+                message: row.try_get("message").map_err(|e| unavailable(&e))?,
+            });
+        }
+
+        Ok(EffectiveConfiguration {
+            schema_version: u32::try_from(
+                manifest
+                    .try_get::<i64, _>("schema_version")
+                    .map_err(|e| unavailable(&e))?,
+            )
+            .unwrap_or(0),
+            sources,
+            diagnostics,
+            manifest_hash: manifest_hash.to_owned(),
+            resolved_at: Timestamp::new(
+                manifest
+                    .try_get::<String, _>("resolved_at")
+                    .map_err(|e| unavailable(&e))?,
+            ),
+        })
+    }
+}
+
+#[async_trait]
+impl ConfigurationRepository for SqliteConfigurationRepository {
+    async fn save(
+        &self,
+        project_id: &ProjectId,
+        configuration: &EffectiveConfiguration,
+    ) -> Result<(), RepositoryError> {
+        let mut transaction = self
+            .database
+            .pool()
+            .begin()
+            .await
+            .map_err(|error| unavailable(&error))?;
+
+        sqlx::query(
+            "INSERT INTO configuration_manifest
+                (project_id, manifest_hash, resolved_at, schema_version)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(project_id, manifest_hash) DO UPDATE SET
+                resolved_at = excluded.resolved_at,
+                schema_version = excluded.schema_version",
+        )
+        .bind(project_id.as_str())
+        .bind(&configuration.manifest_hash)
+        .bind(configuration.resolved_at.as_str())
+        .bind(i64::from(configuration.schema_version))
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| unavailable(&error))?;
+
+        sqlx::query("DELETE FROM configuration_source WHERE project_id = ? AND manifest_hash = ?")
+            .bind(project_id.as_str())
+            .bind(&configuration.manifest_hash)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| unavailable(&error))?;
+        sqlx::query(
+            "DELETE FROM configuration_diagnostic WHERE project_id = ? AND manifest_hash = ?",
+        )
+        .bind(project_id.as_str())
+        .bind(&configuration.manifest_hash)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| unavailable(&error))?;
+
+        for (position, source) in configuration.sources.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO configuration_source (
+                     project_id, manifest_hash, position, source_id, relative_path, kind,
+                     declared_id, declared_name, scopes, requested_capabilities, priority,
+                     selection_order, enabled, active, precedence, content_hash, byte_count,
+                     unknown_keys
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(project_id.as_str())
+            .bind(&configuration.manifest_hash)
+            .bind(i64::try_from(position).unwrap_or(i64::MAX))
+            .bind(&source.source_id)
+            .bind(&source.relative_path)
+            .bind(scalar(&source.kind))
+            .bind(source.declared_id.as_deref())
+            .bind(source.declared_name.as_deref())
+            .bind(to_json(&source.scopes, "configuration scopes")?)
+            .bind(to_json(
+                &source.requested_capabilities,
+                "configuration requested capabilities",
+            )?)
+            .bind(source.priority)
+            .bind(source.selection_order.map(i64::from))
+            .bind(source.enabled)
+            .bind(source.active)
+            .bind(i64::from(source.precedence))
+            .bind(&source.content_hash)
+            .bind(i64::try_from(source.byte_count).unwrap_or(i64::MAX))
+            .bind(to_json(&source.unknown_keys, "configuration unknown keys")?)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| unavailable(&error))?;
+        }
+
+        for (position, diagnostic) in configuration.diagnostics.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO configuration_diagnostic (
+                     project_id, manifest_hash, position, severity, relative_path, message
+                 ) VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(project_id.as_str())
+            .bind(&configuration.manifest_hash)
+            .bind(i64::try_from(position).unwrap_or(i64::MAX))
+            .bind(scalar(&diagnostic.severity))
+            .bind(&diagnostic.relative_path)
+            .bind(&diagnostic.message)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| unavailable(&error))?;
+        }
+
+        transaction
+            .commit()
+            .await
+            .map_err(|error| unavailable(&error))
+    }
+
+    async fn get(
+        &self,
+        project_id: &ProjectId,
+        manifest_hash: &str,
+    ) -> Result<EffectiveConfiguration, RepositoryError> {
+        self.read(project_id, manifest_hash).await
+    }
+
+    async fn latest(
+        &self,
+        project_id: &ProjectId,
+    ) -> Result<Option<EffectiveConfiguration>, RepositoryError> {
+        let hash = sqlx::query_scalar::<_, String>(
+            "SELECT manifest_hash FROM configuration_manifest
+             WHERE project_id = ?
+             ORDER BY resolved_at DESC, manifest_hash DESC
+             LIMIT 1",
+        )
+        .bind(project_id.as_str())
+        .fetch_optional(self.database.pool())
+        .await
+        .map_err(|error| unavailable(&error))?;
+
+        match hash {
+            Some(hash) => self.read(project_id, &hash).await.map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
+fn to_json<T: serde::Serialize>(value: &T, label: &str) -> Result<String, RepositoryError> {
+    serde_json::to_string(value).map_err(|error| {
+        RepositoryError::Unavailable(format!("could not serialize {label}: {error}"))
+    })
+}
+
+fn parse_json<T: serde::de::DeserializeOwned>(
+    value: &str,
+    label: &str,
+) -> Result<T, RepositoryError> {
+    serde_json::from_str(value)
+        .map_err(|error| RepositoryError::Unavailable(format!("could not read {label}: {error}")))
+}
+
 fn task_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<TaskRecord, RepositoryError> {
     let state: String = row.try_get("state").map_err(|e| unavailable(&e))?;
     let last_sequence: i64 = row.try_get("last_sequence").map_err(|e| unavailable(&e))?;
@@ -300,6 +591,9 @@ fn task_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<TaskRecord, Repository
             .map_err(|e| unavailable(&e))?
             .map(ProjectId::new),
         goal_summary: row.try_get("goal_summary").map_err(|e| unavailable(&e))?,
+        configuration_manifest_hash: row
+            .try_get("configuration_manifest_hash")
+            .map_err(|e| unavailable(&e))?,
         // An unrecognized state from a newer build is read as interrupted
         // rather than failing the load: the task needs a human decision, which
         // is exactly what `interrupted` means.
@@ -323,14 +617,16 @@ fn task_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<TaskRecord, Repository
 impl TaskRepository for SqliteTaskRepository {
     async fn create(&self, record: &TaskRecord) -> Result<(), RepositoryError> {
         sqlx::query(
-            "INSERT INTO task (task_id, conversation_id, project_id, goal_summary, state,
-                               last_sequence, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO task (task_id, conversation_id, project_id, goal_summary,
+                               configuration_manifest_hash, state, last_sequence,
+                               created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(record.task_id.as_str())
         .bind(record.conversation_id.as_ref().map(ConversationId::as_str))
         .bind(record.project_id.as_ref().map(ProjectId::as_str))
         .bind(&record.goal_summary)
+        .bind(record.configuration_manifest_hash.as_deref())
         .bind(scalar(&record.state))
         .bind(i64::try_from(record.last_sequence).unwrap_or(i64::MAX))
         .bind(record.created_at.as_str())
@@ -341,9 +637,101 @@ impl TaskRepository for SqliteTaskRepository {
         .map(|_| ())
     }
 
+    async fn create_with_initial_events(
+        &self,
+        record: &TaskRecord,
+        events: &[EventEnvelope],
+    ) -> Result<(), RepositoryError> {
+        if events.is_empty()
+            || events.iter().enumerate().any(|(index, event)| {
+                event.task_id != record.task_id
+                    || event.conversation_id != record.conversation_id
+                    || event.sequence != u64::try_from(index + 1).unwrap_or(u64::MAX)
+            })
+            || !matches!(
+                events.first().map(|event| (&event.kind, &event.payload)),
+                Some((
+                    TaskEventKind::TaskCreated,
+                    tramontana_core::contracts::EventPayload::TaskCreated {
+                        goal_summary,
+                        conversation_id,
+                    }
+                )) if goal_summary == &record.goal_summary
+                    && conversation_id == &record.conversation_id
+            )
+        {
+            return Err(RepositoryError::Unavailable(
+                "initial task events must be consecutive from sequence 1 for the new task"
+                    .to_owned(),
+            ));
+        }
+        let last_event = events.last().ok_or_else(|| {
+            RepositoryError::Unavailable("initial task event batch is empty".to_owned())
+        })?;
+
+        let mut transaction = self
+            .database
+            .pool()
+            .begin()
+            .await
+            .map_err(|error| unavailable(&error))?;
+
+        sqlx::query(
+            "INSERT INTO task (task_id, conversation_id, project_id, goal_summary, state,
+                               last_sequence, created_at, updated_at, configuration_manifest_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(record.task_id.as_str())
+        .bind(record.conversation_id.as_ref().map(ConversationId::as_str))
+        .bind(record.project_id.as_ref().map(ProjectId::as_str))
+        .bind(&record.goal_summary)
+        .bind(scalar(&record.state))
+        .bind(i64::try_from(events.len()).unwrap_or(i64::MAX))
+        .bind(record.created_at.as_str())
+        .bind(last_event.occurred_at.as_str())
+        .bind(record.configuration_manifest_hash.as_deref())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| conflict_or_unavailable(&error, "task", record.task_id.to_string()))?;
+
+        for event in events {
+            let payload = serde_json::to_string(&event.payload).map_err(|error| {
+                RepositoryError::Unavailable(format!("could not serialize initial event: {error}"))
+            })?;
+            sqlx::query(
+                "INSERT INTO task_event (
+                     task_id, sequence, event_id, conversation_id, occurred_at,
+                     kind, visibility, correlation_id, causation_id, schema_version, payload
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(event.task_id.as_str())
+            .bind(i64::try_from(event.sequence).unwrap_or(i64::MAX))
+            .bind(event.event_id.as_str())
+            .bind(event.conversation_id.as_ref().map(ConversationId::as_str))
+            .bind(event.occurred_at.as_str())
+            .bind(scalar(&event.kind))
+            .bind(scalar(&event.visibility))
+            .bind(event.correlation_id.as_str())
+            .bind(event.causation_id.as_deref())
+            .bind(i64::from(event.schema_version))
+            .bind(payload)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| {
+                conflict_or_unavailable(&error, "event", event.event_id.to_string())
+            })?;
+        }
+
+        transaction
+            .commit()
+            .await
+            .map_err(|error| unavailable(&error))
+    }
+
     async fn get(&self, task_id: &TaskId) -> Result<TaskRecord, RepositoryError> {
         let row = sqlx::query(
-            "SELECT task_id, conversation_id, project_id, goal_summary, state,
+            "SELECT task_id, conversation_id, project_id, goal_summary,
+                    configuration_manifest_hash, state,
                     last_sequence, created_at, updated_at
              FROM task WHERE task_id = ?",
         )
@@ -362,7 +750,8 @@ impl TaskRepository for SqliteTaskRepository {
         let rows = match conversation_id {
             Some(id) => {
                 sqlx::query(
-                    "SELECT task_id, conversation_id, project_id, goal_summary, state,
+                    "SELECT task_id, conversation_id, project_id, goal_summary,
+                            configuration_manifest_hash, state,
                             last_sequence, created_at, updated_at
                      FROM task WHERE conversation_id = ?
                      ORDER BY created_at DESC, task_id",
@@ -373,7 +762,8 @@ impl TaskRepository for SqliteTaskRepository {
             }
             None => {
                 sqlx::query(
-                    "SELECT task_id, conversation_id, project_id, goal_summary, state,
+                    "SELECT task_id, conversation_id, project_id, goal_summary,
+                            configuration_manifest_hash, state,
                             last_sequence, created_at, updated_at
                      FROM task ORDER BY created_at DESC, task_id",
                 )
@@ -419,7 +809,14 @@ impl TaskRepository for SqliteTaskRepository {
             "SELECT t.task_id AS task_id,
                     t.state AS cached_state,
                     t.last_sequence AS cached_sequence,
-                    COALESCE(MAX(e.sequence), 0) AS actual_sequence
+                    t.updated_at AS cached_updated_at,
+                    COALESCE(MAX(e.sequence), 0) AS actual_sequence,
+                    COALESCE(
+                        (SELECT latest.occurred_at FROM task_event latest
+                         WHERE latest.task_id = t.task_id
+                         ORDER BY latest.sequence DESC LIMIT 1),
+                        t.created_at
+                    ) AS actual_updated_at
              FROM task t
              LEFT JOIN task_event e ON e.task_id = t.task_id
              GROUP BY t.task_id",
@@ -438,22 +835,34 @@ impl TaskRepository for SqliteTaskRepository {
                 .try_get("actual_sequence")
                 .map_err(|e| unavailable(&e))?;
             let cached_state: String = row.try_get("cached_state").map_err(|e| unavailable(&e))?;
+            let cached_updated_at: String = row
+                .try_get("cached_updated_at")
+                .map_err(|e| unavailable(&e))?;
+            let actual_updated_at: String = row
+                .try_get("actual_updated_at")
+                .map_err(|e| unavailable(&e))?;
 
             let actual_state = self.state_from_events(&task_id).await?;
             let actual_name =
                 actual_state.map_or_else(|| cached_state.clone(), |state| scalar(&state));
 
-            if cached_sequence == actual_sequence && cached_state == actual_name {
+            if cached_sequence == actual_sequence
+                && cached_state == actual_name
+                && cached_updated_at == actual_updated_at
+            {
                 continue;
             }
 
-            sqlx::query("UPDATE task SET state = ?, last_sequence = ? WHERE task_id = ?")
-                .bind(&actual_name)
-                .bind(actual_sequence)
-                .bind(&task_id)
-                .execute(self.database.pool())
-                .await
-                .map_err(|error| unavailable(&error))?;
+            sqlx::query(
+                "UPDATE task SET state = ?, last_sequence = ?, updated_at = ? WHERE task_id = ?",
+            )
+            .bind(&actual_name)
+            .bind(actual_sequence)
+            .bind(actual_updated_at)
+            .bind(&task_id)
+            .execute(self.database.pool())
+            .await
+            .map_err(|error| unavailable(&error))?;
             corrected += 1;
         }
 

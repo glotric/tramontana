@@ -15,12 +15,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tramontana_core::contracts::{EventPayload, TaskEventKind, TaskId, TaskState, TaskUpdate};
+use tramontana_core::config::{ConfigurationSelection, RawSource};
+use tramontana_core::contracts::{
+    ConfigurationKind, EventPayload, TaskEventKind, TaskId, TaskState, TaskUpdate,
+};
 use tramontana_core::ports::EventStore;
 use tramontana_core::services::{Providers, Repositories, StartTaskRequest, TaskService};
 use tramontana_core::testing::{
-    FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryConversationRepository,
-    InMemoryEventStore, InMemoryProjectRepository, InMemoryTaskRepository, SequentialIdSource,
+    FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryConfigurationRepository,
+    InMemoryConversationRepository, InMemoryEventStore, InMemoryProjectRepository,
+    InMemoryTaskRepository, SequentialIdSource,
 };
 
 /// Assemble a service over an event store the test can also inspect.
@@ -33,6 +37,7 @@ fn service_with_store() -> (Arc<TaskService>, Arc<InMemoryEventStore>) {
             conversations: Arc::new(InMemoryConversationRepository::new()),
             tasks: Arc::new(InMemoryTaskRepository::with_events(Arc::clone(&events))),
             events,
+            configuration: Arc::new(InMemoryConfigurationRepository::new()),
         },
         Providers {
             model: Arc::new(FakeModelProvider::streaming(["Hello", ", ", "world"])),
@@ -64,6 +69,57 @@ async fn await_terminal(service: &TaskService, task_id: &TaskId) -> TaskState {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     panic!("task {task_id} never reached a terminal state");
+}
+
+#[tokio::test]
+async fn a_project_task_captures_the_latest_configuration_manifest() {
+    let service = service();
+    let project = service
+        .create_project("Demo", vec!["/projects/demo".to_owned()])
+        .await
+        .unwrap();
+    let configuration = service
+        .resolve_configuration(
+            &project.project_id,
+            vec![RawSource {
+                relative_path: "AGENTS.md".to_owned(),
+                kind: ConfigurationKind::RootAgents,
+                content: b"# Project instructions".to_vec(),
+            }],
+            &ConfigurationSelection::default(),
+        )
+        .await
+        .unwrap();
+    let conversation = service
+        .create_conversation(Some(project.project_id.clone()), "Configured")
+        .await
+        .unwrap();
+    let task_id = service
+        .start_task(StartTaskRequest {
+            conversation_id: Some(conversation.conversation_id),
+            goal: "use the project configuration".to_owned(),
+        })
+        .await
+        .unwrap();
+
+    let task = service
+        .list_tasks(None)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|record| record.task_id == task_id)
+        .unwrap();
+    assert_eq!(
+        task.configuration_manifest_hash.as_deref(),
+        Some(configuration.manifest_hash.as_str())
+    );
+
+    let (events, _) = service.subscribe_task_events(&task_id, 0).await.unwrap();
+    assert!(matches!(
+        &events[1].payload,
+        EventPayload::ConfigurationResolved { configuration: stored }
+            if stored.manifest_hash == configuration.manifest_hash
+    ));
 }
 
 #[tokio::test]

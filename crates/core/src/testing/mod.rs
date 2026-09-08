@@ -25,7 +25,8 @@ pub use event_store::InMemoryEventStore;
 pub use ids::SequentialIdSource;
 pub use model::{FakeModelProvider, FakeModelScript};
 pub use repositories::{
-    InMemoryConversationRepository, InMemoryProjectRepository, InMemoryTaskRepository,
+    InMemoryConfigurationRepository, InMemoryConversationRepository, InMemoryProjectRepository,
+    InMemoryTaskRepository,
 };
 pub use tool::{FAKE_TOOL_ID, FakeToolProvider};
 pub use worker::{FAKE_AGENT_ID, FakeWorker};

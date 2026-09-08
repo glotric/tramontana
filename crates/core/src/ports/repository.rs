@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 
 use crate::contracts::{
-    ConversationId, ConversationRecord, ProjectId, ProjectRecord, TaskId, TaskRecord, TaskState,
-    Timestamp,
+    ConversationId, ConversationRecord, EffectiveConfiguration, EventEnvelope, ProjectId,
+    ProjectRecord, TaskId, TaskRecord, TaskState, Timestamp,
 };
 
 /// Why a repository call failed.
@@ -15,6 +15,14 @@ pub enum RepositoryError {
         /// What kind of record was addressed.
         kind: &'static str,
         /// The identifier that matched nothing.
+        id: String,
+    },
+    /// A record or optimistic write conflicts with durable state.
+    #[error("{kind} {id} conflicts with an existing record")]
+    Conflict {
+        /// What kind of record conflicted.
+        kind: &'static str,
+        /// The identifier that already exists.
         id: String,
     },
     /// Durable storage failed.
@@ -109,6 +117,22 @@ pub trait TaskRepository: Send + Sync {
     /// [`RepositoryError::Unavailable`] when storage failed.
     async fn create(&self, record: &TaskRecord) -> Result<(), RepositoryError>;
 
+    /// Create a task and its non-empty initial event batch atomically.
+    ///
+    /// A task row without `taskCreated` has no canonical history. Concrete
+    /// durable stores must commit both records in one transaction so process
+    /// death cannot leave that orphan state behind.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Conflict`] when either identity already exists, and
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn create_with_initial_events(
+        &self,
+        record: &TaskRecord,
+        events: &[EventEnvelope],
+    ) -> Result<(), RepositoryError>;
+
     /// Read one task.
     ///
     /// # Errors
@@ -151,4 +175,32 @@ pub trait TaskRepository: Send + Sync {
     ///
     /// [`RepositoryError::Unavailable`] when storage failed.
     async fn rebuild_from_events(&self) -> Result<usize, RepositoryError>;
+}
+
+/// Secret-free effective-configuration manifests.
+///
+/// Markdown bodies stay in the project-authored plane. This repository stores
+/// only the hashes and metadata needed to explain which configuration a task
+/// used after the files change.
+#[async_trait]
+pub trait ConfigurationRepository: Send + Sync {
+    /// Save or refresh a resolved manifest for a project.
+    async fn save(
+        &self,
+        project_id: &ProjectId,
+        configuration: &EffectiveConfiguration,
+    ) -> Result<(), RepositoryError>;
+
+    /// Read a specific manifest by hash.
+    async fn get(
+        &self,
+        project_id: &ProjectId,
+        manifest_hash: &str,
+    ) -> Result<EffectiveConfiguration, RepositoryError>;
+
+    /// Read the most recently resolved manifest, if this project has one.
+    async fn latest(
+        &self,
+        project_id: &ProjectId,
+    ) -> Result<Option<EffectiveConfiguration>, RepositoryError>;
 }

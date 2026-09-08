@@ -108,6 +108,9 @@ pub struct TaskRecord {
     pub project_id: Option<ProjectId>,
     /// Secret-free summary of what was asked for.
     pub goal_summary: String,
+    /// Effective-configuration manifest captured before this task started.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub configuration_manifest_hash: Option<String>,
     /// Cached state, projected from the events.
     pub state: TaskState,
     /// Highest durable sequence written.
@@ -134,11 +137,19 @@ impl TaskRecord {
             conversation_id,
             project_id,
             goal_summary: goal_summary.into(),
+            configuration_manifest_hash: None,
             state: TaskState::Queued,
             last_sequence: 0,
             created_at: created_at.clone(),
             updated_at: created_at,
         }
+    }
+
+    /// Attach the secret-free effective-configuration manifest used at start.
+    #[must_use]
+    pub fn with_configuration_manifest(mut self, manifest_hash: impl Into<String>) -> Self {
+        self.configuration_manifest_hash = Some(manifest_hash.into());
+        self
     }
 }
 
@@ -175,6 +186,7 @@ mod tests {
         assert_eq!(record.state, TaskState::Queued);
         assert_eq!(record.last_sequence, 0);
         assert_eq!(record.created_at, record.updated_at);
+        assert!(record.configuration_manifest_hash.is_none());
     }
 
     #[test]

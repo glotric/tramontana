@@ -11,8 +11,8 @@ use tramontana_core::ports::EventStore;
 use tramontana_core::services::{Providers, Repositories, TaskService};
 use tramontana_core::testing::{FakeModelProvider, FakeToolProvider, FakeWorker};
 use tramontana_persistence::{
-    Database, SqliteConversationRepository, SqliteEventStore, SqliteProjectRepository,
-    SqliteTaskRepository,
+    Database, SqliteConfigurationRepository, SqliteConversationRepository, SqliteEventStore,
+    SqliteProjectRepository, SqliteTaskRepository,
 };
 use tramontana_platform::{SystemClock, UuidIdSource};
 
@@ -49,8 +49,9 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
         Repositories {
             projects: Arc::new(SqliteProjectRepository::new(database.clone())),
             conversations: Arc::new(SqliteConversationRepository::new(database.clone())),
-            tasks: Arc::new(SqliteTaskRepository::new(database)),
+            tasks: Arc::new(SqliteTaskRepository::new(database.clone())),
             events,
+            configuration: Arc::new(SqliteConfigurationRepository::new(database)),
         },
         Providers {
             // M4 onward replaces these with real adapters behind the same

@@ -157,6 +157,11 @@
           "const": "workflow",
           "description": "A file under `.tramontana/workflows/`.",
           "type": "string"
+        },
+        {
+          "const": "unsupported",
+          "description": "A source kind written by a newer build.",
+          "type": "string"
         }
       ]
     },
@@ -676,6 +681,24 @@
             "previous",
             "current",
             "reasonCode"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Effective configuration was resolved before execution began.",
+          "properties": {
+            "configuration": {
+              "$ref": "#/$defs/EffectiveConfiguration",
+              "description": "Secret-free manifest metadata. Markdown bodies are not copied."
+            },
+            "kind": {
+              "const": "configurationResolved",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "configuration"
           ],
           "type": "object"
         },
@@ -1598,6 +1621,10 @@
     "TaskRecord": {
       "description": "A task row.\n\n`state` and `last_sequence` are a cache of the event stream, not a second\nsource of truth. After an unclean stop they are rebuilt from the events.",
       "properties": {
+        "configurationManifestHash": {
+          "description": "Effective-configuration manifest captured before this task started.",
+          "type": "string"
+        },
         "conversationId": {
           "anyOf": [
             {

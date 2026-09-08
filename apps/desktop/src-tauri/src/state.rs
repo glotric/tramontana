@@ -5,8 +5,9 @@ use std::sync::Arc;
 use tramontana_core::ports::EventStore;
 use tramontana_core::services::{Providers, Repositories, TaskService};
 use tramontana_core::testing::{
-    FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryConversationRepository,
-    InMemoryEventStore, InMemoryProjectRepository, InMemoryTaskRepository, SequentialIdSource,
+    FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryConfigurationRepository,
+    InMemoryConversationRepository, InMemoryEventStore, InMemoryProjectRepository,
+    InMemoryTaskRepository, SequentialIdSource,
 };
 
 /// What the Tauri layer manages.
@@ -34,6 +35,7 @@ impl AppState {
                 conversations: Arc::new(InMemoryConversationRepository::new()),
                 tasks: Arc::new(InMemoryTaskRepository::with_events(Arc::clone(&store))),
                 events: store,
+                configuration: Arc::new(InMemoryConfigurationRepository::new()),
             },
             Providers {
                 model: Arc::new(FakeModelProvider::streaming_paced(

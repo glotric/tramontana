@@ -36,6 +36,9 @@ pub enum ConfigurationKind {
     AgentProfile,
     /// A file under `.tramontana/workflows/`.
     Workflow,
+    /// A source kind written by a newer build.
+    #[serde(other)]
+    Unsupported,
 }
 
 impl ConfigurationKind {
@@ -53,6 +56,7 @@ impl ConfigurationKind {
             Self::ProjectOverview => 6,
             Self::Claude => 7,
             Self::Skill | Self::AgentProfile | Self::Workflow => 8,
+            Self::Unsupported => u32::MAX,
         }
     }
 }
@@ -287,6 +291,13 @@ mod tests {
         assert!(
             ConfigurationKind::Claude.precedence() > ConfigurationKind::RootAgents.precedence()
         );
+    }
+
+    #[test]
+    fn a_newer_source_kind_is_read_as_unsupported() {
+        let kind: ConfigurationKind = serde_json::from_str("\"futureSource\"").unwrap();
+        assert_eq!(kind, ConfigurationKind::Unsupported);
+        assert_eq!(kind.precedence(), u32::MAX);
     }
 
     #[test]

@@ -4,14 +4,15 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
+use crate::config::{ConfigurationSelection, RawSource, resolve_with_selection};
 use crate::contracts::{
-    ConversationId, ConversationRecord, CorrelationId, ErrorCode, ErrorEnvelope, EventDraft,
-    EventEnvelope, EventPayload, ProjectId, ProjectRecord, SCHEMA_VERSION, TaskEventKind, TaskId,
-    TaskRecord, TaskSnapshot, TaskUpdate,
+    ConversationId, ConversationRecord, CorrelationId, EffectiveConfiguration, ErrorCode,
+    ErrorEnvelope, EventDraft, EventEnvelope, EventId, EventPayload, ProjectId, ProjectRecord,
+    SCHEMA_VERSION, TaskEventKind, TaskId, TaskRecord, TaskSnapshot, TaskUpdate,
 };
 use crate::ports::{
-    AgentProvider, Clock, ConversationRepository, EventStore, IdSource, ModelProvider,
-    ProjectRepository, RepositoryError, TaskRepository, ToolProvider,
+    AgentProvider, Clock, ConfigurationRepository, ConversationRepository, EventStore, IdSource,
+    ModelProvider, ProjectRepository, RepositoryError, TaskRepository, ToolProvider,
 };
 use crate::services::journal::{JournalPorts, TaskJournal};
 use crate::services::projection::TaskProjectionWriter;
@@ -59,6 +60,8 @@ pub struct Repositories {
     pub tasks: Arc<dyn TaskRepository>,
     /// The durable event journal.
     pub events: Arc<dyn EventStore>,
+    /// Secret-free effective-configuration manifests.
+    pub configuration: Arc<dyn ConfigurationRepository>,
 }
 
 impl std::fmt::Debug for Repositories {
@@ -197,6 +200,40 @@ impl TaskService {
             .map_err(|error| self.repository_error(&error))
     }
 
+    /// Resolve and persist the project-authored configuration inventory.
+    ///
+    /// Filesystem discovery is supplied by a platform adapter as bounded raw
+    /// sources. Precedence, validation, task selection, and persistence stay
+    /// in the application service so CLI and desktop cannot disagree.
+    pub async fn resolve_configuration(
+        &self,
+        project_id: &ProjectId,
+        sources: Vec<RawSource>,
+        selection: &ConfigurationSelection,
+    ) -> Result<EffectiveConfiguration, ErrorEnvelope> {
+        self.get_project(project_id).await?;
+        let configuration = resolve_with_selection(sources, selection, self.clock.now());
+        self.repositories
+            .configuration
+            .save(project_id, &configuration)
+            .await
+            .map_err(|error| self.repository_error(&error))?;
+        Ok(configuration)
+    }
+
+    /// Read the most recently resolved effective configuration for a project.
+    pub async fn get_effective_configuration(
+        &self,
+        project_id: &ProjectId,
+    ) -> Result<Option<EffectiveConfiguration>, ErrorEnvelope> {
+        self.get_project(project_id).await?;
+        self.repositories
+            .configuration
+            .latest(project_id)
+            .await
+            .map_err(|error| self.repository_error(&error))
+    }
+
     /// Create a conversation, optionally inside a project.
     ///
     /// # Errors
@@ -297,15 +334,65 @@ impl TaskService {
         let cancel = CancellationToken::new();
         let (updates, _) = broadcast::channel(UPDATE_BUFFER);
 
-        self.repositories
-            .tasks
-            .create(&TaskRecord::new(
+        let configuration = match &project_id {
+            Some(project_id) => self
+                .repositories
+                .configuration
+                .latest(project_id)
+                .await
+                .map_err(|error| self.repository_error(&error))?,
+            None => None,
+        };
+
+        let created_at = self.clock.now();
+        let mut record = TaskRecord::new(
+            task_id.clone(),
+            request.conversation_id.clone(),
+            project_id,
+            request.goal.clone(),
+            created_at,
+        );
+        if let Some(configuration) = &configuration {
+            record = record.with_configuration_manifest(&configuration.manifest_hash);
+        }
+
+        let mut initial_events = vec![
+            EventDraft::user(
+                TaskEventKind::TaskCreated,
+                EventPayload::TaskCreated {
+                    goal_summary: request.goal.clone(),
+                    conversation_id: request.conversation_id.clone(),
+                },
+            )
+            .into_envelope(
+                EventId::new(self.ids.next("event")),
                 task_id.clone(),
                 request.conversation_id.clone(),
-                project_id,
-                request.goal.clone(),
+                1,
                 self.clock.now(),
-            ))
+                correlation_id.clone(),
+            ),
+        ];
+        if let Some(configuration) = configuration {
+            initial_events.push(
+                EventDraft::user(
+                    TaskEventKind::ConfigurationResolved,
+                    EventPayload::ConfigurationResolved { configuration },
+                )
+                .into_envelope(
+                    EventId::new(self.ids.next("event")),
+                    task_id.clone(),
+                    request.conversation_id.clone(),
+                    2,
+                    self.clock.now(),
+                    correlation_id.clone(),
+                ),
+            );
+        }
+
+        self.repositories
+            .tasks
+            .create_with_initial_events(&record, &initial_events)
             .await
             .map_err(|error| self.repository_error(&error))?;
 
@@ -327,7 +414,7 @@ impl TaskService {
                 ids: Arc::clone(&self.ids),
             },
             updates,
-            0,
+            u64::try_from(initial_events.len()).unwrap_or(u64::MAX),
         );
 
         let projection = TaskProjectionWriter {
@@ -335,18 +422,12 @@ impl TaskService {
             clock: Arc::clone(&self.clock),
         };
 
-        // Written before returning, so a caller that subscribes immediately
-        // afterwards always replays a non-empty stream.
-        let created = journal
-            .append(EventDraft::user(
-                TaskEventKind::TaskCreated,
-                EventPayload::TaskCreated {
-                    goal_summary: request.goal.clone(),
-                    conversation_id: request.conversation_id.clone(),
-                },
-            ))
-            .await?;
-        projection.record(&created).await;
+        // The initial batch is already durable. Publish it only after the live
+        // subscription exists; replay remains the source of truth if nobody
+        // is listening yet.
+        for event in &initial_events {
+            journal.publish_persisted(event);
+        }
 
         let driver = TaskDriver::new(journal, self.providers.clone(), projection);
         let goal = request.goal;
@@ -451,6 +532,7 @@ impl TaskService {
     fn repository_error(&self, error: &RepositoryError) -> ErrorEnvelope {
         let code = match error {
             RepositoryError::NotFound { .. } => ErrorCode::NotFound,
+            RepositoryError::Conflict { .. } => ErrorCode::Conflict,
             RepositoryError::Unavailable(_) => ErrorCode::PersistenceError,
         };
         self.error(code, error.to_string())

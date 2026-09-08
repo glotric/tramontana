@@ -221,6 +221,7 @@ fn apply_selection(
             | ConfigurationKind::Claude
             | ConfigurationKind::ProjectOverview
             | ConfigurationKind::Rule => true,
+            ConfigurationKind::Unsupported => false,
         };
         source.active = selected && in_scope;
     }

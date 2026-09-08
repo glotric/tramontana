@@ -106,6 +106,16 @@ impl TaskJournal {
         *sequence = event.sequence;
         drop(sequence);
 
+        self.publish_persisted(&event);
+
+        Ok(event)
+    }
+
+    /// Publish an event which is already durable.
+    ///
+    /// Used for the initial batch because task creation and those events must
+    /// commit in one repository transaction before anything is announced.
+    pub(crate) fn publish_persisted(&self, event: &EventEnvelope) {
         // Redaction already happened upstream; secret events are audit markers
         // and never reach a subscriber (`CORE_CONTRACTS.md` §5).
         if event.is_deliverable_to_ui() {
@@ -116,8 +126,6 @@ impl TaskJournal {
                 event: Box::new(event.clone()),
             });
         }
-
-        Ok(event)
     }
 
     /// Publish an ephemeral frame without persisting it.

@@ -90,7 +90,15 @@ export interface ConfigurationDiagnostic {
  * What kind of instruction file a source is.
  */
 export type ConfigurationKind =
-  "rootAgents" | "scopedAgents" | "claude" | "projectOverview" | "rule" | "skill" | "agentProfile" | "workflow";
+  | "rootAgents"
+  | "scopedAgents"
+  | "claude"
+  | "projectOverview"
+  | "rule"
+  | "skill"
+  | "agentProfile"
+  | "workflow"
+  | "unsupported";
 
 /**
  * One loaded instruction file.
@@ -128,7 +136,16 @@ export interface ConfigurationSource {
   /**
    * What kind of file it is.
    */
-  kind: "rootAgents" | "scopedAgents" | "claude" | "projectOverview" | "rule" | "skill" | "agentProfile" | "workflow";
+  kind:
+    | "rootAgents"
+    | "scopedAgents"
+    | "claude"
+    | "projectOverview"
+    | "rule"
+    | "skill"
+    | "agentProfile"
+    | "workflow"
+    | "unsupported";
   /**
    * Precedence rank; lower wins.
    */
@@ -442,6 +459,10 @@ export interface EventEnvelope {
         reasonCode: string;
       }
     | {
+        configuration: EffectiveConfiguration;
+        kind: "configurationResolved";
+      }
+    | {
         /**
          * Namespaced worker identifier.
          */
@@ -606,6 +627,10 @@ export type EventPayload =
        * Stable, machine-readable reason.
        */
       reasonCode: string;
+    }
+  | {
+      configuration: EffectiveConfiguration;
+      kind: "configurationResolved";
     }
   | {
       /**
@@ -1038,6 +1063,10 @@ export type TaskId = string;
  * source of truth. After an unclean stop they are rebuilt from the events.
  */
 export interface TaskRecord {
+  /**
+   * Effective-configuration manifest captured before this task started.
+   */
+  configurationManifestHash?: string;
   /**
    * Conversation this belongs to, when it has one.
    */

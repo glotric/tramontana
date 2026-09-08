@@ -3,11 +3,12 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use crate::contracts::{
-    ConversationId, ConversationRecord, EventPayload, ProjectId, ProjectRecord, TaskId, TaskRecord,
-    TaskState, Timestamp,
+    ConversationId, ConversationRecord, EffectiveConfiguration, EventPayload, ProjectId,
+    ProjectRecord, TaskId, TaskRecord, TaskState, Timestamp,
 };
 use crate::ports::{
-    ConversationRepository, EventStore, ProjectRepository, RepositoryError, TaskRepository,
+    ConfigurationRepository, ConversationRepository, EventStore, ProjectRepository,
+    RepositoryError, TaskRepository,
 };
 
 /// Lock a map, mapping a poisoned lock to a normalized error.
@@ -166,6 +167,64 @@ impl TaskRepository for InMemoryTaskRepository {
         Ok(())
     }
 
+    async fn create_with_initial_events(
+        &self,
+        record: &TaskRecord,
+        initial_events: &[crate::contracts::EventEnvelope],
+    ) -> Result<(), RepositoryError> {
+        if initial_events.is_empty()
+            || initial_events.iter().enumerate().any(|(index, event)| {
+                event.task_id != record.task_id
+                    || event.conversation_id != record.conversation_id
+                    || event.sequence != u64::try_from(index + 1).unwrap_or(u64::MAX)
+            })
+            || !matches!(
+                initial_events
+                    .first()
+                    .map(|event| (&event.kind, &event.payload)),
+                Some((
+                    crate::contracts::TaskEventKind::TaskCreated,
+                    EventPayload::TaskCreated {
+                        goal_summary,
+                        conversation_id,
+                    }
+                )) if goal_summary == &record.goal_summary
+                    && conversation_id == &record.conversation_id
+            )
+        {
+            return Err(RepositoryError::Unavailable(
+                "initial task events must be consecutive from sequence 1 for the new task"
+                    .to_owned(),
+            ));
+        }
+        if lock(&self.tasks)?
+            .iter()
+            .any(|existing| existing.task_id == record.task_id)
+        {
+            return Err(RepositoryError::Conflict {
+                kind: "task",
+                id: record.task_id.to_string(),
+            });
+        }
+        let Some(event_store) = &self.events else {
+            return Err(RepositoryError::Unavailable(
+                "atomic task creation requires an event store".to_owned(),
+            ));
+        };
+        event_store
+            .append(&record.task_id, 0, initial_events.to_vec())
+            .await
+            .map_err(|error| RepositoryError::Unavailable(error.to_string()))?;
+
+        let mut persisted = record.clone();
+        persisted.last_sequence = u64::try_from(initial_events.len()).unwrap_or(u64::MAX);
+        if let Some(event) = initial_events.last() {
+            persisted.updated_at = event.occurred_at.clone();
+        }
+        lock(&self.tasks)?.push(persisted);
+        Ok(())
+    }
+
     async fn get(&self, task_id: &TaskId) -> Result<TaskRecord, RepositoryError> {
         lock(&self.tasks)?
             .iter()
@@ -216,19 +275,23 @@ impl TaskRepository for InMemoryTaskRepository {
             return Ok(0);
         };
 
-        let ids: Vec<TaskId> = lock(&self.tasks)?
+        let tasks_to_rebuild: Vec<(TaskId, Timestamp)> = lock(&self.tasks)?
             .iter()
-            .map(|record| record.task_id.clone())
+            .map(|record| (record.task_id.clone(), record.created_at.clone()))
             .collect();
 
         let mut corrected = 0;
-        for task_id in ids {
+        for (task_id, created_at) in tasks_to_rebuild {
             let stream = events
                 .replay(&task_id, 0)
                 .await
                 .map_err(|error| RepositoryError::Unavailable(error.to_string()))?;
 
             let actual_sequence = stream.last().map_or(0, |event| event.sequence);
+            let actual_updated_at = stream
+                .last()
+                .map(|event| event.occurred_at.clone())
+                .unwrap_or(created_at);
             let actual_state = stream.iter().rev().find_map(|event| match &event.payload {
                 EventPayload::TaskStateChanged { current, .. } => Some(*current),
                 _ => None,
@@ -239,14 +302,84 @@ impl TaskRepository for InMemoryTaskRepository {
                 continue;
             };
             let state = actual_state.unwrap_or(record.state);
-            if record.last_sequence == actual_sequence && record.state == state {
+            if record.last_sequence == actual_sequence
+                && record.state == state
+                && record.updated_at == actual_updated_at
+            {
                 continue;
             }
             record.last_sequence = actual_sequence;
             record.state = state;
+            record.updated_at = actual_updated_at;
             corrected += 1;
         }
 
         Ok(corrected)
+    }
+}
+
+/// Effective-configuration manifests held in memory.
+#[derive(Debug, Default)]
+pub struct InMemoryConfigurationRepository {
+    manifests: Mutex<Vec<(ProjectId, EffectiveConfiguration)>>,
+}
+
+impl InMemoryConfigurationRepository {
+    /// An empty repository.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl ConfigurationRepository for InMemoryConfigurationRepository {
+    async fn save(
+        &self,
+        project_id: &ProjectId,
+        configuration: &EffectiveConfiguration,
+    ) -> Result<(), RepositoryError> {
+        let mut manifests = lock(&self.manifests)?;
+        if let Some((_, existing)) = manifests.iter_mut().find(|(stored_project, stored)| {
+            stored_project == project_id && stored.manifest_hash == configuration.manifest_hash
+        }) {
+            *existing = configuration.clone();
+        } else {
+            manifests.push((project_id.clone(), configuration.clone()));
+        }
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        project_id: &ProjectId,
+        manifest_hash: &str,
+    ) -> Result<EffectiveConfiguration, RepositoryError> {
+        lock(&self.manifests)?
+            .iter()
+            .find(|(stored_project, stored)| {
+                stored_project == project_id && stored.manifest_hash == manifest_hash
+            })
+            .map(|(_, stored)| stored.clone())
+            .ok_or_else(|| RepositoryError::NotFound {
+                kind: "configuration manifest",
+                id: manifest_hash.to_owned(),
+            })
+    }
+
+    async fn latest(
+        &self,
+        project_id: &ProjectId,
+    ) -> Result<Option<EffectiveConfiguration>, RepositoryError> {
+        Ok(lock(&self.manifests)?
+            .iter()
+            .filter(|(stored_project, _)| stored_project == project_id)
+            .map(|(_, stored)| stored)
+            .max_by(|a, b| {
+                a.resolved_at
+                    .cmp(&b.resolved_at)
+                    .then_with(|| a.manifest_hash.cmp(&b.manifest_hash))
+            })
+            .cloned())
     }
 }

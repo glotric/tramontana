@@ -41,7 +41,7 @@ impl Database {
             // A concurrent writer waits briefly instead of failing instantly.
             .busy_timeout(std::time::Duration::from_secs(5));
 
-        Self::connect(options).await
+        Self::connect(options, 4).await
     }
 
     /// Open a private in-memory database, migrated. For tests.
@@ -54,15 +54,21 @@ impl Database {
             .in_memory(true)
             .shared_cache(true)
             .foreign_keys(true);
-        Self::connect(options).await
+        // Separate `:memory:` SQLite connections do not share a schema
+        // reliably across all supported builds. A single pooled connection is
+        // deterministic and is sufficient for unit tests.
+        Self::connect(options, 1).await
     }
 
-    async fn connect(options: SqliteConnectOptions) -> Result<Self, DatabaseError> {
+    async fn connect(
+        options: SqliteConnectOptions,
+        max_connections: u32,
+    ) -> Result<Self, DatabaseError> {
         let pool = SqlitePoolOptions::new()
             // SQLite serializes writes anyway; a small pool keeps lock
             // contention visible as a busy timeout rather than as queueing
             // spread across many connections.
-            .max_connections(4)
+            .max_connections(max_connections)
             .connect_with(options)
             .await
             .map_err(|error| DatabaseError::Open(error.to_string()))?;
@@ -84,5 +90,50 @@ impl Database {
     /// Close the pool, waiting for in-flight statements to finish.
     pub async fn close(&self) {
         self.pool.close().await;
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests assert on known-good setup; a panic is the failure report"
+)]
+mod tests {
+    use tramontana_core::contracts::{ProjectId, ProjectRecord, Timestamp};
+    use tramontana_core::ports::{ProjectRepository, RepositoryError};
+
+    use super::*;
+    use crate::repositories::SqliteProjectRepository;
+
+    #[tokio::test]
+    async fn a_locked_database_becomes_a_normalized_repository_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let options = SqliteConnectOptions::new()
+            .filename(directory.path().join("locked.sqlite"))
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .busy_timeout(std::time::Duration::from_millis(20));
+        let database = Database::connect(options, 4).await.unwrap();
+        let mut blocker = database.pool().begin().await.unwrap();
+        sqlx::query(
+            "INSERT INTO project (project_id, name, created_at) VALUES ('held', 'Held', 't')",
+        )
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+
+        let repository = SqliteProjectRepository::new(database);
+        let error = repository
+            .create(&ProjectRecord::new(
+                ProjectId::new("blocked"),
+                "Blocked",
+                Vec::new(),
+                Timestamp::new("2026-01-01T00:00:00.000Z"),
+            ))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RepositoryError::Unavailable(_)));
+        blocker.rollback().await.unwrap();
     }
 }

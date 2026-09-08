@@ -35,7 +35,7 @@ sha2 = "0.11.0"
 # `sqlite-bundled` compiles SQLite from source rather than linking whatever the
 # host provides, so all three target platforms get the same engine and version.
 # `macros` is needed only for `migrate!`; compile-time-checked queries are
-# deliberately not used (ADR 0006).
+# deliberately not used (ADR 0004).
 sqlx = { version = "0.9.0", default-features = false, features = [
     "sqlite",
     "sqlite-bundled",

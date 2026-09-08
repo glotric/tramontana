@@ -106,6 +106,12 @@ pub enum EventPayload {
         /// Stable, machine-readable reason.
         reason_code: String,
     },
+    /// Effective configuration was resolved before execution began.
+    #[serde(rename_all = "camelCase")]
+    ConfigurationResolved {
+        /// Secret-free manifest metadata. Markdown bodies are not copied.
+        configuration: super::EffectiveConfiguration,
+    },
     /// A worker was selected for this task.
     #[serde(rename_all = "camelCase")]
     WorkerSelected {
