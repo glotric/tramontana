@@ -24,6 +24,8 @@ Read these before implementing architecture or security-sensitive work:
 
 For a narrow change, read the current milestone plus all documents governing the affected boundary; do not treat this list as permission to skip relevant contracts.
 
+Before implementing or materially changing the desktop UI, read `docs/UI_DESIGN_REFERENCE.md` and inspect `design/UI/Tramontana UI Design Specification/`. The supplied design and frontend template are the preferred visual and interaction direction, but they are a strong suggestion rather than a normative product or architecture contract.
+
 These documents were written before the code existed and some of them are wrong. They are strong defaults, not law. When one contradicts reality, fix it in the same change and note it in the milestone evidence — see `docs/BUILD_ORDER.md` §3. The exceptions are the boundaries in `docs/SECURITY_AND_PERMISSIONS.md` and the rule that shipped capability is described honestly.
 
 ## Architectural boundaries
@@ -62,6 +64,13 @@ If an implementation needs to violate one of these boundaries, stop and propose 
 - Feature-detect model and tool capabilities; do not infer them from provider names.
 - Preserve unknown fields where practical when loading forward-compatible configuration.
 - Use migrations for persisted data. Never silently discard or rewrite user conversations/configuration.
+
+## UI design reference
+
+- Use `design/UI/Tramontana UI Design Specification/` as the starting point for layout, visual hierarchy, branding, component language, and interaction intent.
+- Do not treat generated HTML, inline styles, demo data, or prototype behavior as production architecture. Reimplement the design in the repository's React/Tauri structure and shared component system.
+- Product behavior, security boundaries, accessibility, honest capability disclosure, responsive behavior, and native platform constraints take precedence over the mockup.
+- Preserve the design direction where practical. If implementation evidence supports a meaningful deviation, document the reason in the change; update the design reference only when the user intentionally revises it.
 
 ## Code quality and tests
 
