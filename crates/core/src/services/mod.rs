@@ -10,10 +10,12 @@
 //! state.
 
 mod journal;
+mod permission_manager;
 mod projection;
 mod runtime;
 mod task_service;
 
 pub use journal::{JournalPorts, TaskJournal};
+pub use permission_manager::PermissionManager;
 pub use projection::TaskProjectionWriter;
 pub use task_service::{Providers, Repositories, StartTaskRequest, TaskService};
