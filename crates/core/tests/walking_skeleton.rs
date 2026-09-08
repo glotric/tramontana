@@ -17,22 +17,30 @@ use std::time::Duration;
 
 use tramontana_core::contracts::{EventPayload, TaskEventKind, TaskId, TaskState, TaskUpdate};
 use tramontana_core::ports::EventStore;
-use tramontana_core::services::{StartTaskRequest, TaskService};
+use tramontana_core::services::{Providers, Repositories, StartTaskRequest, TaskService};
 use tramontana_core::testing::{
-    FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryEventStore,
-    SequentialIdSource,
+    FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryConversationRepository,
+    InMemoryEventStore, InMemoryProjectRepository, InMemoryTaskRepository, SequentialIdSource,
 };
 
 /// Assemble a service over an event store the test can also inspect.
 fn service_with_store() -> (Arc<TaskService>, Arc<InMemoryEventStore>) {
     let store = Arc::new(InMemoryEventStore::new());
+    let events = Arc::clone(&store) as Arc<dyn EventStore>;
     let service = TaskService::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Repositories {
+            projects: Arc::new(InMemoryProjectRepository::new()),
+            conversations: Arc::new(InMemoryConversationRepository::new()),
+            tasks: Arc::new(InMemoryTaskRepository::with_events(Arc::clone(&events))),
+            events,
+        },
+        Providers {
+            model: Arc::new(FakeModelProvider::streaming(["Hello", ", ", "world"])),
+            tools: Arc::new(FakeToolProvider::new()),
+            worker: Arc::new(FakeWorker::new()),
+        },
         Arc::new(FakeClock::new()),
         Arc::new(SequentialIdSource::new()),
-        Arc::new(FakeModelProvider::streaming(["Hello", ", ", "world"])),
-        Arc::new(FakeToolProvider::new()),
-        Arc::new(FakeWorker::new()),
     );
     (Arc::new(service), store)
 }
@@ -48,7 +56,7 @@ fn service() -> Arc<TaskService> {
 /// `TESTING_STRATEGY.md` §11 forbids.
 async fn await_terminal(service: &TaskService, task_id: &TaskId) -> TaskState {
     for _ in 0..1_000 {
-        let snapshot = service.get_task(task_id).unwrap();
+        let snapshot = service.get_task(task_id).await.unwrap();
         if snapshot.state.is_terminal() {
             return snapshot.state;
         }
@@ -145,7 +153,7 @@ async fn cancelling_before_the_work_starts_still_converges_to_cancelled() {
         .unwrap();
     // Racing the driver deliberately: the cancel may land before it has moved
     // past Queued. Either way the task must end cancelled, never completed.
-    service.cancel_task(&task_id).unwrap();
+    service.cancel_task(&task_id).await.unwrap();
 
     assert_eq!(
         await_terminal(&service, &task_id).await,
@@ -185,11 +193,11 @@ async fn cancelling_after_completion_does_not_move_a_terminal_task() {
 
     // A late cancel is accepted rather than erroring — the caller could not
     // have known — but it must not append anything or change the outcome.
-    service.cancel_task(&task_id).unwrap();
+    service.cancel_task(&task_id).await.unwrap();
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     assert_eq!(
-        service.get_task(&task_id).unwrap().state,
+        service.get_task(&task_id).await.unwrap().state,
         TaskState::Completed
     );
     assert_eq!(
@@ -313,9 +321,10 @@ async fn a_projectless_task_records_no_conversation() {
 async fn a_task_can_be_attached_to_a_conversation_in_a_project() {
     let (service, store) = service_with_store();
 
-    let project = service.create_project("Demo").unwrap();
+    let project = service.create_project("Demo", Vec::new()).await.unwrap();
     let conversation = service
         .create_conversation(Some(project.project_id.clone()), "First")
+        .await
         .unwrap();
 
     let task_id = service
@@ -343,6 +352,7 @@ async fn unknown_projects_conversations_and_tasks_are_reported_not_invented() {
 
     let error = service
         .create_conversation(Some(ProjectId::new("nope")), "x")
+        .await
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::NotFound);
 
@@ -355,9 +365,9 @@ async fn unknown_projects_conversations_and_tasks_are_reported_not_invented() {
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::NotFound);
 
-    let error = service.get_task(&TaskId::new("nope")).unwrap_err();
+    let error = service.get_task(&TaskId::new("nope")).await.unwrap_err();
     assert_eq!(error.code, ErrorCode::NotFound);
 
-    let error = service.cancel_task(&TaskId::new("nope")).unwrap_err();
+    let error = service.cancel_task(&TaskId::new("nope")).await.unwrap_err();
     assert_eq!(error.code, ErrorCode::NotFound);
 }

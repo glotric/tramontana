@@ -10,10 +10,13 @@
 //! skeleton walk. When real adapters arrive they should move behind a Cargo
 //! feature or into a separate crate so they cannot ship in a release binary.
 
+pub mod contract_suites;
+
 mod clock;
 mod event_store;
 mod ids;
 mod model;
+mod repositories;
 mod tool;
 mod worker;
 
@@ -21,5 +24,8 @@ pub use clock::FakeClock;
 pub use event_store::InMemoryEventStore;
 pub use ids::SequentialIdSource;
 pub use model::{FakeModelProvider, FakeModelScript};
+pub use repositories::{
+    InMemoryConversationRepository, InMemoryProjectRepository, InMemoryTaskRepository,
+};
 pub use tool::{FAKE_TOOL_ID, FakeToolProvider};
 pub use worker::{FAKE_AGENT_ID, FakeWorker};

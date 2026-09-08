@@ -14,15 +14,22 @@
 //!   as unsupported rather than failing the parse;
 //! - secrets are never serialized — only an opaque [`SecretRef`].
 
+mod configuration;
 mod descriptor;
 mod error;
 mod event;
 mod ids;
 mod message;
 mod primitives;
+mod records;
 mod task;
 mod time;
 
+pub(crate) use configuration::hex as configuration_hex;
+pub use configuration::{
+    ConfigurationDiagnostic, ConfigurationKind, ConfigurationSource, DiagnosticSeverity,
+    EffectiveConfiguration,
+};
 pub use descriptor::{
     AgentDescriptor, CheckpointSupport, Health, IntegrationMode, ModelCapability, ModelControl,
     ModelDescriptor, ModelLocation, NetworkControl, ToolControl, ToolDescriptor,
@@ -37,6 +44,7 @@ pub use ids::{
     InvocationId, MessageId, ModelId, ProjectId, ProviderId, TaskId, WorkerSessionId,
 };
 pub use message::{MessagePart, MessageRole, MessageStatus, NormalizedMessage};
+pub use records::{ConversationRecord, ProjectRecord, TaskRecord};
 pub use primitives::{
     DataClass, ExecutionLocation, RiskClass, RoutingMode, SecretRef, SecretStore, SideEffect,
     Visibility,

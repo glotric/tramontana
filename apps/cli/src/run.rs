@@ -6,14 +6,10 @@ use std::time::Duration;
 
 use clap::Args;
 use tramontana_core::contracts::{TaskState, TaskUpdate};
-use tramontana_core::ports::EventStore;
-use tramontana_core::services::{StartTaskRequest, TaskService};
-use tramontana_core::testing::{
-    FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryEventStore,
-    SequentialIdSource,
-};
+use tramontana_core::services::StartTaskRequest;
 
 use crate::render::{event_line, frame_line};
+use crate::wiring;
 
 /// Arguments for `tramontana task`.
 #[derive(Debug, Args)]
@@ -36,6 +32,10 @@ pub(crate) struct TaskArgs {
     /// Pause between model chunks, so streaming is observable.
     #[arg(long, value_name = "MS", default_value_t = 120)]
     chunk_delay_ms: u64,
+
+    /// Database file to use. Defaults to `.tramontana-local/tramontana.sqlite`.
+    #[arg(long, value_name = "PATH")]
+    profile: Option<std::path::PathBuf>,
 }
 
 /// Run one task to a terminal state, streaming its activity.
@@ -55,22 +55,14 @@ pub(crate) fn execute(args: TaskArgs) -> ExitCode {
 }
 
 async fn run(args: TaskArgs) -> ExitCode {
-    // M1 wires the fakes. M4 onward replaces these with real adapters behind
-    // the same ports, and nothing in this function changes shape.
-    let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
-    let service = Arc::new(TaskService::new(
-        Arc::clone(&store),
-        Arc::new(FakeClock::new()),
-        Arc::new(SequentialIdSource::new()),
-        // Paced so the demonstration shows streaming arriving over time and
-        // a cancel interrupting it. Tests use the unpaced fake.
-        Arc::new(FakeModelProvider::streaming_paced(
-            ["Hello", ", ", "world"],
-            args.chunk_delay_ms,
-        )),
-        Arc::new(FakeToolProvider::new()),
-        Arc::new(FakeWorker::new()),
-    ));
+    let profile = args.profile.unwrap_or_else(wiring::default_profile_path);
+    let service = match wiring::open(&profile, args.chunk_delay_ms).await {
+        Ok(service) => service,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     let task_id = match service
         .start_task(StartTaskRequest {
@@ -138,14 +130,19 @@ async fn run(args: TaskArgs) -> ExitCode {
             // Lagging is recoverable: the durable events are in the store, so
             // catch up by replaying rather than reporting a failure.
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                match store.replay(&task_id, highest_rendered).await {
-                    Ok(missed) => {
+                match service
+                    .subscribe_task_events(&task_id, highest_rendered)
+                    .await
+                {
+                    Ok((missed, _)) => {
                         for event in missed {
                             highest_rendered = highest_rendered.max(event.sequence);
                             emit_event(&event, args.json);
                         }
                     }
-                    Err(error) => eprintln!("warning: could not replay after lag: {error}"),
+                    Err(error) => {
+                        eprintln!("warning: could not replay after lag: {}", error.message);
+                    }
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -156,7 +153,7 @@ async fn run(args: TaskArgs) -> ExitCode {
         }
     }
 
-    match service.get_task(&task_id) {
+    match service.get_task(&task_id).await {
         Ok(snapshot) => {
             if !args.json {
                 println!("\nterminal state: {:?}", snapshot.state);

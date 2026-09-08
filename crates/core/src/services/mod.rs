@@ -10,8 +10,10 @@
 //! state.
 
 mod journal;
+mod projection;
 mod runtime;
 mod task_service;
 
 pub use journal::{JournalPorts, TaskJournal};
-pub use task_service::{ConversationRecord, ProjectRecord, StartTaskRequest, TaskService};
+pub use projection::TaskProjectionWriter;
+pub use task_service::{Providers, Repositories, StartTaskRequest, TaskService};

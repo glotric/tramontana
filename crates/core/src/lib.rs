@@ -8,6 +8,7 @@
 //! port, and the application services that drive one task from creation to a
 //! single terminal state (`docs/BUILD_ORDER.md` §8).
 
+pub mod config;
 pub mod contracts;
 pub mod ports;
 pub mod services;

@@ -8,11 +8,12 @@ use crate::contracts::{
     StreamFrame, TaskEventKind, TaskState,
 };
 use crate::ports::{
-    AgentProvider, ModelEvent, ModelProvider, ModelRequest, ToolInvocation, ToolProvider,
+    ModelEvent, ModelProvider, ModelRequest, ToolInvocation, ToolProvider,
     WorkerHost, WorkerOutcome, WorkerRequest,
 };
 use crate::services::journal::TaskJournal;
-use crate::services::task_service::{TaskRegistry, project};
+use crate::services::projection::TaskProjectionWriter;
+use crate::services::task_service::Providers;
 
 /// Drives one task through its state machine.
 ///
@@ -22,26 +23,20 @@ use crate::services::task_service::{TaskRegistry, project};
 /// writes state changes, which is what keeps "exactly one terminal state" true.
 pub(crate) struct TaskDriver {
     journal: TaskJournal,
-    model: Arc<dyn ModelProvider>,
-    tools: Arc<dyn ToolProvider>,
-    worker: Arc<dyn AgentProvider>,
-    tasks: TaskRegistry,
+    providers: Providers,
+    projection: TaskProjectionWriter,
 }
 
 impl TaskDriver {
     pub(crate) fn new(
         journal: TaskJournal,
-        model: Arc<dyn ModelProvider>,
-        tools: Arc<dyn ToolProvider>,
-        worker: Arc<dyn AgentProvider>,
-        tasks: TaskRegistry,
+        providers: Providers,
+        projection: TaskProjectionWriter,
     ) -> Self {
         Self {
             journal,
-            model,
-            tools,
-            worker,
-            tasks,
+            providers,
+            projection,
         }
     }
 
@@ -74,8 +69,8 @@ impl TaskDriver {
             .record(EventDraft::user(
                 TaskEventKind::WorkerSelected,
                 EventPayload::WorkerSelected {
-                    agent_id: self.worker.describe().agent_id,
-                    display_name: self.worker.describe().display_name,
+                    agent_id: self.providers.worker.describe().agent_id,
+                    display_name: self.providers.worker.describe().display_name,
                 },
             ))
             .await
@@ -101,11 +96,16 @@ impl TaskDriver {
         };
         let host = BrokeredHost {
             journal: self.journal.clone(),
-            model: Arc::clone(&self.model),
-            tools: Arc::clone(&self.tools),
+            model: Arc::clone(&self.providers.model),
+            tools: Arc::clone(&self.providers.tools),
         };
 
-        match self.worker.run(request, &host, cancel.clone()).await {
+        match self
+            .providers
+            .worker
+            .run(request, &host, cancel.clone())
+            .await
+        {
             Ok(WorkerOutcome::Completed { summary }) if !cancel.is_cancelled() => {
                 self.finish_completed(state, summary).await;
             }
@@ -146,7 +146,7 @@ impl TaskDriver {
 
     async fn record(&self, draft: EventDraft) -> Result<(), ErrorEnvelope> {
         let event = self.journal.append(draft).await?;
-        project(&self.tasks, &event);
+        self.projection.record(&event).await;
         Ok(())
     }
 

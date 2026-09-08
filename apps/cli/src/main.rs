@@ -8,6 +8,7 @@
 
 mod render;
 mod run;
+mod wiring;
 
 use clap::{Parser, Subcommand};
 
