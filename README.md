@@ -20,9 +20,9 @@ Phase 1 has no enterprise server dependency. The default architecture is persona
 
 ## Status
 
-Milestone M1 is complete. One task now travels the whole length of the system — application service, task state machine, durable event stream, persistence port, IPC boundary, CLI, and React interface — driven by deterministic fakes. It streams, it cancels, and it reaches exactly one terminal state.
+Milestone M2 is complete. Projects, conversations, tasks, ordered events, and secret-free effective-configuration manifests now persist in SQLite and recover on restart. The CLI and desktop shell are peer adapters over the same application services and can deliberately open the same profile; the desktop provides a native project-folder picker, recent work, event replay, and configuration inspection.
 
-There is still no real model, no persistence beyond memory, no permission boundary, and no project on disk. Those arrive in M2 onward.
+The task runtime still uses deterministic fake providers, which the interface labels explicitly. There is no real model or permission boundary yet; those arrive in later milestones. Validation gate V1 passed with one recorded exception: CI has never run, so nothing is verified on Windows or Linux.
 
 ```bash
 corepack enable pnpm     # Node 24.x; Node 25 removed Corepack
@@ -32,6 +32,7 @@ pnpm check:fast          # format, contracts, lint, types, tests (~5s)
 pnpm check               # the above plus the release build
 pnpm dev                 # desktop shell
 pnpm dev:cli task "Say hello"   # the same task from a terminal
+pnpm dev:cli project open /path/to/project
 ```
 
 Prerequisites, root commands, and known gaps: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
