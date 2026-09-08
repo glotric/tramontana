@@ -183,12 +183,14 @@ async fn run(args: TaskArgs) -> ExitCode {
     }
 
     let mut highest_rendered = 0;
+    let mut terminal_rendered = false;
     for event in replayed {
         highest_rendered = highest_rendered.max(event.sequence);
+        terminal_rendered |= event.is_terminal_outcome();
         emit_event(&event, args.json);
     }
 
-    loop {
+    while !terminal_rendered {
         match updates.recv().await {
             Ok(TaskUpdate::Event { event }) => {
                 // Subscription precedes replay, so an event can arrive twice.
@@ -197,15 +199,10 @@ async fn run(args: TaskArgs) -> ExitCode {
                     continue;
                 }
                 highest_rendered = event.sequence;
-                let terminal = matches!(
-                    event.payload,
-                    tramontana_core::contracts::EventPayload::TaskCompleted { .. }
-                        | tramontana_core::contracts::EventPayload::TaskFailed { .. }
-                        | tramontana_core::contracts::EventPayload::TaskCancelled { .. }
-                );
+                let terminal = event.is_terminal_outcome();
                 emit_event(&event, args.json);
                 if terminal {
-                    break;
+                    terminal_rendered = true;
                 }
             }
             Ok(TaskUpdate::Frame { frame }) => {
@@ -223,6 +220,7 @@ async fn run(args: TaskArgs) -> ExitCode {
                     Ok((missed, _)) => {
                         for event in missed {
                             highest_rendered = highest_rendered.max(event.sequence);
+                            terminal_rendered |= event.is_terminal_outcome();
                             emit_event(&event, args.json);
                         }
                     }

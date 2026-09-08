@@ -239,6 +239,21 @@ impl EventEnvelope {
     pub fn is_deliverable_to_ui(&self) -> bool {
         !matches!(self.visibility, Visibility::Secret)
     }
+
+    /// Whether this event records the final outcome of a task.
+    ///
+    /// A terminal `taskStateChanged` is deliberately not enough: the outcome
+    /// event that follows it carries the result, failure, or cancellation
+    /// detail and closes the durable stream.
+    #[must_use]
+    pub fn is_terminal_outcome(&self) -> bool {
+        matches!(
+            &self.payload,
+            EventPayload::TaskCompleted { .. }
+                | EventPayload::TaskFailed { .. }
+                | EventPayload::TaskCancelled { .. }
+        )
+    }
 }
 
 /// One frame of an in-flight model stream.
@@ -380,6 +395,45 @@ mod tests {
         assert_eq!(json["schemaVersion"], SCHEMA_VERSION);
         // A task without a conversation omits the field rather than nulling it.
         assert!(!json.as_object().unwrap().contains_key("conversationId"));
+    }
+
+    #[test]
+    fn only_outcome_events_close_a_task_stream() {
+        let state_change = envelope(
+            EventPayload::TaskStateChanged {
+                previous: TaskState::Running,
+                current: TaskState::Completed,
+                reason_code: "task.completed".into(),
+            },
+            TaskEventKind::TaskStateChanged,
+        );
+        let completed = envelope(
+            EventPayload::TaskCompleted {
+                summary: "done".into(),
+            },
+            TaskEventKind::TaskCompleted,
+        );
+        let failed = envelope(
+            EventPayload::TaskFailed {
+                error: ErrorEnvelope::new(
+                    super::super::ErrorCode::Internal,
+                    "failed",
+                    CorrelationId::new("failure"),
+                ),
+            },
+            TaskEventKind::TaskFailed,
+        );
+        let cancelled = envelope(
+            EventPayload::TaskCancelled {
+                origin: CancellationOrigin::User,
+            },
+            TaskEventKind::TaskCancelled,
+        );
+
+        assert!(!state_change.is_terminal_outcome());
+        assert!(completed.is_terminal_outcome());
+        assert!(failed.is_terminal_outcome());
+        assert!(cancelled.is_terminal_outcome());
     }
 
     #[test]
