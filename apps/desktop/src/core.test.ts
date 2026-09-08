@@ -8,8 +8,20 @@ const Channel = vi.hoisted(() =>
 );
 vi.mock("@tauri-apps/api/core", () => ({ invoke, Channel }));
 
-const { asErrorEnvelope, cancelTask, fetchCoreInfo, getTask, startTask } =
-  await import("./core.js");
+const {
+  asErrorEnvelope,
+  cancelTask,
+  createConversation,
+  fetchCoreInfo,
+  getTask,
+  inspectProject,
+  listConversations,
+  listProjects,
+  listTasks,
+  openProject,
+  replayTaskEvents,
+  startTask,
+} = await import("./core.js");
 
 describe("core IPC client", () => {
   beforeEach(() => {
@@ -19,15 +31,47 @@ describe("core IPC client", () => {
 
   it("invokes the command names the Rust shell registers", async () => {
     // Command names are strings here and identifiers in Rust, so nothing at
-    // compile time links them. `tauri::generate_handler!` registers these four;
+    // compile time links them. `tauri::generate_handler!` registers these;
     // a rename on either side must fail here rather than at runtime as a silent
     // "core unavailable".
     await fetchCoreInfo();
     expect(invoke).toHaveBeenCalledWith("core_info");
 
+    invoke.mockResolvedValue(null);
+    await openProject();
+    expect(invoke).toHaveBeenCalledWith("open_project");
+
+    invoke.mockResolvedValue([]);
+    await listProjects();
+    expect(invoke).toHaveBeenCalledWith("list_projects");
+
+    invoke.mockResolvedValue({});
+    await inspectProject("project-1");
+    expect(invoke).toHaveBeenCalledWith("inspect_project", { projectId: "project-1" });
+
+    invoke.mockResolvedValue({});
+    await createConversation("project-1", "M2");
+    expect(invoke).toHaveBeenCalledWith("create_conversation", {
+      projectId: "project-1",
+      title: "M2",
+    });
+
+    invoke.mockResolvedValue([]);
+    await listConversations("project-1");
+    expect(invoke).toHaveBeenCalledWith("list_conversations", { projectId: "project-1" });
+
+    await listTasks("conversation-1");
+    expect(invoke).toHaveBeenCalledWith("list_tasks", { conversationId: "conversation-1" });
+
+    await replayTaskEvents("task-1");
+    expect(invoke).toHaveBeenCalledWith("replay_task_events", { taskId: "task-1" });
+
     invoke.mockResolvedValue("task-1");
-    await startTask("hello", () => undefined);
-    expect(invoke).toHaveBeenCalledWith("start_task", expect.objectContaining({ goal: "hello" }));
+    await startTask("hello", () => undefined, "conversation-1");
+    expect(invoke).toHaveBeenCalledWith(
+      "start_task",
+      expect.objectContaining({ goal: "hello", conversationId: "conversation-1" }),
+    );
 
     invoke.mockResolvedValue(undefined);
     await cancelTask("task-1");

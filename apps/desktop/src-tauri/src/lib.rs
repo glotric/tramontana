@@ -9,6 +9,8 @@
 mod commands;
 mod state;
 
+use tauri::Manager;
+
 /// Build and run the desktop application.
 ///
 /// # Panics
@@ -19,9 +21,32 @@ mod state;
 #[allow(clippy::expect_used, reason = "unrecoverable startup failure")]
 pub fn run() {
     tauri::Builder::default()
-        .manage(state::AppState::with_fakes())
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let profile = std::env::var_os("TRAMONTANA_PROFILE")
+                .map(std::path::PathBuf::from)
+                .map_or_else(
+                    || {
+                        app.path()
+                            .app_data_dir()
+                            .map(|directory| directory.join("tramontana.sqlite"))
+                    },
+                    Ok,
+                )?;
+            let state = tauri::async_runtime::block_on(state::AppState::open(&profile))
+                .map_err(std::io::Error::other)?;
+            app.manage(state);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::core_info,
+            commands::open_project,
+            commands::list_projects,
+            commands::inspect_project,
+            commands::create_conversation,
+            commands::list_conversations,
+            commands::list_tasks,
+            commands::replay_task_events,
             commands::start_task,
             commands::cancel_task,
             commands::get_task,

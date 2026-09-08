@@ -1,14 +1,16 @@
 //! Composition root for the application services.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use tramontana_core::ports::EventStore;
 use tramontana_core::services::{Providers, Repositories, TaskService};
-use tramontana_core::testing::{
-    FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryConfigurationRepository,
-    InMemoryConversationRepository, InMemoryEventStore, InMemoryProjectRepository,
-    InMemoryTaskRepository, SequentialIdSource,
+use tramontana_core::testing::{FakeModelProvider, FakeToolProvider, FakeWorker};
+use tramontana_persistence::{
+    Database, SqliteConfigurationRepository, SqliteConversationRepository, SqliteEventStore,
+    SqliteProjectRepository, SqliteTaskRepository,
 };
+use tramontana_platform::{SystemClock, UuidIdSource};
 
 /// What the Tauri layer manages.
 ///
@@ -21,21 +23,29 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
-    /// Assemble the M1 skeleton over in-memory fakes.
+    /// Assemble the desktop service over the durable M2 profile.
     ///
-    /// The model is paced so streaming and cancellation are visible in the
-    /// interface; an instant fake would finish before a person could see it
-    /// happen, let alone press stop.
-    #[must_use]
-    pub(crate) fn with_fakes() -> Self {
-        let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
+    /// Providers remain deterministic fakes until their later milestones, but
+    /// task, project, conversation, event, and configuration records use the
+    /// same SQLite repositories as the CLI.
+    pub(crate) async fn open(path: &Path) -> Result<Self, String> {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+        }
+        let database = Database::open(path)
+            .await
+            .map_err(|error| format!("could not open {}: {error}", path.display()))?;
+        let store: Arc<dyn EventStore> = Arc::new(SqliteEventStore::new(database.clone()));
         let service = TaskService::new(
             Repositories {
-                projects: Arc::new(InMemoryProjectRepository::new()),
-                conversations: Arc::new(InMemoryConversationRepository::new()),
-                tasks: Arc::new(InMemoryTaskRepository::with_events(Arc::clone(&store))),
+                projects: Arc::new(SqliteProjectRepository::new(database.clone())),
+                conversations: Arc::new(SqliteConversationRepository::new(database.clone())),
+                tasks: Arc::new(SqliteTaskRepository::new(database.clone())),
                 events: store,
-                configuration: Arc::new(InMemoryConfigurationRepository::new()),
+                configuration: Arc::new(SqliteConfigurationRepository::new(database)),
             },
             Providers {
                 model: Arc::new(FakeModelProvider::streaming_paced(
@@ -45,11 +55,15 @@ impl AppState {
                 tools: Arc::new(FakeToolProvider::new()),
                 worker: Arc::new(FakeWorker::new()),
             },
-            Arc::new(FakeClock::new()),
-            Arc::new(SequentialIdSource::new()),
+            Arc::new(SystemClock::new()),
+            Arc::new(UuidIdSource::new()),
         );
-        Self {
+        service
+            .recover()
+            .await
+            .map_err(|error| format!("recovery failed: {}", error.message))?;
+        Ok(Self {
             service: Arc::new(service),
-        }
+        })
     }
 }

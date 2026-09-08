@@ -11,6 +11,9 @@ export default tseslint.config(
       "**/target/**",
       "**/node_modules/**",
       "apps/desktop/src-tauri/gen/**",
+      // Supplied design-reference prototypes are inspected, not shipped or
+      // maintained as first-party application code.
+      "design/UI/**",
       // Generated from the Rust contracts; regenerate rather than lint-fix.
       "packages/shared/src/generated/**",
     ],

@@ -34,6 +34,8 @@ function describePayload(payload: EventPayload): string {
       return `${payload.displayName} [${payload.agentId}]`;
     case "modelStarted":
       return `model ${payload.modelId}`;
+    case "configurationResolved":
+      return `manifest ${payload.configuration.manifestHash}`;
     case "messageCommitted":
       return `${payload.message.role} message, ${payload.message.parts.length} part(s)`;
     case "toolRequested":

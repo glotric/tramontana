@@ -58,10 +58,7 @@ fn service() -> Arc<TaskService> {
 async fn opening_the_same_roots_reuses_the_project_record() {
     let service = service();
     let roots = vec!["/projects/demo".to_owned()];
-    let first = service
-        .open_project("Demo", roots.clone())
-        .await
-        .unwrap();
+    let first = service.open_project("Demo", roots.clone()).await.unwrap();
     let reopened = service
         .open_project("Ignored replacement name", roots)
         .await
