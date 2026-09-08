@@ -1,0 +1,33 @@
+# Line endings are normalized at checkout so a Windows clone is byte-identical
+# to a macOS one.
+#
+# The repository already declares LF in three places — `newline_style = "Unix"`
+# in rustfmt.toml, `end_of_line = lf` in .editorconfig, and the migration rule
+# in docs/DEVELOPMENT.md §7 — but nothing enforced it. Git on Windows defaults
+# to `core.autocrlf=true`, so a checkout there rewrote every file to CRLF and
+# `cargo fmt --all --check` then reported the whole tree as misformatted.
+#
+# This also protects two things that are not about formatting: sqlx computes a
+# checksum over each migration file, and the committed database and contract
+# fixtures are compared byte for byte.
+* text=auto eol=lf
+
+# Never normalize binary content.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
+*.icns  binary
+*.gz    binary
+*.pdf   binary
+*.woff  binary
+*.woff2 binary
+*.sqlite binary
+*.db    binary
+
+# Generated artifacts are committed and diffed; keep them stable and out of the
+# way of language statistics.
+packages/shared/schema/**   linguist-generated=true
+packages/shared/src/generated/** linguist-generated=true
+Cargo.lock       linguist-generated=true
+pnpm-lock.yaml   linguist-generated=true

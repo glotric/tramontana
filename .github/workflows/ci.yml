@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    # Milestone branches run CI on every push, so a failure is found before a
+    # pull request exists rather than after. `main` is listed separately
+    # because it does not match the milestone pattern.
+    branches: [main, "m[0-9]*-**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Platform-neutral checks run once and gate the slower native matrix.
+  frontend:
+    name: Frontend, contracts, and shared schemas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      - name: Enable pnpm
+        run: corepack enable pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # xtask emits the contract schema, so the contract check needs Rust.
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      - run: pnpm install --frozen-lockfile
+      - name: Contract artifacts are current
+        run: pnpm contracts:check
+      - run: pnpm exec prettier --check .
+      - run: pnpm exec eslint .
+      - run: pnpm typecheck
+      - run: pnpm test:ts
+      - run: pnpm --filter @tramontana/desktop build:ui
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+          - os: windows-2025
+          # Named explicitly: "Linux" without a base image is not reproducible
+          # (docs/DEVELOPMENT.md §5).
+          - os: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Keep in step with rust-toolchain.toml.
+          toolchain: "1.96.0"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      - name: Enable pnpm
+        run: corepack enable pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # tauri-build reads the frontend dist directory during codegen.
+      - run: pnpm --filter @tramontana/desktop build:ui
+
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+
+      - name: CLI runs
+        run: cargo run --quiet -p tramontana-cli -- info
+
+  supply-chain:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      - name: Enable pnpm
+        run: corepack enable pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: pnpm audit
+        run: pnpm audit --audit-level high

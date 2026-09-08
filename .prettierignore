@@ -1,0 +1,21 @@
+dist/
+target/
+node_modules/
+pnpm-lock.yaml
+Cargo.lock
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/icons/
+design/
+
+# Generated from the Rust contracts. `pnpm contracts:generate` owns the format;
+# reformatting here would make `contracts:check` fail against a clean tree.
+packages/shared/schema/
+packages/shared/src/generated/
+
+# Authored Markdown is the product contract and is reviewed as prose. Prettier
+# reflows tables and wrapping into large meaningless diffs, and
+# docs/CONFIGURATION.md §10 requires that instruction files not be rewritten
+# automatically.
+*.md
+docs/
+.tramontana/

@@ -1,0 +1,1934 @@
+{
+  "$defs": {
+    "AgentDescriptor": {
+      "description": "A worker a provider offers.",
+      "properties": {
+        "agentId": {
+          "description": "Provider-scoped worker identifier.",
+          "type": "string"
+        },
+        "agentProviderId": {
+          "description": "Provider that offers it.",
+          "type": "string"
+        },
+        "checkpointSupport": {
+          "$ref": "#/$defs/CheckpointSupport",
+          "description": "How well it can be stopped and resumed."
+        },
+        "displayName": {
+          "description": "Human-readable name.",
+          "type": "string"
+        },
+        "integrationMode": {
+          "$ref": "#/$defs/IntegrationMode",
+          "description": "How it is integrated."
+        },
+        "localOnlyEligible": {
+          "description": "Whether it may run under Local Only.\n\nComputed by the core from the fields above, never taken from the\nworker's own claim (`CORE_CONTRACTS.md` §7.2).",
+          "type": "boolean"
+        },
+        "modelControl": {
+          "$ref": "#/$defs/ModelControl",
+          "description": "Who chooses its model."
+        },
+        "networkControl": {
+          "$ref": "#/$defs/NetworkControl",
+          "description": "What it can do on the network."
+        },
+        "toolControl": {
+          "$ref": "#/$defs/ToolControl",
+          "description": "How it reaches tools."
+        },
+        "unavailableReason": {
+          "description": "Why it is unavailable, when it is.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "agentProviderId",
+        "agentId",
+        "displayName",
+        "integrationMode",
+        "modelControl",
+        "toolControl",
+        "networkControl",
+        "checkpointSupport",
+        "localOnlyEligible"
+      ],
+      "type": "object"
+    },
+    "CancellationOrigin": {
+      "description": "Who requested a cancellation.",
+      "oneOf": [
+        {
+          "const": "user",
+          "description": "The user asked for it.",
+          "type": "string"
+        },
+        {
+          "const": "system",
+          "description": "A budget, deadline, or policy stopped the work.",
+          "type": "string"
+        }
+      ]
+    },
+    "CheckpointSupport": {
+      "description": "How well a worker can be stopped and resumed.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "Cannot be resumed.",
+          "type": "string"
+        },
+        {
+          "const": "sameWorker",
+          "description": "Can resume itself from its own state.",
+          "type": "string"
+        },
+        {
+          "const": "portable",
+          "description": "Can be resumed from canonical Tramontana state by another worker.",
+          "type": "string"
+        }
+      ]
+    },
+    "ConfigurationDiagnostic": {
+      "description": "Something noticed while loading a source.\n\n`CONFIGURATION.md` §5: an invalid or duplicate definition disables the\naffected item and shows a validation error. It never crashes startup, and a\nbroken file in one project must not make the application unusable.",
+      "properties": {
+        "message": {
+          "description": "Human-readable explanation.",
+          "type": "string"
+        },
+        "relativePath": {
+          "description": "Project-relative path of the file concerned.",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/DiagnosticSeverity",
+          "description": "How serious it is."
+        }
+      },
+      "required": [
+        "severity",
+        "relativePath",
+        "message"
+      ],
+      "type": "object"
+    },
+    "ConfigurationKind": {
+      "description": "What kind of instruction file a source is.",
+      "oneOf": [
+        {
+          "const": "rootAgents",
+          "description": "`AGENTS.md` at the project root.",
+          "type": "string"
+        },
+        {
+          "const": "scopedAgents",
+          "description": "`AGENTS.md` in a subdirectory, applying to that subtree.",
+          "type": "string"
+        },
+        {
+          "const": "claude",
+          "description": "`CLAUDE.md`, loaded as lower-precedence compatibility content.",
+          "type": "string"
+        },
+        {
+          "const": "projectOverview",
+          "description": "`.tramontana/project.md`.",
+          "type": "string"
+        },
+        {
+          "const": "rule",
+          "description": "A file under `.tramontana/rules/`.",
+          "type": "string"
+        },
+        {
+          "const": "skill",
+          "description": "A file under `.tramontana/skills/`.",
+          "type": "string"
+        },
+        {
+          "const": "agentProfile",
+          "description": "A file under `.tramontana/agents/`.",
+          "type": "string"
+        },
+        {
+          "const": "workflow",
+          "description": "A file under `.tramontana/workflows/`.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported",
+          "description": "A source kind written by a newer build.",
+          "type": "string"
+        }
+      ]
+    },
+    "ConfigurationSource": {
+      "description": "One loaded instruction file.",
+      "properties": {
+        "active": {
+          "description": "Whether this enabled source participates in this resolved manifest.\n\nNested instructions can be out of scope, while skills, agents, and\nworkflows must be explicitly selected. Keeping this separate from\n`enabled` makes the effective-configuration view honest about both.",
+          "type": "boolean"
+        },
+        "byteCount": {
+          "description": "Size in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "contentHash": {
+          "description": "SHA-256 of the file's bytes, for reproducibility.",
+          "type": "string"
+        },
+        "declaredId": {
+          "description": "Declared `id` from front matter, when present.",
+          "type": "string"
+        },
+        "declaredName": {
+          "description": "Declared `name` from front matter, when present.",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "Whether the item is active. Front matter may set `enabled: false`, and\na validation error also disables it.",
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/ConfigurationKind",
+          "description": "What kind of file it is."
+        },
+        "precedence": {
+          "description": "Precedence rank; lower wins.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "priority": {
+          "description": "Author-defined rule priority. Higher values apply first within the\nnative rule layer.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "relativePath": {
+          "description": "Project-relative path. Never absolute: an absolute path names a machine.",
+          "type": "string"
+        },
+        "requestedCapabilities": {
+          "description": "Capabilities requested by a native definition.\n\nThese are informational. Loading Markdown never grants a capability.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "scopes": {
+          "description": "Project-relative scopes declared by the source.\n\nA nested `AGENTS.md` contributes its parent directory. Native rules\ncontribute their `applies_to` patterns. An empty list means the whole\nproject.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "selectionOrder": {
+          "description": "Explicit selection order for skills, agents, and workflows.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sourceId": {
+          "description": "Stable project-scoped key for this source (currently its relative path).",
+          "type": "string"
+        },
+        "unknownKeys": {
+          "description": "Front matter keys this build does not recognize.\n\nPreserved rather than dropped, so a file authored for a newer version\nsurvives a round trip through an older one (`CONFIGURATION.md` §5).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sourceId",
+        "relativePath",
+        "kind",
+        "enabled",
+        "active",
+        "precedence",
+        "contentHash",
+        "byteCount"
+      ],
+      "type": "object"
+    },
+    "ConversationId": {
+      "description": "A conversation within a project, or a projectless conversation.",
+      "type": "string"
+    },
+    "ConversationRecord": {
+      "description": "A conversation, optionally scoped to a project.",
+      "properties": {
+        "archivedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When it was archived, if it has been."
+        },
+        "conversationId": {
+          "$ref": "#/$defs/ConversationId",
+          "description": "Stable identifier."
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it was created."
+        },
+        "projectId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Project this belongs to. Absent means projectless, which carries no\nimplicit filesystem access (`PHASE_1_ACCEPTANCE_CRITERIA.md` §8)."
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "title": {
+          "description": "Display title.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "conversationId",
+        "title",
+        "createdAt"
+      ],
+      "type": "object"
+    },
+    "CorrelationId": {
+      "description": "A correlation identifier shared by everything caused by one request.",
+      "type": "string"
+    },
+    "DataClass": {
+      "description": "Sensitivity of a piece of content, used to decide what may leave the device.",
+      "oneOf": [
+        {
+          "const": "public",
+          "description": "Not derived from the user's project or conversation.",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "description": "Derived from an opened project.",
+          "type": "string"
+        },
+        {
+          "const": "sensitive",
+          "description": "Explicitly marked sensitive by the user or a policy.",
+          "type": "string"
+        },
+        {
+          "const": "secret",
+          "description": "A credential or token. Never serialized; see [`SecretRef`].",
+          "type": "string"
+        }
+      ]
+    },
+    "DiagnosticSeverity": {
+      "description": "Why a source was rejected or flagged.",
+      "oneOf": [
+        {
+          "const": "warning",
+          "description": "Loaded, but something is worth knowing.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "Not loaded. The item is disabled, and startup continues.",
+          "type": "string"
+        }
+      ]
+    },
+    "EffectiveConfiguration": {
+      "description": "Everything loaded for a project, in precedence order.",
+      "properties": {
+        "diagnostics": {
+          "description": "Problems found while loading.",
+          "items": {
+            "$ref": "#/$defs/ConfigurationDiagnostic"
+          },
+          "type": "array"
+        },
+        "manifestHash": {
+          "description": "Hash over the ordered source hashes.\n\nOne value that changes whenever the effective configuration changes, so\na task can record what it started with in a single field\n(`CONFIGURATION.md` §11).",
+          "type": "string"
+        },
+        "resolvedAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When this was resolved."
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sources": {
+          "description": "Sources, strongest precedence first.",
+          "items": {
+            "$ref": "#/$defs/ConfigurationSource"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "sources",
+        "diagnostics",
+        "manifestHash",
+        "resolvedAt"
+      ],
+      "type": "object"
+    },
+    "ErrorCode": {
+      "description": "Stable error categories.\n\nAdapters choose the closest category rather than inventing one; a new\nvariant is a contract change (`CORE_CONTRACTS.md` §15).",
+      "oneOf": [
+        {
+          "const": "invalidRequest",
+          "description": "A payload failed validation at a boundary.",
+          "type": "string"
+        },
+        {
+          "const": "notFound",
+          "description": "The addressed record does not exist.",
+          "type": "string"
+        },
+        {
+          "const": "conflict",
+          "description": "The operation conflicted with concurrent state, such as a stale sequence.",
+          "type": "string"
+        },
+        {
+          "const": "permissionDenied",
+          "description": "Policy denied the operation outright.",
+          "type": "string"
+        },
+        {
+          "const": "approvalRequired",
+          "description": "The operation needs an approval that has not been given.",
+          "type": "string"
+        },
+        {
+          "const": "policyBlocked",
+          "description": "A standing policy blocked the operation.",
+          "type": "string"
+        },
+        {
+          "const": "capabilityUnsupported",
+          "description": "The selected model or worker cannot do what was asked.",
+          "type": "string"
+        },
+        {
+          "const": "providerAuthentication",
+          "description": "The provider rejected the credential.",
+          "type": "string"
+        },
+        {
+          "const": "providerRateLimited",
+          "description": "The provider applied a rate limit.",
+          "type": "string"
+        },
+        {
+          "const": "providerUnavailable",
+          "description": "The provider is unreachable or unhealthy.",
+          "type": "string"
+        },
+        {
+          "const": "workerUnavailable",
+          "description": "The selected worker is unreachable or unhealthy.",
+          "type": "string"
+        },
+        {
+          "const": "toolFailed",
+          "description": "A tool ran and failed.",
+          "type": "string"
+        },
+        {
+          "const": "timeout",
+          "description": "A deadline elapsed.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "The operation was cancelled.",
+          "type": "string"
+        },
+        {
+          "const": "limitExceeded",
+          "description": "A size, count, depth, or budget limit was exceeded.",
+          "type": "string"
+        },
+        {
+          "const": "protocolError",
+          "description": "A protocol peer sent something malformed.",
+          "type": "string"
+        },
+        {
+          "const": "persistenceError",
+          "description": "Durable storage failed.",
+          "type": "string"
+        },
+        {
+          "const": "migrationRequired",
+          "description": "Stored data needs a migration that has not run.",
+          "type": "string"
+        },
+        {
+          "const": "interruptedUnsafe",
+          "description": "Work stopped with an action whose replay safety is unknown.",
+          "type": "string"
+        },
+        {
+          "const": "internal",
+          "description": "An unexpected internal failure.",
+          "type": "string"
+        }
+      ]
+    },
+    "ErrorEnvelope": {
+      "description": "A safe, user-presentable error.",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode",
+          "description": "Stable category."
+        },
+        "correlationId": {
+          "$ref": "#/$defs/CorrelationId",
+          "description": "Correlates this failure with the request and events around it."
+        },
+        "diagnosticRef": {
+          "description": "Reference to fuller local diagnostics, which are redacted separately.",
+          "type": "string"
+        },
+        "message": {
+          "description": "Safe, user-presentable message. Never carries secrets or content.",
+          "type": "string"
+        },
+        "retryAfterMs": {
+          "description": "Hint for how long to wait before retrying, when the source supplies one.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "retryable": {
+          "description": "Whether retrying the identical request could succeed.",
+          "type": "boolean"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "code",
+        "message",
+        "retryable",
+        "correlationId"
+      ],
+      "type": "object"
+    },
+    "EventEnvelope": {
+      "description": "A durable event.",
+      "properties": {
+        "causationId": {
+          "description": "The command, event, invocation, or approval that caused this one.",
+          "type": "string"
+        },
+        "conversationId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConversationId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Conversation, when the task has one."
+        },
+        "correlationId": {
+          "$ref": "#/$defs/CorrelationId",
+          "description": "Shared by everything caused by one originating request."
+        },
+        "eventId": {
+          "$ref": "#/$defs/EventId",
+          "description": "Unique identifier for this event."
+        },
+        "kind": {
+          "$ref": "#/$defs/TaskEventKind",
+          "description": "The event kind, duplicated outside the payload so a reader can route on\nit without parsing a body it may not understand."
+        },
+        "occurredAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the event happened."
+        },
+        "payload": {
+          "$ref": "#/$defs/EventPayload",
+          "description": "The body."
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sequence": {
+          "description": "Position in the task's stream. Starts at 1, increases by exactly one.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "taskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "Task this event belongs to."
+        },
+        "visibility": {
+          "$ref": "#/$defs/Visibility",
+          "description": "Who this event is for."
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "eventId",
+        "taskId",
+        "sequence",
+        "occurredAt",
+        "kind",
+        "visibility",
+        "correlationId",
+        "payload"
+      ],
+      "type": "object"
+    },
+    "EventId": {
+      "description": "A single durable event.",
+      "type": "string"
+    },
+    "EventPayload": {
+      "description": "The body of a durable event.\n\nTagged by `kind` so the discriminator is one field in both Rust and\nTypeScript. M1 defines the payloads the walking skeleton emits; the rest\narrive with the milestones that produce them.",
+      "oneOf": [
+        {
+          "description": "The task was created.",
+          "properties": {
+            "conversationId": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ConversationId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Conversation this task belongs to, when it has one."
+            },
+            "goalSummary": {
+              "description": "One-line, secret-free summary of what was asked for.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "taskCreated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "goalSummary"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The task moved between states.",
+          "properties": {
+            "current": {
+              "$ref": "#/$defs/TaskState",
+              "description": "State after the move."
+            },
+            "kind": {
+              "const": "taskStateChanged",
+              "type": "string"
+            },
+            "previous": {
+              "$ref": "#/$defs/TaskState",
+              "description": "State before the move."
+            },
+            "reasonCode": {
+              "description": "Stable, machine-readable reason.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "previous",
+            "current",
+            "reasonCode"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Effective configuration was resolved before execution began.",
+          "properties": {
+            "configuration": {
+              "$ref": "#/$defs/EffectiveConfiguration",
+              "description": "Secret-free manifest metadata. Markdown bodies are not copied."
+            },
+            "kind": {
+              "const": "configurationResolved",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "configuration"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A worker was selected for this task.",
+          "properties": {
+            "agentId": {
+              "description": "Namespaced worker identifier.",
+              "type": "string"
+            },
+            "displayName": {
+              "description": "Human-readable worker name.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "workerSelected",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "agentId",
+            "displayName"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A model request began.",
+          "properties": {
+            "kind": {
+              "const": "modelStarted",
+              "type": "string"
+            },
+            "modelId": {
+              "description": "Namespaced model identifier.",
+              "type": "string"
+            },
+            "streamId": {
+              "description": "Correlates the ephemeral stream frames with this durable event.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "streamId",
+            "modelId"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A durable normalized message was committed.",
+          "properties": {
+            "kind": {
+              "const": "messageCommitted",
+              "type": "string"
+            },
+            "message": {
+              "$ref": "#/$defs/NormalizedMessage",
+              "description": "The message."
+            }
+          },
+          "required": [
+            "kind",
+            "message"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A worker asked to run a tool.\n\nCarries a *summary* of the arguments, never the arguments themselves:\nthey can hold file content or other project data, and the durable\nstream is displayed and exported (`CORE_CONTRACTS.md` §5).",
+          "properties": {
+            "argumentsSummary": {
+              "description": "Short, safe description of what was asked for.",
+              "type": "string"
+            },
+            "invocationId": {
+              "$ref": "#/$defs/InvocationId",
+              "description": "Identifies this invocation across its request and result."
+            },
+            "kind": {
+              "const": "toolRequested",
+              "type": "string"
+            },
+            "riskClass": {
+              "$ref": "#/$defs/RiskClass",
+              "description": "How much damage the tool could do."
+            },
+            "toolId": {
+              "description": "Namespaced tool identifier.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "invocationId",
+            "toolId",
+            "argumentsSummary",
+            "riskClass"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A tool invocation finished.",
+          "properties": {
+            "displaySummary": {
+              "description": "Short, safe description of the result.",
+              "type": "string"
+            },
+            "invocationId": {
+              "$ref": "#/$defs/InvocationId",
+              "description": "The invocation this closes."
+            },
+            "kind": {
+              "const": "toolCompleted",
+              "type": "string"
+            },
+            "sideEffect": {
+              "$ref": "#/$defs/SideEffect",
+              "description": "What the invocation actually changed."
+            },
+            "truncated": {
+              "description": "Whether output was cut short by a limit.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "invocationId",
+            "displaySummary",
+            "sideEffect",
+            "truncated"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The task completed successfully.",
+          "properties": {
+            "kind": {
+              "const": "taskCompleted",
+              "type": "string"
+            },
+            "summary": {
+              "description": "Secret-free summary of the outcome.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "summary"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The task failed.",
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/ErrorEnvelope",
+              "description": "Normalized, already-redacted error."
+            },
+            "kind": {
+              "const": "taskFailed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The task was cancelled.",
+          "properties": {
+            "kind": {
+              "const": "taskCancelled",
+              "type": "string"
+            },
+            "origin": {
+              "$ref": "#/$defs/CancellationOrigin",
+              "description": "Who or what asked for cancellation."
+            }
+          },
+          "required": [
+            "kind",
+            "origin"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An event kind this build does not understand.\n\nReading one is not an error: a newer core may write kinds an older\ninterface has never heard of, and the contract requires storing and\ndisplaying them rather than failing (`CORE_CONTRACTS.md` §2).",
+          "properties": {
+            "kind": {
+              "const": "unsupported",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ExecutionLocation": {
+      "description": "Where work ran.\n\nRecorded on routing decisions and shown to the user, so \"did this leave my\nmachine?\" is answerable from the durable record alone.",
+      "oneOf": [
+        {
+          "description": "A device the user controls.",
+          "properties": {
+            "displayName": {
+              "description": "Human-readable name for the interface.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "local",
+              "type": "string"
+            },
+            "targetId": {
+              "description": "Stable identifier for the compute target.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "targetId",
+            "displayName"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A third-party endpoint. Reaching one is a data-release decision.",
+          "properties": {
+            "kind": {
+              "const": "cloud",
+              "type": "string"
+            },
+            "providerId": {
+              "description": "Stable provider identifier.",
+              "type": "string"
+            },
+            "region": {
+              "description": "Provider region, when the provider exposes one.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "providerId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Health": {
+      "description": "Whether a provider or worker is usable right now.",
+      "oneOf": [
+        {
+          "const": "unknown",
+          "description": "Not yet checked.",
+          "type": "string"
+        },
+        {
+          "const": "available",
+          "description": "Usable.",
+          "type": "string"
+        },
+        {
+          "const": "degraded",
+          "description": "Usable but impaired.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "Not usable.",
+          "type": "string"
+        }
+      ]
+    },
+    "IntegrationMode": {
+      "description": "How a worker is integrated.",
+      "oneOf": [
+        {
+          "const": "embedded",
+          "description": "Runs inside Tramontana.",
+          "type": "string"
+        },
+        {
+          "const": "acp",
+          "description": "A separate process speaking the Agent Client Protocol.",
+          "type": "string"
+        },
+        {
+          "const": "customProcess",
+          "description": "A separate process speaking something bespoke.",
+          "type": "string"
+        }
+      ]
+    },
+    "InvocationId": {
+      "description": "One tool invocation.",
+      "type": "string"
+    },
+    "MessageId": {
+      "description": "A durable message in a conversation.",
+      "type": "string"
+    },
+    "MessagePart": {
+      "description": "One piece of a message.",
+      "oneOf": [
+        {
+          "description": "Prose.",
+          "properties": {
+            "kind": {
+              "const": "text",
+              "type": "string"
+            },
+            "text": {
+              "description": "The text.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A request to run a tool.",
+          "properties": {
+            "arguments": {
+              "description": "Arguments, already validated against the tool's schema."
+            },
+            "invocationId": {
+              "$ref": "#/$defs/InvocationId",
+              "description": "The invocation this call opened."
+            },
+            "kind": {
+              "const": "toolCall",
+              "type": "string"
+            },
+            "toolId": {
+              "description": "Namespaced tool identifier.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "invocationId",
+            "toolId",
+            "arguments"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The result of running a tool.",
+          "properties": {
+            "content": {
+              "description": "Structured, redacted result content."
+            },
+            "invocationId": {
+              "$ref": "#/$defs/InvocationId",
+              "description": "The invocation this result closes."
+            },
+            "kind": {
+              "const": "toolResult",
+              "type": "string"
+            },
+            "truncated": {
+              "description": "Whether output was cut short by a limit.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "invocationId",
+            "content",
+            "truncated"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A part this build does not understand.",
+          "properties": {
+            "kind": {
+              "const": "unsupported",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "MessageRole": {
+      "description": "Who produced a message.",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "Instruction content assembled by Tramontana.",
+          "type": "string"
+        },
+        {
+          "const": "user",
+          "description": "The person.",
+          "type": "string"
+        },
+        {
+          "const": "assistant",
+          "description": "The model or worker.",
+          "type": "string"
+        },
+        {
+          "const": "tool",
+          "description": "A tool result being fed back.",
+          "type": "string"
+        }
+      ]
+    },
+    "MessageStatus": {
+      "description": "Whether a message is finished.",
+      "oneOf": [
+        {
+          "const": "committed",
+          "description": "Complete and durable.",
+          "type": "string"
+        },
+        {
+          "const": "partial",
+          "description": "Stream ended early; content up to that point was kept.",
+          "type": "string"
+        },
+        {
+          "const": "superseded",
+          "description": "Replaced by a later message, retained for history.",
+          "type": "string"
+        }
+      ]
+    },
+    "ModelCapability": {
+      "description": "Something a model can do.",
+      "oneOf": [
+        {
+          "const": "text",
+          "description": "Produces text.",
+          "type": "string"
+        },
+        {
+          "const": "streaming",
+          "description": "Streams incrementally.",
+          "type": "string"
+        },
+        {
+          "const": "toolCalls",
+          "description": "Requests tool calls.",
+          "type": "string"
+        },
+        {
+          "const": "structuredOutput",
+          "description": "Honors a response schema.",
+          "type": "string"
+        },
+        {
+          "const": "imageInput",
+          "description": "Accepts images.",
+          "type": "string"
+        },
+        {
+          "const": "cancellation",
+          "description": "Can be cancelled mid-request.",
+          "type": "string"
+        }
+      ]
+    },
+    "ModelControl": {
+      "description": "Who decides which model a worker uses.",
+      "oneOf": [
+        {
+          "const": "tramontanaBrokered",
+          "description": "Every model request passes through Tramontana's router and policy.",
+          "type": "string"
+        },
+        {
+          "const": "workerManaged",
+          "description": "The worker calls models itself. Not equivalent to brokered.",
+          "type": "string"
+        }
+      ]
+    },
+    "ModelDescriptor": {
+      "description": "A model a provider offers.",
+      "properties": {
+        "capabilities": {
+          "description": "Detected capabilities.",
+          "items": {
+            "$ref": "#/$defs/ModelCapability"
+          },
+          "type": "array"
+        },
+        "contextLimit": {
+          "description": "Context window, when the provider reports one.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "displayName": {
+          "description": "Human-readable name.",
+          "type": "string"
+        },
+        "health": {
+          "$ref": "#/$defs/Health",
+          "description": "Current health."
+        },
+        "healthReasonCode": {
+          "description": "Stable reason for a non-available health, for diagnostics and tests.",
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/ModelLocation",
+          "description": "Whether inference runs on this device or elsewhere."
+        },
+        "modelId": {
+          "description": "Provider-scoped model identifier.",
+          "type": "string"
+        },
+        "providerId": {
+          "description": "Provider that offers it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "providerId",
+        "modelId",
+        "displayName",
+        "location",
+        "capabilities",
+        "health"
+      ],
+      "type": "object"
+    },
+    "ModelLocation": {
+      "description": "Whether a model runs on this device.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "On this device.",
+          "type": "string"
+        },
+        {
+          "const": "cloud",
+          "description": "A third-party endpoint. Reaching one is a data-release decision.",
+          "type": "string"
+        }
+      ]
+    },
+    "NetworkControl": {
+      "description": "What a worker can do on the network.",
+      "oneOf": [
+        {
+          "const": "denied",
+          "description": "No network access.",
+          "type": "string"
+        },
+        {
+          "const": "brokered",
+          "description": "All egress passes through Tramontana.",
+          "type": "string"
+        },
+        {
+          "const": "constrained",
+          "description": "Egress is limited by a tested boundary.",
+          "type": "string"
+        },
+        {
+          "const": "unobservable",
+          "description": "Egress cannot be observed. Disqualifying for Local Only.",
+          "type": "string"
+        }
+      ]
+    },
+    "NormalizedMessage": {
+      "description": "A durable, provider-neutral message.",
+      "properties": {
+        "conversationId": {
+          "$ref": "#/$defs/ConversationId",
+          "description": "Conversation this message belongs to."
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it was created."
+        },
+        "messageId": {
+          "$ref": "#/$defs/MessageId",
+          "description": "Unique identifier."
+        },
+        "parts": {
+          "description": "Its content.",
+          "items": {
+            "$ref": "#/$defs/MessagePart"
+          },
+          "type": "array"
+        },
+        "role": {
+          "$ref": "#/$defs/MessageRole",
+          "description": "Who produced it."
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/MessageStatus",
+          "description": "Whether it is finished."
+        },
+        "taskId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Task that produced it, when one did."
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "messageId",
+        "conversationId",
+        "role",
+        "createdAt",
+        "status",
+        "parts"
+      ],
+      "type": "object"
+    },
+    "ProjectId": {
+      "description": "A project: one or more user-approved roots and the work done against them.",
+      "type": "string"
+    },
+    "ProjectRecord": {
+      "description": "A project and the roots the user approved for it.",
+      "properties": {
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the project was created."
+        },
+        "name": {
+          "description": "Display name.",
+          "type": "string"
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId",
+          "description": "Stable identifier."
+        },
+        "roots": {
+          "description": "Canonical approved roots. Device-local bindings, redacted on export.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "projectId",
+        "name",
+        "roots",
+        "createdAt"
+      ],
+      "type": "object"
+    },
+    "RiskClass": {
+      "description": "How much damage a tool invocation could do if the model asked for it wrongly.",
+      "oneOf": [
+        {
+          "const": "read",
+          "description": "Observes data without intended mutation.",
+          "type": "string"
+        },
+        {
+          "const": "modify",
+          "description": "Changes recoverable project state.",
+          "type": "string"
+        },
+        {
+          "const": "dangerous",
+          "description": "Hard to reverse, broad, privileged, external, or destructive.",
+          "type": "string"
+        }
+      ]
+    },
+    "RoutingMode": {
+      "description": "The user's standing policy for where inference may run.",
+      "oneOf": [
+        {
+          "const": "localOnly",
+          "description": "Hard egress prohibition for inference and cloud-derived context.",
+          "type": "string"
+        },
+        {
+          "const": "automatic",
+          "description": "Deterministic policy chooses an eligible route and shows its reasons.",
+          "type": "string"
+        },
+        {
+          "const": "cloudPreferred",
+          "description": "Prefer a configured cloud route where policy and availability allow.",
+          "type": "string"
+        }
+      ]
+    },
+    "SecretRef": {
+      "description": "An opaque handle to a credential.\n\nThis is the only representation of a secret that may be persisted, logged,\nexported, or sent over IPC. `key` is an application-generated identifier\nand never carries any part of the value it refers to\n(`SECURITY_AND_PERMISSIONS.md` §7).",
+      "properties": {
+        "key": {
+          "description": "Opaque application-generated key. Never the secret.",
+          "type": "string"
+        },
+        "store": {
+          "$ref": "#/$defs/SecretStore",
+          "description": "Which store resolves this reference."
+        }
+      },
+      "required": [
+        "key",
+        "store"
+      ],
+      "type": "object"
+    },
+    "SecretStore": {
+      "description": "Where a resolvable secret lives.\n\nOnly `Platform` exists today. It is an enum rather than a bare marker so\nthat adding a store later is an additive schema change.",
+      "oneOf": [
+        {
+          "const": "platform",
+          "description": "The operating system credential store.",
+          "type": "string"
+        }
+      ]
+    },
+    "SideEffect": {
+      "description": "What an invocation actually changed, recorded alongside its result.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "Nothing outside Tramontana's own records changed.",
+          "type": "string"
+        },
+        {
+          "const": "localReversible",
+          "description": "A local change that can be undone.",
+          "type": "string"
+        },
+        {
+          "const": "localIrreversible",
+          "description": "A local change that cannot be undone.",
+          "type": "string"
+        },
+        {
+          "const": "external",
+          "description": "Something outside this device changed.",
+          "type": "string"
+        }
+      ]
+    },
+    "StreamFrame": {
+      "description": "One frame of an in-flight model stream.\n\nExplicitly **not** an [`EventEnvelope`]: frames are transport, are never\npersisted, and carry no sequence in the durable stream. A reconnecting\ninterface rebuilds from durable events plus, optionally, the current\nstream snapshot.",
+      "properties": {
+        "offset": {
+          "description": "Monotonically increasing position within this stream.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "streamId": {
+          "description": "Correlates with the `modelStarted` event that opened this stream.",
+          "type": "string"
+        },
+        "text": {
+          "description": "The text produced.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "streamId",
+        "offset",
+        "text"
+      ],
+      "type": "object"
+    },
+    "TaskEventKind": {
+      "description": "What a durable event is about.\n\n`#[non_exhaustive]` and the `Unsupported` fallback in\n[`EventPayload`] together implement the compatibility rule in\n`CORE_CONTRACTS.md` §2: an unknown event kind is stored and shown as an\nunsupported redacted event, never a crash.",
+      "oneOf": [
+        {
+          "const": "taskCreated",
+          "description": "The task was created.",
+          "type": "string"
+        },
+        {
+          "const": "taskStateChanged",
+          "description": "The task moved between states.",
+          "type": "string"
+        },
+        {
+          "const": "configurationResolved",
+          "description": "Effective configuration was resolved.",
+          "type": "string"
+        },
+        {
+          "const": "contextPrepared",
+          "description": "A context bundle was prepared.",
+          "type": "string"
+        },
+        {
+          "const": "routingDecided",
+          "description": "A model and location were chosen.",
+          "type": "string"
+        },
+        {
+          "const": "workerSelected",
+          "description": "A worker was selected.",
+          "type": "string"
+        },
+        {
+          "const": "workerStarted",
+          "description": "A worker session started.",
+          "type": "string"
+        },
+        {
+          "const": "modelStarted",
+          "description": "A model request began.",
+          "type": "string"
+        },
+        {
+          "const": "messageCommitted",
+          "description": "A durable normalized message was committed.",
+          "type": "string"
+        },
+        {
+          "const": "toolRequested",
+          "description": "A worker asked to run a tool.",
+          "type": "string"
+        },
+        {
+          "const": "approvalRequested",
+          "description": "An approval was put to the user.",
+          "type": "string"
+        },
+        {
+          "const": "approvalResolved",
+          "description": "The user decided an approval.",
+          "type": "string"
+        },
+        {
+          "const": "toolStarted",
+          "description": "An authorized tool invocation began.",
+          "type": "string"
+        },
+        {
+          "const": "toolCompleted",
+          "description": "A tool invocation finished.",
+          "type": "string"
+        },
+        {
+          "const": "toolFailed",
+          "description": "A tool invocation failed.",
+          "type": "string"
+        },
+        {
+          "const": "checkpointSaved",
+          "description": "A checkpoint was written.",
+          "type": "string"
+        },
+        {
+          "const": "artifactRecorded",
+          "description": "An artifact was recorded.",
+          "type": "string"
+        },
+        {
+          "const": "workerStopped",
+          "description": "A worker session stopped.",
+          "type": "string"
+        },
+        {
+          "const": "taskCompleted",
+          "description": "The task completed.",
+          "type": "string"
+        },
+        {
+          "const": "taskFailed",
+          "description": "The task failed.",
+          "type": "string"
+        },
+        {
+          "const": "taskCancelled",
+          "description": "The task was cancelled.",
+          "type": "string"
+        },
+        {
+          "const": "diagnosticRecorded",
+          "description": "A bounded, redacted diagnostic was recorded.",
+          "type": "string"
+        }
+      ]
+    },
+    "TaskId": {
+      "description": "A unit of work with its own event stream and exactly one terminal state.",
+      "type": "string"
+    },
+    "TaskRecord": {
+      "description": "A task row.\n\n`state` and `last_sequence` are a cache of the event stream, not a second\nsource of truth. After an unclean stop they are rebuilt from the events.",
+      "properties": {
+        "configurationManifestHash": {
+          "description": "Effective-configuration manifest captured before this task started.",
+          "type": "string"
+        },
+        "conversationId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConversationId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Conversation this belongs to, when it has one."
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the task was created."
+        },
+        "goalSummary": {
+          "description": "Secret-free summary of what was asked for.",
+          "type": "string"
+        },
+        "lastSequence": {
+          "description": "Highest durable sequence written.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "projectId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Project this belongs to, when it has one."
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/TaskState",
+          "description": "Cached state, projected from the events."
+        },
+        "taskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "Stable identifier."
+        },
+        "updatedAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the projection was last updated."
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "taskId",
+        "goalSummary",
+        "state",
+        "lastSequence",
+        "createdAt",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "TaskSnapshot": {
+      "description": "The current view of a task.\n\nA projection of the event stream, not a second source of truth: it exists\nso reading a task's state does not require replaying every event.",
+      "properties": {
+        "lastSequence": {
+          "description": "Highest durable sequence written.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/TaskState",
+          "description": "Current state."
+        },
+        "taskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "Stable identifier."
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "taskId",
+        "state",
+        "lastSequence"
+      ],
+      "type": "object"
+    },
+    "TaskState": {
+      "description": "Where a task is in its lifecycle.",
+      "oneOf": [
+        {
+          "const": "queued",
+          "description": "Accepted, not yet started.",
+          "type": "string"
+        },
+        {
+          "const": "preparing",
+          "description": "Resolving project and effective configuration.",
+          "type": "string"
+        },
+        {
+          "const": "routing",
+          "description": "Choosing a model and a compute target.",
+          "type": "string"
+        },
+        {
+          "const": "startingWorker",
+          "description": "Starting the selected worker.",
+          "type": "string"
+        },
+        {
+          "const": "running",
+          "description": "The worker is doing the work. Model and tool activity are events here.",
+          "type": "string"
+        },
+        {
+          "const": "awaitingApproval",
+          "description": "Blocked on a user decision.",
+          "type": "string"
+        },
+        {
+          "const": "checkpointing",
+          "description": "Writing a durable checkpoint.",
+          "type": "string"
+        },
+        {
+          "const": "cancelling",
+          "description": "Cancellation requested; cleaning up.",
+          "type": "string"
+        },
+        {
+          "const": "interrupted",
+          "description": "Stopped uncleanly. Not automatically resumable — a checkpoint decides.",
+          "type": "string"
+        },
+        {
+          "const": "completed",
+          "description": "Finished successfully. Terminal.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Finished unsuccessfully. Terminal.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "Cancellation completed. Terminal.",
+          "type": "string"
+        }
+      ]
+    },
+    "TaskUpdate": {
+      "description": "One item delivered to a task subscriber.\n\nDurable events and ephemeral frames share a channel so a subscriber sees\nthem interleaved in the order they happened, but they stay distinct\nvariants: only [`TaskUpdate::Event`] carries a sequence, and only it\nsurvives a restart. An interface that treats a frame as durable will lose\nit on reconnect and be surprised; the type makes that hard to do by\naccident.",
+      "oneOf": [
+        {
+          "description": "A durable event.\n\nBoxed because an envelope is far larger than a frame, and frames are\nthe high-frequency variant: without the indirection every frame on the\nchannel would carry the envelope's footprint. The serialized shape is\nunaffected.",
+          "properties": {
+            "event": {
+              "$ref": "#/$defs/EventEnvelope",
+              "description": "The event."
+            },
+            "kind": {
+              "const": "event",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "event"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An ephemeral model stream frame. Never persisted.",
+          "properties": {
+            "frame": {
+              "$ref": "#/$defs/StreamFrame",
+              "description": "The frame."
+            },
+            "kind": {
+              "const": "frame",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "frame"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Timestamp": {
+      "description": "An instant, serialized as a UTC RFC 3339 string.",
+      "type": "string"
+    },
+    "ToolControl": {
+      "description": "How a worker reaches tools.",
+      "oneOf": [
+        {
+          "const": "tramontanaBrokered",
+          "description": "Every effect is requested through the host and passes policy.",
+          "type": "string"
+        },
+        {
+          "const": "directConstrained",
+          "description": "Direct access, confined by a tested compute boundary.",
+          "type": "string"
+        },
+        {
+          "const": "directUnconstrained",
+          "description": "Direct access with no confinement. Cannot meet the Phase 1 contract.",
+          "type": "string"
+        }
+      ]
+    },
+    "ToolDescriptor": {
+      "description": "A tool the registry can offer to a worker.",
+      "properties": {
+        "capability": {
+          "description": "Capability it requires.",
+          "type": "string"
+        },
+        "description": {
+          "description": "What it does, for the approval prompt. Presentation, never policy.",
+          "type": "string"
+        },
+        "displayName": {
+          "description": "Human-readable name.",
+          "type": "string"
+        },
+        "inputSchema": {
+          "description": "JSON Schema its arguments are validated against."
+        },
+        "providerId": {
+          "description": "Provider that implements it.",
+          "type": "string"
+        },
+        "riskClass": {
+          "$ref": "#/$defs/RiskClass",
+          "description": "How much damage it could do."
+        },
+        "sideEffect": {
+          "$ref": "#/$defs/SideEffect",
+          "description": "What it changes."
+        },
+        "supportsCancellation": {
+          "description": "Whether it honors cancellation.",
+          "type": "boolean"
+        },
+        "toolId": {
+          "description": "Namespaced identifier, such as `builtin.fs.read` or `mcp.github.search`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "toolId",
+        "providerId",
+        "displayName",
+        "description",
+        "inputSchema",
+        "riskClass",
+        "sideEffect",
+        "capability",
+        "supportsCancellation"
+      ],
+      "type": "object"
+    },
+    "Visibility": {
+      "description": "Who an event is for.\n\nRedaction happens in core before delivery, so `Secret` events are internal\naudit markers holding references and hashes only, and never reach a webview\n(`CORE_CONTRACTS.md` §5).",
+      "oneOf": [
+        {
+          "const": "user",
+          "description": "Shown in the normal activity stream.",
+          "type": "string"
+        },
+        {
+          "const": "diagnostic",
+          "description": "Available in diagnostics, not in the primary stream.",
+          "type": "string"
+        },
+        {
+          "const": "secret",
+          "description": "Internal audit marker; never delivered to the user interface.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://tramontana.app/schema/tramontana-contracts.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Generated from crates/core/src/contracts. Do not edit by hand; run `pnpm contracts:generate`.",
+  "title": "TramontanaContracts",
+  "x-schemaVersion": 1
+}

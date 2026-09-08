@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimum capability set for the main window. Filesystem, shell, and network capabilities are deliberately absent: those effects belong to core-owned tools that pass PermissionManager, not to ambient window permissions. Adding one here is an architecture decision.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
