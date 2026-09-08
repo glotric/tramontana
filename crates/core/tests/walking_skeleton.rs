@@ -260,6 +260,36 @@ async fn resubscribing_after_a_disconnect_recovers_the_gap() {
 }
 
 #[tokio::test]
+async fn streamed_frames_reconstruct_the_answer_exactly_once() {
+    // Frames are what the interface concatenates to show text arriving. If any
+    // layer republishes content the broker already streamed, the reader sees
+    // the answer twice — which is a correctness bug in the transport, not a
+    // cosmetic one, because the interface cannot tell the difference.
+    let service = service();
+
+    let task_id = service
+        .start_task(StartTaskRequest {
+            conversation_id: None,
+            goal: "say hello".into(),
+        })
+        .await
+        .unwrap();
+    let (_, mut updates) = service.subscribe_task_events(&task_id, 0).await.unwrap();
+
+    await_terminal(&service, &task_id).await;
+
+    let mut streamed = String::new();
+    while let Ok(update) = updates.try_recv() {
+        if let TaskUpdate::Frame { frame } = update {
+            streamed.push_str(&frame.text);
+        }
+    }
+
+    // The fake model is scripted with exactly these chunks.
+    assert_eq!(streamed, "Hello, world");
+}
+
+#[tokio::test]
 async fn a_projectless_task_records_no_conversation() {
     let (service, store) = service_with_store();
 

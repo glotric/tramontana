@@ -3,7 +3,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::contracts::{
     AgentDescriptor, CheckpointSupport, ErrorEnvelope, EventDraft, EventPayload, IntegrationMode,
-    ModelControl, NetworkControl, StreamFrame, TaskEventKind, ToolControl,
+    ModelControl, NetworkControl, TaskEventKind, ToolControl,
 };
 use crate::ports::{AgentProvider, WorkerHost, WorkerOutcome, WorkerRequest};
 use crate::testing::tool::FAKE_TOOL_ID;
@@ -79,12 +79,10 @@ impl AgentProvider for FakeWorker {
             return Ok(WorkerOutcome::Cancelled);
         }
 
-        host.publish_frame(StreamFrame {
-            stream_id: format!("stream-{}", request.task_id),
-            offset: 0,
-            text: answer.clone(),
-        })
-        .await;
+        // Deliberately no frame here. `call_model` already published one frame
+        // per delta as the answer arrived; republishing the assembled answer
+        // would make the interface render it twice, and the interface has no
+        // way to tell a duplicate from genuinely repeated output.
 
         let echoed = host
             .call_tool(
