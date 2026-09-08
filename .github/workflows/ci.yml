@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Milestone branches run CI on every push, so a failure is found before a
+    # pull request exists rather than after. `main` is listed separately
+    # because it does not match the milestone pattern.
+    branches: [main, "m[0-9]*-**"]
   pull_request:
   workflow_dispatch:
 
