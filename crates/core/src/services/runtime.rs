@@ -12,7 +12,6 @@ use crate::ports::{
     WorkerOutcome, WorkerRequest,
 };
 use crate::services::journal::TaskJournal;
-use crate::services::projection::TaskProjectionWriter;
 use crate::services::task_service::Providers;
 
 /// Drives one task through its state machine.
@@ -24,20 +23,11 @@ use crate::services::task_service::Providers;
 pub(crate) struct TaskDriver {
     journal: TaskJournal,
     providers: Providers,
-    projection: TaskProjectionWriter,
 }
 
 impl TaskDriver {
-    pub(crate) fn new(
-        journal: TaskJournal,
-        providers: Providers,
-        projection: TaskProjectionWriter,
-    ) -> Self {
-        Self {
-            journal,
-            providers,
-            projection,
-        }
+    pub(crate) fn new(journal: TaskJournal, providers: Providers) -> Self {
+        Self { journal, providers }
     }
 
     /// Run the task to exactly one terminal state.
@@ -145,9 +135,7 @@ impl TaskDriver {
     }
 
     async fn record(&self, draft: EventDraft) -> Result<(), ErrorEnvelope> {
-        let event = self.journal.append(draft).await?;
-        self.projection.record(&event).await;
-        Ok(())
+        self.journal.append(draft).await.map(|_| ())
     }
 
     async fn finish_completed(&self, from: TaskState, summary: String) {

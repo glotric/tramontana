@@ -171,6 +171,31 @@ impl TaskService {
         Ok(record)
     }
 
+    /// Open an existing project with the same approved roots, or create it.
+    ///
+    /// Exact root-list identity is intentional: overlapping roots can belong
+    /// to distinct projects, while selecting the same project directory twice
+    /// should not create duplicate recent-project entries.
+    ///
+    /// # Errors
+    ///
+    /// A persistence error when storage is unavailable.
+    pub async fn open_project(
+        &self,
+        name: impl Into<String> + Send,
+        roots: Vec<String>,
+    ) -> Result<ProjectRecord, ErrorEnvelope> {
+        if let Some(existing) = self
+            .list_projects()
+            .await?
+            .into_iter()
+            .find(|project| project.roots == roots)
+        {
+            return Ok(existing);
+        }
+        self.create_project(name, roots).await
+    }
+
     /// Read one project.
     ///
     /// # Errors
@@ -277,6 +302,22 @@ impl TaskService {
             .map_err(|error| self.repository_error(&error))
     }
 
+    /// Read one conversation.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::NotFound`] when it does not exist.
+    pub async fn get_conversation(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<ConversationRecord, ErrorEnvelope> {
+        self.repositories
+            .conversations
+            .get(conversation_id)
+            .await
+            .map_err(|error| self.repository_error(&error))
+    }
+
     /// Mark a conversation archived.
     ///
     /// # Errors
@@ -307,6 +348,44 @@ impl TaskService {
             .list(conversation_id)
             .await
             .map_err(|error| self.repository_error(&error))
+    }
+
+    /// Read the complete durable task record.
+    ///
+    /// Unlike [`TaskService::get_task`], this includes project, conversation,
+    /// goal, timestamps, and the configuration manifest captured at start.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::NotFound`] when the task does not exist.
+    pub async fn get_task_record(&self, task_id: &TaskId) -> Result<TaskRecord, ErrorEnvelope> {
+        self.repositories
+            .tasks
+            .get(task_id)
+            .await
+            .map_err(|error| self.repository_error(&error))
+    }
+
+    /// Replay durable events after `after_sequence` without subscribing live.
+    ///
+    /// This is the inspection/recovery surface used by headless adapters. It
+    /// deliberately returns only canonical events, never transient frames.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::NotFound`] when the task does not exist, or a persistence
+    /// error when replay fails.
+    pub async fn replay_task_events(
+        &self,
+        task_id: &TaskId,
+        after_sequence: u64,
+    ) -> Result<Vec<EventEnvelope>, ErrorEnvelope> {
+        self.get_task_record(task_id).await?;
+        self.repositories
+            .events
+            .replay(task_id, after_sequence)
+            .await
+            .map_err(|error| self.error(ErrorCode::PersistenceError, error.to_string()))
     }
 
     /// Start a task and return once it is registered, not once it finishes.
@@ -404,6 +483,9 @@ impl TaskService {
             },
         );
 
+        let projection = TaskProjectionWriter {
+            tasks: Arc::clone(&self.repositories.tasks),
+        };
         let journal = TaskJournal::new(
             task_id.clone(),
             request.conversation_id.clone(),
@@ -412,15 +494,11 @@ impl TaskService {
                 store: Arc::clone(&self.repositories.events),
                 clock: Arc::clone(&self.clock),
                 ids: Arc::clone(&self.ids),
+                projection,
             },
             updates,
             u64::try_from(initial_events.len()).unwrap_or(u64::MAX),
         );
-
-        let projection = TaskProjectionWriter {
-            tasks: Arc::clone(&self.repositories.tasks),
-            clock: Arc::clone(&self.clock),
-        };
 
         // The initial batch is already durable. Publish it only after the live
         // subscription exists; replay remains the source of truth if nobody
@@ -429,7 +507,7 @@ impl TaskService {
             journal.publish_persisted(event);
         }
 
-        let driver = TaskDriver::new(journal, self.providers.clone(), projection);
+        let driver = TaskDriver::new(journal, self.providers.clone());
         let goal = request.goal;
         tokio::spawn(async move {
             driver.run(goal, cancel).await;

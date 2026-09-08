@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::contracts::{EventEnvelope, EventPayload};
-use crate::ports::{Clock, TaskRepository};
+use crate::ports::TaskRepository;
 
 /// Keeps a task's cached row in step with its events.
 ///
@@ -15,8 +15,6 @@ use crate::ports::{Clock, TaskRepository};
 pub struct TaskProjectionWriter {
     /// Where task rows live.
     pub tasks: Arc<dyn TaskRepository>,
-    /// Source of the update timestamp.
-    pub clock: Arc<dyn Clock>,
 }
 
 impl std::fmt::Debug for TaskProjectionWriter {
@@ -51,7 +49,7 @@ impl TaskProjectionWriter {
 
         if let Err(error) = self
             .tasks
-            .update_projection(&event.task_id, current, event.sequence, &self.clock.now())
+            .update_projection(&event.task_id, current, event.sequence, &event.occurred_at)
             .await
         {
             // Recoverable: the events are the record, and startup rebuilds

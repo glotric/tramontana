@@ -27,6 +27,19 @@ pub(crate) fn default_profile_path() -> PathBuf {
     PathBuf::from(".tramontana-local").join("tramontana.sqlite")
 }
 
+/// Select the profile named explicitly by the caller, then the shared profile
+/// environment variable, then the repository-local development default.
+///
+/// `TRAMONTANA_PROFILE` gives the CLI and desktop shell a deliberate way to
+/// open the same durable record during M2 validation without baking a
+/// machine-specific application-data path into either adapter.
+#[must_use]
+pub(crate) fn profile_path(explicit: Option<PathBuf>) -> PathBuf {
+    explicit
+        .or_else(|| std::env::var_os("TRAMONTANA_PROFILE").map(PathBuf::from))
+        .unwrap_or_else(default_profile_path)
+}
+
 /// Open a profile and assemble the service over it.
 ///
 /// # Errors

@@ -6,6 +6,28 @@
 
 use tramontana_core::contracts::{EventEnvelope, EventPayload, StreamFrame};
 
+/// Emit one application value as stable, inspectable JSON.
+pub(crate) fn json(value: &impl serde::Serialize) -> std::process::ExitCode {
+    match serde_json::to_string_pretty(value) {
+        Ok(serialized) => {
+            println!("{serialized}");
+            std::process::ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("error: could not serialize result: {error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// Render a normalized application error at the adapter boundary.
+pub(crate) fn application_error(
+    error: &tramontana_core::contracts::ErrorEnvelope,
+) -> std::process::ExitCode {
+    eprintln!("error: {:?}: {}", error.code, error.message);
+    std::process::ExitCode::FAILURE
+}
+
 /// Render one durable event as a single line.
 #[must_use]
 pub(crate) fn event_line(event: &EventEnvelope) -> String {
@@ -25,6 +47,9 @@ pub(crate) fn event_line(event: &EventEnvelope) -> String {
             format!("{display_name} [{agent_id}]")
         }
         EventPayload::ModelStarted { model_id, .. } => format!("model {model_id}"),
+        EventPayload::ConfigurationResolved { configuration } => {
+            format!("manifest {}", configuration.manifest_hash)
+        }
         EventPayload::MessageCommitted { message } => {
             format!(
                 "{:?} message with {} part(s)",

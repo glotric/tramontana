@@ -7,6 +7,7 @@ use crate::contracts::{
     StreamFrame, TaskId, TaskUpdate,
 };
 use crate::ports::{Clock, EventStore, IdSource};
+use crate::services::projection::TaskProjectionWriter;
 
 /// The ports a journal needs.
 ///
@@ -20,6 +21,8 @@ pub struct JournalPorts {
     pub clock: Arc<dyn Clock>,
     /// Source of identifiers.
     pub ids: Arc<dyn IdSource>,
+    /// Cached task projection updated after durability and before publication.
+    pub projection: TaskProjectionWriter,
 }
 
 impl std::fmt::Debug for JournalPorts {
@@ -106,6 +109,10 @@ impl TaskJournal {
         *sequence = event.sequence;
         drop(sequence);
 
+        // The event is already canonical. Bring the disposable task-row cache
+        // up to date before publishing so a client cannot observe a terminal
+        // event and close the process in the small gap before projection.
+        self.ports.projection.record(&event).await;
         self.publish_persisted(&event);
 
         Ok(event)

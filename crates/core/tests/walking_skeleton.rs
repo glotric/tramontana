@@ -54,6 +54,23 @@ fn service() -> Arc<TaskService> {
     service_with_store().0
 }
 
+#[tokio::test]
+async fn opening_the_same_roots_reuses_the_project_record() {
+    let service = service();
+    let roots = vec!["/projects/demo".to_owned()];
+    let first = service
+        .open_project("Demo", roots.clone())
+        .await
+        .unwrap();
+    let reopened = service
+        .open_project("Ignored replacement name", roots)
+        .await
+        .unwrap();
+
+    assert_eq!(reopened, first);
+    assert_eq!(service.list_projects().await.unwrap(), vec![first]);
+}
+
 /// Poll until the task reaches a terminal state, or fail.
 ///
 /// Polls rather than sleeping a fixed duration: the fakes are deterministic but
@@ -170,6 +187,14 @@ async fn a_task_runs_to_completion_with_an_ordered_event_stream() {
     assert!(kinds.contains(&TaskEventKind::WorkerSelected));
     assert!(kinds.contains(&TaskEventKind::ToolRequested));
     assert!(kinds.contains(&TaskEventKind::ToolCompleted));
+
+    let task = service.get_task_record(&task_id).await.unwrap();
+    assert_eq!(task.last_sequence, events.last().unwrap().sequence);
+    assert_eq!(
+        service.recover().await.unwrap(),
+        0,
+        "a cleanly completed task must not need restart repair"
+    );
 }
 
 #[tokio::test]

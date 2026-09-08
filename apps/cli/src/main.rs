@@ -6,6 +6,9 @@
 //! arguments into an application call and renders the result; no routing,
 //! permission, or task behavior lives in this crate.
 
+mod configuration;
+mod conversation;
+mod project;
 mod render;
 mod run;
 mod wiring;
@@ -28,6 +31,12 @@ struct Cli {
 enum Command {
     /// Print version and contract-schema information as JSON.
     Info,
+    /// Open, list, and inspect durable projects.
+    Project(project::ProjectArgs),
+    /// Create, list, and inspect durable conversations.
+    Conversation(conversation::ConversationArgs),
+    /// Resolve and inspect project-authored configuration.
+    Configuration(configuration::ConfigurationArgs),
     /// Run one task against the fake providers and stream its activity.
     ///
     /// M1's walking skeleton: the same application service the desktop shell
@@ -40,11 +49,34 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Task(args)) => run::execute(args),
         Some(Command::Info) | None => {
             print_info();
             std::process::ExitCode::SUCCESS
         }
+        Some(command) => {
+            // The CLI owns the runtime; the services are runtime-agnostic.
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    eprintln!("error: could not start the async runtime: {error}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+            runtime.block_on(execute(command))
+        }
+    }
+}
+
+async fn execute(command: Command) -> std::process::ExitCode {
+    match command {
+        Command::Project(args) => project::execute(args).await,
+        Command::Conversation(args) => conversation::execute(args).await,
+        Command::Configuration(args) => configuration::execute(args).await,
+        Command::Task(args) => run::execute(args).await,
+        Command::Info => std::process::ExitCode::SUCCESS,
     }
 }
 
@@ -57,4 +89,64 @@ fn print_info() {
         env!("CARGO_PKG_VERSION"),
         tramontana_core::SCHEMA_VERSION,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn m2_management_commands_parse() {
+        assert!(Cli::try_parse_from(["tramontana", "project", "open", "."]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "tramontana",
+                "configuration",
+                "inspect",
+                "project-1",
+                "--active-path",
+                "src/lib.rs",
+                "--skill-id",
+                "rust",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "tramontana",
+                "conversation",
+                "create",
+                "M2 demo",
+                "--project-id",
+                "project-1",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "tramontana",
+                "task",
+                "replay",
+                "task-1",
+                "--after-sequence",
+                "4",
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn the_m1_task_invocation_remains_compatible() {
+        assert!(
+            Cli::try_parse_from([
+                "tramontana",
+                "task",
+                "Say hello",
+                "--chunk-delay-ms",
+                "0",
+                "--json",
+            ])
+            .is_ok()
+        );
+    }
 }

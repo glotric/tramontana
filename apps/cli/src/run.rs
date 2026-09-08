@@ -4,19 +4,45 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::Args;
-use tramontana_core::contracts::{TaskState, TaskUpdate};
+use clap::{Args, Subcommand};
+use tramontana_core::config::ConfigurationSelection;
+use tramontana_core::contracts::{ConversationId, TaskId, TaskState, TaskUpdate};
 use tramontana_core::services::StartTaskRequest;
 
-use crate::render::{event_line, frame_line};
+use crate::configuration;
+use crate::render::{self, event_line, frame_line};
 use crate::wiring;
 
 /// Arguments for `tramontana task`.
 #[derive(Debug, Args)]
 pub(crate) struct TaskArgs {
+    /// Inspect durable tasks instead of running one.
+    #[command(subcommand)]
+    command: Option<TaskCommand>,
+
     /// What to ask the worker to do.
     #[arg(default_value = "Say hello")]
     goal: String,
+
+    /// Conversation to attach the task to.
+    #[arg(long, value_name = "CONVERSATION_ID")]
+    conversation_id: Option<String>,
+
+    /// Project-relative path that determines scoped instruction activation.
+    #[arg(long, value_name = "RELATIVE_PATH")]
+    active_path: Option<String>,
+
+    /// Agent profile definition to activate.
+    #[arg(long, value_name = "ID")]
+    agent_id: Option<String>,
+
+    /// Workflow definition to activate.
+    #[arg(long, value_name = "ID")]
+    workflow_id: Option<String>,
+
+    /// Skill definition to activate. Repeat to set explicit precedence order.
+    #[arg(long = "skill-id", value_name = "ID")]
+    skill_ids: Vec<String>,
 
     /// Cancel the task after this many milliseconds.
     ///
@@ -33,29 +59,67 @@ pub(crate) struct TaskArgs {
     #[arg(long, value_name = "MS", default_value_t = 120)]
     chunk_delay_ms: u64,
 
-    /// Database file to use. Defaults to `.tramontana-local/tramontana.sqlite`.
+    /// Database file to use. Also configurable with `TRAMONTANA_PROFILE`.
+    #[arg(long, value_name = "PATH")]
+    profile: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, Subcommand)]
+enum TaskCommand {
+    /// List durable task records, optionally in one conversation.
+    List(TaskListArgs),
+    /// Show one complete durable task record.
+    Show(TaskShowArgs),
+    /// Replay canonical task events without transient stream frames.
+    Replay(TaskReplayArgs),
+}
+
+#[derive(Debug, Args)]
+struct TaskListArgs {
+    #[arg(long, value_name = "CONVERSATION_ID")]
+    conversation_id: Option<String>,
+
+    /// Database file to use.
+    #[arg(long, value_name = "PATH")]
+    profile: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct TaskShowArgs {
+    #[arg(value_name = "TASK_ID")]
+    task_id: String,
+
+    /// Database file to use.
+    #[arg(long, value_name = "PATH")]
+    profile: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct TaskReplayArgs {
+    #[arg(value_name = "TASK_ID")]
+    task_id: String,
+
+    /// Return events strictly after this durable sequence.
+    #[arg(long, value_name = "SEQUENCE", default_value_t = 0)]
+    after_sequence: u64,
+
+    /// Database file to use.
     #[arg(long, value_name = "PATH")]
     profile: Option<std::path::PathBuf>,
 }
 
 /// Run one task to a terminal state, streaming its activity.
-pub(crate) fn execute(args: TaskArgs) -> ExitCode {
-    // The CLI owns the runtime; the services are runtime-agnostic.
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("error: could not start the async runtime: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    runtime.block_on(run(args))
+pub(crate) async fn execute(mut args: TaskArgs) -> ExitCode {
+    match args.command.take() {
+        Some(TaskCommand::List(args)) => list(args).await,
+        Some(TaskCommand::Show(args)) => show(args).await,
+        Some(TaskCommand::Replay(args)) => replay(args).await,
+        None => run(args).await,
+    }
 }
 
 async fn run(args: TaskArgs) -> ExitCode {
-    let profile = args.profile.unwrap_or_else(wiring::default_profile_path);
+    let profile = wiring::profile_path(args.profile);
     let service = match wiring::open(&profile, args.chunk_delay_ms).await {
         Ok(service) => service,
         Err(message) => {
@@ -64,9 +128,31 @@ async fn run(args: TaskArgs) -> ExitCode {
         }
     };
 
+    let conversation_id = args.conversation_id.map(ConversationId::new);
+    if let Some(conversation_id) = &conversation_id {
+        let conversation = match service.get_conversation(conversation_id).await {
+            Ok(conversation) => conversation,
+            Err(error) => return render::application_error(&error),
+        };
+        if let Some(project_id) = conversation.project_id {
+            let selection = ConfigurationSelection {
+                active_path: args.active_path,
+                agent_id: args.agent_id,
+                workflow_id: args.workflow_id,
+                skill_ids: args.skill_ids,
+            };
+            if let Err(message) =
+                configuration::resolve_project(&service, &project_id, &selection).await
+            {
+                eprintln!("error: configuration could not be resolved: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     let task_id = match service
         .start_task(StartTaskRequest {
-            conversation_id: None,
+            conversation_id,
             goal: args.goal,
         })
         .await
@@ -169,6 +255,52 @@ async fn run(args: TaskArgs) -> ExitCode {
             eprintln!("error: {:?}: {}", error.code, error.message);
             ExitCode::FAILURE
         }
+    }
+}
+
+async fn list(args: TaskListArgs) -> ExitCode {
+    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
+        Ok(service) => service,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let conversation_id = args.conversation_id.map(ConversationId::new);
+    match service.list_tasks(conversation_id.as_ref()).await {
+        Ok(tasks) => render::json(&tasks),
+        Err(error) => render::application_error(&error),
+    }
+}
+
+async fn show(args: TaskShowArgs) -> ExitCode {
+    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
+        Ok(service) => service,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match service.get_task_record(&TaskId::new(args.task_id)).await {
+        Ok(task) => render::json(&task),
+        Err(error) => render::application_error(&error),
+    }
+}
+
+async fn replay(args: TaskReplayArgs) -> ExitCode {
+    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
+        Ok(service) => service,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match service
+        .replay_task_events(&TaskId::new(args.task_id), args.after_sequence)
+        .await
+    {
+        Ok(events) => render::json(&events),
+        Err(error) => render::application_error(&error),
     }
 }
 
