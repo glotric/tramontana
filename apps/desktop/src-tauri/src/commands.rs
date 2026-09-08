@@ -224,8 +224,10 @@ pub(crate) async fn start_task(
     let forward_task_id = task_id.clone();
     tokio::spawn(async move {
         let mut highest = 0;
+        let mut terminal_replayed = false;
         for event in replayed {
             highest = highest.max(event.sequence);
+            terminal_replayed |= is_terminal_event(&event);
             if channel
                 .send(TaskUpdate::Event {
                     event: Box::new(event),
@@ -234,6 +236,9 @@ pub(crate) async fn start_task(
             {
                 return; // The window went away.
             }
+        }
+        if terminal_replayed {
+            return;
         }
 
         loop {
@@ -246,12 +251,7 @@ pub(crate) async fn start_task(
                         continue;
                     }
                     highest = event.sequence;
-                    let terminal = matches!(
-                        &event.payload,
-                        tramontana_core::contracts::EventPayload::TaskCompleted { .. }
-                            | tramontana_core::contracts::EventPayload::TaskFailed { .. }
-                            | tramontana_core::contracts::EventPayload::TaskCancelled { .. }
-                    );
+                    let terminal = is_terminal_event(&event);
                     if channel.send(TaskUpdate::Event { event }).is_err() {
                         return;
                     }
@@ -275,12 +275,16 @@ pub(crate) async fn start_task(
                     };
                     for event in missed {
                         highest = highest.max(event.sequence);
+                        let terminal = is_terminal_event(&event);
                         if channel
                             .send(TaskUpdate::Event {
                                 event: Box::new(event),
                             })
                             .is_err()
                         {
+                            return;
+                        }
+                        if terminal {
                             return;
                         }
                     }
@@ -291,6 +295,15 @@ pub(crate) async fn start_task(
     });
 
     Ok(task_id)
+}
+
+fn is_terminal_event(event: &EventEnvelope) -> bool {
+    matches!(
+        &event.payload,
+        tramontana_core::contracts::EventPayload::TaskCompleted { .. }
+            | tramontana_core::contracts::EventPayload::TaskFailed { .. }
+            | tramontana_core::contracts::EventPayload::TaskCancelled { .. }
+    )
 }
 
 async fn pick_project_root(app: &AppHandle) -> Result<Option<CanonicalRoot>, ErrorEnvelope> {
