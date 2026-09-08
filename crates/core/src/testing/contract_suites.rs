@@ -65,7 +65,10 @@ where
     // A first append expects 0 and yields sequence 1.
     let store = build().await;
     assert_eq!(
-        store.append(&task, 0, vec![event_at(&task, 1)]).await.unwrap(),
+        store
+            .append(&task, 0, vec![event_at(&task, 1)])
+            .await
+            .unwrap(),
         1
     );
     assert_eq!(store.last_sequence(&task).await.unwrap(), 1);
@@ -88,14 +91,20 @@ where
     // Round trip: what comes back is what went in.
     let original = event_at(&task, 1);
     let store = build().await;
-    store.append(&task, 0, vec![original.clone()]).await.unwrap();
+    store
+        .append(&task, 0, vec![original.clone()])
+        .await
+        .unwrap();
     let round_tripped = store.replay(&task, 0).await.unwrap();
     assert_eq!(round_tripped, vec![original]);
 
     // A stale expected sequence conflicts rather than interleaving. This is
     // what stops two writers corrupting one task's order.
     let store = build().await;
-    store.append(&task, 0, vec![event_at(&task, 1)]).await.unwrap();
+    store
+        .append(&task, 0, vec![event_at(&task, 1)])
+        .await
+        .unwrap();
     let error = store
         .append(&task, 0, vec![event_at(&task, 1)])
         .await
@@ -153,13 +162,19 @@ where
         .await
         .unwrap();
     let tail = store.replay(&task, 1).await.unwrap();
-    assert_eq!(tail.iter().map(|e| e.sequence).collect::<Vec<_>>(), vec![2, 3]);
+    assert_eq!(
+        tail.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+        vec![2, 3]
+    );
     assert!(store.replay(&task, 3).await.unwrap().is_empty());
 
     // Streams are isolated per task.
     let store = build().await;
     let other = TaskId::new("task-2");
-    store.append(&task, 0, vec![event_at(&task, 1)]).await.unwrap();
+    store
+        .append(&task, 0, vec![event_at(&task, 1)])
+        .await
+        .unwrap();
     assert_eq!(store.last_sequence(&other).await.unwrap(), 0);
     store
         .append(&other, 0, vec![event_at(&other, 1)])
@@ -170,7 +185,13 @@ where
 
     // Appending after a successful append continues the stream.
     let store = build().await;
-    store.append(&task, 0, vec![event_at(&task, 1)]).await.unwrap();
-    store.append(&task, 1, vec![event_at(&task, 2)]).await.unwrap();
+    store
+        .append(&task, 0, vec![event_at(&task, 1)])
+        .await
+        .unwrap();
+    store
+        .append(&task, 1, vec![event_at(&task, 2)])
+        .await
+        .unwrap();
     assert_eq!(store.last_sequence(&task).await.unwrap(), 2);
 }

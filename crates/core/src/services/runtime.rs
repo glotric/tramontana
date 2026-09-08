@@ -8,8 +8,8 @@ use crate::contracts::{
     StreamFrame, TaskEventKind, TaskState,
 };
 use crate::ports::{
-    ModelEvent, ModelProvider, ModelRequest, ToolInvocation, ToolProvider,
-    WorkerHost, WorkerOutcome, WorkerRequest,
+    ModelEvent, ModelProvider, ModelRequest, ToolInvocation, ToolProvider, WorkerHost,
+    WorkerOutcome, WorkerRequest,
 };
 use crate::services::journal::TaskJournal;
 use crate::services::projection::TaskProjectionWriter;

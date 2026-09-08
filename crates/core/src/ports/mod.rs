@@ -20,8 +20,6 @@ pub use clock::Clock;
 pub use event_store::{EventStore, EventStoreError};
 pub use ids::IdSource;
 pub use model::{ModelEvent, ModelProvider, ModelRequest, StopReason};
-pub use repository::{
-    ConversationRepository, ProjectRepository, RepositoryError, TaskRepository,
-};
+pub use repository::{ConversationRepository, ProjectRepository, RepositoryError, TaskRepository};
 pub use tool::{ToolInvocation, ToolOutcome, ToolProvider};
 pub use worker::{AgentProvider, WorkerHost, WorkerOutcome, WorkerRequest};

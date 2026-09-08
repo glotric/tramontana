@@ -33,7 +33,11 @@ impl Clock for SystemClock {
 fn format_rfc3339(seconds: u64, millis: u32) -> String {
     let days = seconds / 86_400;
     let time_of_day = seconds % 86_400;
-    let (hours, minutes, secs) = (time_of_day / 3_600, (time_of_day / 60) % 60, time_of_day % 60);
+    let (hours, minutes, secs) = (
+        time_of_day / 3_600,
+        (time_of_day / 60) % 60,
+        time_of_day % 60,
+    );
     let (year, month, day) = civil_from_days(days);
     format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{secs:02}.{millis:03}Z")
 }
@@ -52,7 +56,11 @@ fn civil_from_days(days: u64) -> (u64, u64, u64) {
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let shifted_month = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
-    let month = if shifted_month < 10 { shifted_month + 3 } else { shifted_month - 9 };
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
     (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
@@ -68,7 +76,10 @@ mod tests {
     #[test]
     fn known_instants_format_correctly() {
         // 2026-09-07T12:34:56Z
-        assert_eq!(format_rfc3339(1_788_006_896, 789), "2026-09-07T12:34:56.789Z");
+        assert_eq!(
+            format_rfc3339(1_788_784_496, 789),
+            "2026-09-07T12:34:56.789Z"
+        );
         // A leap day, which a naive month table gets wrong.
         assert_eq!(format_rfc3339(1_709_164_800, 0), "2024-02-29T00:00:00.000Z");
     }

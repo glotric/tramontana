@@ -189,10 +189,12 @@ fn manifest_hash(sources: &[ConfigurationSource]) -> String {
 /// would change every manifest for no reason.
 pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
 }
 
 #[cfg(test)]
@@ -285,7 +287,8 @@ mod tests {
         disabled.enabled = false;
 
         assert_ne!(
-            EffectiveConfiguration::new(vec![enabled], Vec::new(), Timestamp::new("t")).manifest_hash,
+            EffectiveConfiguration::new(vec![enabled], Vec::new(), Timestamp::new("t"))
+                .manifest_hash,
             EffectiveConfiguration::new(vec![disabled], Vec::new(), Timestamp::new("t"))
                 .manifest_hash
         );

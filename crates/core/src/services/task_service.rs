@@ -173,7 +173,10 @@ impl TaskService {
     /// # Errors
     ///
     /// [`ErrorCode::NotFound`] when it does not exist.
-    pub async fn get_project(&self, project_id: &ProjectId) -> Result<ProjectRecord, ErrorEnvelope> {
+    pub async fn get_project(
+        &self,
+        project_id: &ProjectId,
+    ) -> Result<ProjectRecord, ErrorEnvelope> {
         self.repositories
             .projects
             .get(project_id)
@@ -308,7 +311,10 @@ impl TaskService {
 
         self.lock_live()?.insert(
             task_id.clone(),
-            LiveTask { cancel: cancel.clone(), updates: updates.clone() },
+            LiveTask {
+                cancel: cancel.clone(),
+                updates: updates.clone(),
+            },
         );
 
         let journal = TaskJournal::new(
@@ -434,7 +440,11 @@ impl TaskService {
     }
 
     fn error(&self, code: ErrorCode, message: impl Into<String>) -> ErrorEnvelope {
-        ErrorEnvelope::new(code, message, CorrelationId::new(self.ids.next("correlation")))
+        ErrorEnvelope::new(
+            code,
+            message,
+            CorrelationId::new(self.ids.next("correlation")),
+        )
     }
 
     /// Map a repository failure onto the normalized error taxonomy.
@@ -446,7 +456,9 @@ impl TaskService {
         self.error(code, error.to_string())
     }
 
-    fn lock_live(&self) -> Result<std::sync::MutexGuard<'_, HashMap<TaskId, LiveTask>>, ErrorEnvelope> {
+    fn lock_live(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, HashMap<TaskId, LiveTask>>, ErrorEnvelope> {
         self.live
             .lock()
             .map_err(|_| self.error(ErrorCode::Internal, "live task registry lock poisoned"))

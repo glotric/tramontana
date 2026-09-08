@@ -146,11 +146,11 @@ pub(crate) async fn start_task(
 ///
 /// [`ErrorCode::NotFound`] when the task is unknown.
 #[tauri::command]
-pub(crate) fn cancel_task(
+pub(crate) async fn cancel_task(
     task_id: TaskId,
     state: State<'_, AppState>,
 ) -> Result<(), ErrorEnvelope> {
-    state.service.cancel_task(&task_id)
+    state.service.cancel_task(&task_id).await
 }
 
 /// Read the current view of a task.
@@ -159,11 +159,11 @@ pub(crate) fn cancel_task(
 ///
 /// [`ErrorCode::NotFound`] when the task is unknown.
 #[tauri::command]
-pub(crate) fn get_task(
+pub(crate) async fn get_task(
     task_id: TaskId,
     state: State<'_, AppState>,
 ) -> Result<TaskSnapshot, ErrorEnvelope> {
-    state.service.get_task(&task_id)
+    state.service.get_task(&task_id).await
 }
 
 /// Build an invalid-request error for a boundary rejection.

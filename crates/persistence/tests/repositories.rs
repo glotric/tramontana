@@ -54,7 +54,13 @@ async fn an_unknown_project_is_reported_not_invented() {
     let repository = SqliteProjectRepository::new(database(&directory, "missing").await);
 
     let error = repository.get(&ProjectId::new("nope")).await.unwrap_err();
-    assert!(matches!(error, RepositoryError::NotFound { kind: "project", .. }));
+    assert!(matches!(
+        error,
+        RepositoryError::NotFound {
+            kind: "project",
+            ..
+        }
+    ));
 }
 
 #[tokio::test]
@@ -95,7 +101,10 @@ async fn archiving_a_conversation_records_when_it_happened() {
 
     let record = ConversationRecord::new(ConversationId::new("c1"), None, "Untitled", at(0));
     repository.create(&record).await.unwrap();
-    repository.archive(&record.conversation_id, &at(9)).await.unwrap();
+    repository
+        .archive(&record.conversation_id, &at(9))
+        .await
+        .unwrap();
 
     let loaded = repository.get(&record.conversation_id).await.unwrap();
     assert_eq!(loaded.archived_at, Some(at(9)));
@@ -151,7 +160,13 @@ async fn a_task_projection_survives_a_restart() {
         let db = Database::open(&path).await.unwrap();
         let tasks = SqliteTaskRepository::new(db.clone());
         tasks
-            .create(&TaskRecord::new(task_id.clone(), None, None, "say hello", at(0)))
+            .create(&TaskRecord::new(
+                task_id.clone(),
+                None,
+                None,
+                "say hello",
+                at(0),
+            ))
             .await
             .unwrap();
         tasks
@@ -181,7 +196,13 @@ async fn a_crash_between_appending_an_event_and_updating_the_cache_is_repaired()
     let task_id = TaskId::new("t1");
 
     tasks
-        .create(&TaskRecord::new(task_id.clone(), None, None, "say hello", at(0)))
+        .create(&TaskRecord::new(
+            task_id.clone(),
+            None,
+            None,
+            "say hello",
+            at(0),
+        ))
         .await
         .unwrap();
 
@@ -210,7 +231,13 @@ async fn rebuilding_recovers_the_state_from_the_last_state_change_event() {
     let task_id = TaskId::new("t1");
 
     tasks
-        .create(&TaskRecord::new(task_id.clone(), None, None, "say hello", at(0)))
+        .create(&TaskRecord::new(
+            task_id.clone(),
+            None,
+            None,
+            "say hello",
+            at(0),
+        ))
         .await
         .unwrap();
 
@@ -247,7 +274,13 @@ async fn rebuilding_a_consistent_database_corrects_nothing() {
     let tasks = SqliteTaskRepository::new(db.clone());
 
     tasks
-        .create(&TaskRecord::new(TaskId::new("t1"), None, None, "say hello", at(0)))
+        .create(&TaskRecord::new(
+            TaskId::new("t1"),
+            None,
+            None,
+            "say hello",
+            at(0),
+        ))
         .await
         .unwrap();
 

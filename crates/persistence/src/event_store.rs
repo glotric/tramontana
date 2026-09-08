@@ -96,8 +96,16 @@ impl EventStore for SqliteEventStore {
             .bind(event.event_id.as_str())
             .bind(event.conversation_id.as_ref().map(ConversationId::as_str))
             .bind(event.occurred_at.as_str())
-            .bind(serde_json::to_string(&event.kind).unwrap_or_default().trim_matches('"'))
-            .bind(serde_json::to_string(&event.visibility).unwrap_or_default().trim_matches('"'))
+            .bind(
+                serde_json::to_string(&event.kind)
+                    .unwrap_or_default()
+                    .trim_matches('"'),
+            )
+            .bind(
+                serde_json::to_string(&event.visibility)
+                    .unwrap_or_default()
+                    .trim_matches('"'),
+            )
             .bind(event.correlation_id.as_str())
             .bind(event.causation_id.as_deref())
             .bind(i64::from(event.schema_version))
@@ -141,21 +149,24 @@ impl EventStore for SqliteEventStore {
                 let kind: String = row.try_get("kind").map_err(|e| unavailable(&e))?;
                 let visibility: String = row.try_get("visibility").map_err(|e| unavailable(&e))?;
                 let payload: String = row.try_get("payload").map_err(|e| unavailable(&e))?;
-                let conversation_id: Option<String> =
-                    row.try_get("conversation_id").map_err(|e| unavailable(&e))?;
+                let conversation_id: Option<String> = row
+                    .try_get("conversation_id")
+                    .map_err(|e| unavailable(&e))?;
                 let schema_version: i64 =
                     row.try_get("schema_version").map_err(|e| unavailable(&e))?;
 
                 Ok(EventEnvelope {
                     schema_version: u32::try_from(schema_version).unwrap_or(0),
                     event_id: EventId::new(
-                        row.try_get::<String, _>("event_id").map_err(|e| unavailable(&e))?,
+                        row.try_get::<String, _>("event_id")
+                            .map_err(|e| unavailable(&e))?,
                     ),
                     task_id: task_id.clone(),
                     conversation_id: conversation_id.map(ConversationId::new),
                     sequence: u64::try_from(sequence).unwrap_or(0),
                     occurred_at: Timestamp::new(
-                        row.try_get::<String, _>("occurred_at").map_err(|e| unavailable(&e))?,
+                        row.try_get::<String, _>("occurred_at")
+                            .map_err(|e| unavailable(&e))?,
                     ),
                     // An unknown kind or payload from a newer build is read as
                     // unsupported rather than failing the replay
@@ -163,7 +174,8 @@ impl EventStore for SqliteEventStore {
                     kind: parse_json_scalar(&kind).unwrap_or(TaskEventKind::DiagnosticRecorded),
                     visibility: parse_json_scalar(&visibility).unwrap_or(Visibility::Diagnostic),
                     correlation_id: CorrelationId::new(
-                        row.try_get::<String, _>("correlation_id").map_err(|e| unavailable(&e))?,
+                        row.try_get::<String, _>("correlation_id")
+                            .map_err(|e| unavailable(&e))?,
                     ),
                     causation_id: row.try_get("causation_id").map_err(|e| unavailable(&e))?,
                     payload: serde_json::from_str::<EventPayload>(&payload)

@@ -92,7 +92,7 @@ async fn run(args: TaskArgs) -> ExitCode {
         let task_id = task_id.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-            let _ = service.cancel_task(&task_id);
+            let _ = service.cancel_task(&task_id).await;
         });
     }
 

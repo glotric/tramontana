@@ -16,7 +16,10 @@ fn unavailable(error: &sqlx::Error) -> RepositoryError {
 }
 
 fn not_found(kind: &'static str, id: impl std::fmt::Display) -> RepositoryError {
-    RepositoryError::NotFound { kind, id: id.to_string() }
+    RepositoryError::NotFound {
+        kind,
+        id: id.to_string(),
+    }
 }
 
 /// Serialize an enum to its bare camelCase name for storage.
@@ -100,7 +103,8 @@ impl ProjectRepository for SqliteProjectRepository {
             name: row.try_get("name").map_err(|e| unavailable(&e))?,
             roots,
             created_at: Timestamp::new(
-                row.try_get::<String, _>("created_at").map_err(|e| unavailable(&e))?,
+                row.try_get::<String, _>("created_at")
+                    .map_err(|e| unavailable(&e))?,
             ),
         })
     }
@@ -115,8 +119,10 @@ impl ProjectRepository for SqliteProjectRepository {
 
         let mut projects = Vec::with_capacity(rows.len());
         for row in rows {
-            let project_id =
-                ProjectId::new(row.try_get::<String, _>("project_id").map_err(|e| unavailable(&e))?);
+            let project_id = ProjectId::new(
+                row.try_get::<String, _>("project_id")
+                    .map_err(|e| unavailable(&e))?,
+            );
             let roots = self.roots_for(&project_id).await?;
             projects.push(ProjectRecord {
                 schema_version: tramontana_core::SCHEMA_VERSION,
@@ -124,7 +130,8 @@ impl ProjectRepository for SqliteProjectRepository {
                 name: row.try_get("name").map_err(|e| unavailable(&e))?,
                 roots,
                 created_at: Timestamp::new(
-                    row.try_get::<String, _>("created_at").map_err(|e| unavailable(&e))?,
+                    row.try_get::<String, _>("created_at")
+                        .map_err(|e| unavailable(&e))?,
                 ),
             });
         }
@@ -162,11 +169,14 @@ impl SqliteConversationRepository {
     }
 }
 
-fn conversation_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ConversationRecord, RepositoryError> {
+fn conversation_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<ConversationRecord, RepositoryError> {
     Ok(ConversationRecord {
         schema_version: tramontana_core::SCHEMA_VERSION,
         conversation_id: ConversationId::new(
-            row.try_get::<String, _>("conversation_id").map_err(|e| unavailable(&e))?,
+            row.try_get::<String, _>("conversation_id")
+                .map_err(|e| unavailable(&e))?,
         ),
         project_id: row
             .try_get::<Option<String>, _>("project_id")
@@ -174,7 +184,8 @@ fn conversation_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ConversationRe
             .map(ProjectId::new),
         title: row.try_get("title").map_err(|e| unavailable(&e))?,
         created_at: Timestamp::new(
-            row.try_get::<String, _>("created_at").map_err(|e| unavailable(&e))?,
+            row.try_get::<String, _>("created_at")
+                .map_err(|e| unavailable(&e))?,
         ),
         archived_at: row
             .try_get::<Option<String>, _>("archived_at")
@@ -276,7 +287,10 @@ fn task_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<TaskRecord, Repository
     let last_sequence: i64 = row.try_get("last_sequence").map_err(|e| unavailable(&e))?;
     Ok(TaskRecord {
         schema_version: tramontana_core::SCHEMA_VERSION,
-        task_id: TaskId::new(row.try_get::<String, _>("task_id").map_err(|e| unavailable(&e))?),
+        task_id: TaskId::new(
+            row.try_get::<String, _>("task_id")
+                .map_err(|e| unavailable(&e))?,
+        ),
         conversation_id: row
             .try_get::<Option<String>, _>("conversation_id")
             .map_err(|e| unavailable(&e))?
@@ -292,10 +306,12 @@ fn task_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<TaskRecord, Repository
         state: parse_scalar(&state).unwrap_or(TaskState::Interrupted),
         last_sequence: u64::try_from(last_sequence).unwrap_or(0),
         created_at: Timestamp::new(
-            row.try_get::<String, _>("created_at").map_err(|e| unavailable(&e))?,
+            row.try_get::<String, _>("created_at")
+                .map_err(|e| unavailable(&e))?,
         ),
         updated_at: Timestamp::new(
-            row.try_get::<String, _>("updated_at").map_err(|e| unavailable(&e))?,
+            row.try_get::<String, _>("updated_at")
+                .map_err(|e| unavailable(&e))?,
         ),
     })
 }
@@ -415,15 +431,17 @@ impl TaskRepository for SqliteTaskRepository {
         let mut corrected = 0;
         for row in rows {
             let task_id: String = row.try_get("task_id").map_err(|e| unavailable(&e))?;
-            let cached_sequence: i64 = row.try_get("cached_sequence").map_err(|e| unavailable(&e))?;
-            let actual_sequence: i64 = row.try_get("actual_sequence").map_err(|e| unavailable(&e))?;
+            let cached_sequence: i64 = row
+                .try_get("cached_sequence")
+                .map_err(|e| unavailable(&e))?;
+            let actual_sequence: i64 = row
+                .try_get("actual_sequence")
+                .map_err(|e| unavailable(&e))?;
             let cached_state: String = row.try_get("cached_state").map_err(|e| unavailable(&e))?;
 
             let actual_state = self.state_from_events(&task_id).await?;
-            let actual_name = actual_state.map_or_else(
-                || cached_state.clone(),
-                |state| scalar(&state),
-            );
+            let actual_name =
+                actual_state.map_or_else(|| cached_state.clone(), |state| scalar(&state));
 
             if cached_sequence == actual_sequence && cached_state == actual_name {
                 continue;

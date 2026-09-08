@@ -171,8 +171,13 @@ fn parse(block: &str) -> Result<FrontMatter, FrontMatterError> {
             // Documented per-kind keys that this milestone records but does not
             // yet act on. Listing them keeps them out of `unknown_keys`, so a
             // valid example file does not produce a spurious warning.
-            "applies_to" | "suggest_when" | "required_capabilities" | "preferred_capabilities"
-            | "max_steps" | "inputs" | "format_version" => {}
+            "applies_to"
+            | "suggest_when"
+            | "required_capabilities"
+            | "preferred_capabilities"
+            | "max_steps"
+            | "inputs"
+            | "format_version" => {}
             other => parsed.unknown_keys.push(other.to_owned()),
         }
     }
@@ -184,13 +189,17 @@ fn string(value: &yaml_rust2::Yaml, key: &'static str) -> Result<String, FrontMa
     value
         .as_str()
         .map(str::to_owned)
-        .ok_or(FrontMatterError::WrongType { key, expected: "a string" })
+        .ok_or(FrontMatterError::WrongType {
+            key,
+            expected: "a string",
+        })
 }
 
 fn integer(value: &yaml_rust2::Yaml, key: &'static str) -> Result<i64, FrontMatterError> {
-    value
-        .as_i64()
-        .ok_or(FrontMatterError::WrongType { key, expected: "an integer" })
+    value.as_i64().ok_or(FrontMatterError::WrongType {
+        key,
+        expected: "an integer",
+    })
 }
 
 #[cfg(test)]
@@ -262,13 +271,19 @@ mod tests {
         let error = split_front_matter("---\nenabled: \"yes\"\n---\nbody\n").unwrap_err();
         assert_eq!(
             error,
-            FrontMatterError::WrongType { key: "enabled", expected: "a boolean" }
+            FrontMatterError::WrongType {
+                key: "enabled",
+                expected: "a boolean"
+            }
         );
 
         let error = split_front_matter("---\nversion: two\n---\nbody\n").unwrap_err();
         assert_eq!(
             error,
-            FrontMatterError::WrongType { key: "version", expected: "an integer" }
+            FrontMatterError::WrongType {
+                key: "version",
+                expected: "an integer"
+            }
         );
     }
 

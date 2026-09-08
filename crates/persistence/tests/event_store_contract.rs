@@ -108,5 +108,8 @@ async fn migrating_an_already_migrated_database_is_a_no_op() {
 
     let database = Database::open(&path).await.unwrap();
     let store = SqliteEventStore::new(database);
-    assert_eq!(store.last_sequence(&TaskId::new("task-1")).await.unwrap(), 0);
+    assert_eq!(
+        store.last_sequence(&TaskId::new("task-1")).await.unwrap(),
+        0
+    );
 }

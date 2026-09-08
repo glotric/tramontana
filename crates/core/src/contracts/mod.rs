@@ -44,11 +44,11 @@ pub use ids::{
     InvocationId, MessageId, ModelId, ProjectId, ProviderId, TaskId, WorkerSessionId,
 };
 pub use message::{MessagePart, MessageRole, MessageStatus, NormalizedMessage};
-pub use records::{ConversationRecord, ProjectRecord, TaskRecord};
 pub use primitives::{
     DataClass, ExecutionLocation, RiskClass, RoutingMode, SecretRef, SecretStore, SideEffect,
     Visibility,
 };
+pub use records::{ConversationRecord, ProjectRecord, TaskRecord};
 pub use task::{InvalidTransition, TaskSnapshot, TaskState};
 pub use time::Timestamp;
 

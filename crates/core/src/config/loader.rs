@@ -67,7 +67,10 @@ fn interpret(
     };
 
     if raw.content.len() > MAX_SOURCE_BYTES {
-        diagnostics.push(error(&raw.relative_path, "file exceeds the 1 MiB size limit"));
+        diagnostics.push(error(
+            &raw.relative_path,
+            "file exceeds the 1 MiB size limit",
+        ));
         source.enabled = false;
         return source;
     }
@@ -121,7 +124,9 @@ fn disable_duplicate_ids(
     let mut seen: HashMap<(ConfigurationKind, String), Vec<usize>> = HashMap::new();
     for (index, source) in sources.iter().enumerate() {
         if let Some(id) = &source.declared_id {
-            seen.entry((source.kind, id.clone())).or_default().push(index);
+            seen.entry((source.kind, id.clone()))
+                .or_default()
+                .push(index);
         }
     }
 
@@ -209,7 +214,11 @@ mod tests {
                 raw("CLAUDE.md", ConfigurationKind::Claude, "compat"),
                 raw("AGENTS.md", ConfigurationKind::RootAgents, "root"),
                 raw("src/AGENTS.md", ConfigurationKind::ScopedAgents, "scoped"),
-                raw(".tramontana/project.md", ConfigurationKind::ProjectOverview, "overview"),
+                raw(
+                    ".tramontana/project.md",
+                    ConfigurationKind::ProjectOverview,
+                    "overview",
+                ),
             ],
             at(),
         );
@@ -221,7 +230,12 @@ mod tests {
             .collect();
         assert_eq!(
             paths,
-            vec!["src/AGENTS.md", "AGENTS.md", ".tramontana/project.md", "CLAUDE.md"]
+            vec![
+                "src/AGENTS.md",
+                "AGENTS.md",
+                ".tramontana/project.md",
+                "CLAUDE.md"
+            ]
         );
     }
 
@@ -242,7 +256,10 @@ mod tests {
             .iter()
             .map(|s| s.relative_path.as_str())
             .collect();
-        assert_eq!(paths, vec!["a/b/c/AGENTS.md", "a/b/AGENTS.md", "a/AGENTS.md"]);
+        assert_eq!(
+            paths,
+            vec!["a/b/c/AGENTS.md", "a/b/AGENTS.md", "a/AGENTS.md"]
+        );
     }
 
     #[test]
@@ -251,8 +268,16 @@ mod tests {
         // or behavior would depend on how a directory happened to enumerate.
         let files = || {
             vec![
-                raw(".tramontana/rules/b.md", ConfigurationKind::Rule, "---\nid: b\n---\nb"),
-                raw(".tramontana/rules/a.md", ConfigurationKind::Rule, "---\nid: a\n---\na"),
+                raw(
+                    ".tramontana/rules/b.md",
+                    ConfigurationKind::Rule,
+                    "---\nid: b\n---\nb",
+                ),
+                raw(
+                    ".tramontana/rules/a.md",
+                    ConfigurationKind::Rule,
+                    "---\nid: a\n---\na",
+                ),
                 raw("AGENTS.md", ConfigurationKind::RootAgents, "root"),
             ]
         };
@@ -268,7 +293,11 @@ mod tests {
     fn malformed_front_matter_disables_the_item_without_failing() {
         let resolved = resolve(
             vec![
-                raw(".tramontana/skills/broken.md", ConfigurationKind::Skill, "---\nid: x\nunclosed"),
+                raw(
+                    ".tramontana/skills/broken.md",
+                    ConfigurationKind::Skill,
+                    "---\nid: x\nunclosed",
+                ),
                 raw("AGENTS.md", ConfigurationKind::RootAgents, "fine"),
             ],
             at(),
@@ -295,8 +324,16 @@ mod tests {
     fn a_duplicate_id_disables_every_copy_rather_than_picking_one() {
         let resolved = resolve(
             vec![
-                raw(".tramontana/rules/one.md", ConfigurationKind::Rule, "---\nid: dup\n---\nA"),
-                raw(".tramontana/rules/two.md", ConfigurationKind::Rule, "---\nid: dup\n---\nB"),
+                raw(
+                    ".tramontana/rules/one.md",
+                    ConfigurationKind::Rule,
+                    "---\nid: dup\n---\nA",
+                ),
+                raw(
+                    ".tramontana/rules/two.md",
+                    ConfigurationKind::Rule,
+                    "---\nid: dup\n---\nB",
+                ),
             ],
             at(),
         );
@@ -317,8 +354,16 @@ mod tests {
         // Ids are unique within a kind, not globally (`CONFIGURATION.md` §5).
         let resolved = resolve(
             vec![
-                raw(".tramontana/rules/x.md", ConfigurationKind::Rule, "---\nid: shared\n---\nA"),
-                raw(".tramontana/skills/x.md", ConfigurationKind::Skill, "---\nid: shared\n---\nB"),
+                raw(
+                    ".tramontana/rules/x.md",
+                    ConfigurationKind::Rule,
+                    "---\nid: shared\n---\nA",
+                ),
+                raw(
+                    ".tramontana/skills/x.md",
+                    ConfigurationKind::Skill,
+                    "---\nid: shared\n---\nB",
+                ),
             ],
             at(),
         );
@@ -370,13 +415,22 @@ mod tests {
         assert!(!resolved.has_errors());
         assert_eq!(resolved.sources[0].unknown_keys, vec!["future"]);
         assert_eq!(resolved.diagnostics.len(), 1);
-        assert_eq!(resolved.diagnostics[0].severity, DiagnosticSeverity::Warning);
+        assert_eq!(
+            resolved.diagnostics[0].severity,
+            DiagnosticSeverity::Warning
+        );
     }
 
     #[test]
     fn content_hashes_distinguish_otherwise_identical_files() {
-        let a = resolve(vec![raw("AGENTS.md", ConfigurationKind::RootAgents, "one")], at());
-        let b = resolve(vec![raw("AGENTS.md", ConfigurationKind::RootAgents, "two")], at());
+        let a = resolve(
+            vec![raw("AGENTS.md", ConfigurationKind::RootAgents, "one")],
+            at(),
+        );
+        let b = resolve(
+            vec![raw("AGENTS.md", ConfigurationKind::RootAgents, "two")],
+            at(),
+        );
         assert_ne!(a.sources[0].content_hash, b.sources[0].content_hash);
         assert_ne!(a.manifest_hash, b.manifest_hash);
     }

@@ -180,7 +180,11 @@ fn push_file(
         return;
     };
 
-    found.push(RawSource { relative_path: relative, kind, content });
+    found.push(RawSource {
+        relative_path: relative,
+        kind,
+        content,
+    });
 }
 
 /// Express `path` relative to `root`, using `/` on every platform.

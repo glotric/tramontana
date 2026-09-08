@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use tramontana_core::ports::EventStore;
-use tramontana_core::services::TaskService;
+use tramontana_core::services::{Providers, Repositories, TaskService};
 use tramontana_core::testing::{
-    FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryEventStore,
-    SequentialIdSource,
+    FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryConversationRepository,
+    InMemoryEventStore, InMemoryProjectRepository, InMemoryTaskRepository, SequentialIdSource,
 };
 
 /// What the Tauri layer manages.
@@ -29,15 +29,22 @@ impl AppState {
     pub(crate) fn with_fakes() -> Self {
         let store: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
         let service = TaskService::new(
-            store,
+            Repositories {
+                projects: Arc::new(InMemoryProjectRepository::new()),
+                conversations: Arc::new(InMemoryConversationRepository::new()),
+                tasks: Arc::new(InMemoryTaskRepository::with_events(Arc::clone(&store))),
+                events: store,
+            },
+            Providers {
+                model: Arc::new(FakeModelProvider::streaming_paced(
+                    ["Hello", ", ", "world", " from ", "Tramontana"],
+                    220,
+                )),
+                tools: Arc::new(FakeToolProvider::new()),
+                worker: Arc::new(FakeWorker::new()),
+            },
             Arc::new(FakeClock::new()),
             Arc::new(SequentialIdSource::new()),
-            Arc::new(FakeModelProvider::streaming_paced(
-                ["Hello", ", ", "world", " from ", "Tramontana"],
-                220,
-            )),
-            Arc::new(FakeToolProvider::new()),
-            Arc::new(FakeWorker::new()),
         );
         Self {
             service: Arc::new(service),

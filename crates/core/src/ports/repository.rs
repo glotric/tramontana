@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::contracts::{
-    ConversationId, ProjectId, ProjectRecord, ConversationRecord, TaskId, TaskRecord, TaskState,
+    ConversationId, ConversationRecord, ProjectId, ProjectRecord, TaskId, TaskRecord, TaskState,
     Timestamp,
 };
 

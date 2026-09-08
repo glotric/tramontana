@@ -9,13 +9,12 @@ use std::sync::Arc;
 
 use tramontana_core::ports::EventStore;
 use tramontana_core::services::{Providers, Repositories, TaskService};
-use tramontana_core::testing::{
-    FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, SequentialIdSource,
-};
+use tramontana_core::testing::{FakeModelProvider, FakeToolProvider, FakeWorker};
 use tramontana_persistence::{
     Database, SqliteConversationRepository, SqliteEventStore, SqliteProjectRepository,
     SqliteTaskRepository,
 };
+use tramontana_platform::{SystemClock, UuidIdSource};
 
 /// Where a development profile keeps its database.
 ///
@@ -63,8 +62,8 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
             tools: Arc::new(FakeToolProvider::new()),
             worker: Arc::new(FakeWorker::new()),
         },
-        Arc::new(FakeClock::new()),
-        Arc::new(SequentialIdSource::new()),
+        Arc::new(SystemClock::new()),
+        Arc::new(UuidIdSource::new()),
     );
 
     // A process that died between appending an event and updating a task's
