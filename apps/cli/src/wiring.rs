@@ -8,11 +8,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tramontana_adapters_tools::{FilesystemTools, GitTools};
+use tramontana_core::ports::AgentProvider;
 use tramontana_core::ports::EventStore;
 use tramontana_core::ports::{ApprovalStore, Approver, ToolProvider};
 use tramontana_core::services::{Providers, Repositories, TaskService};
 use tramontana_core::testing::{
-    FakeModelProvider, FakeWorker, InMemoryApprovalStore, assemble_tool_plane,
+    FakeModelProvider, FakeWorker, InMemoryApprovalStore, ReceivingWorker, assemble_tool_plane,
 };
 
 use crate::approval::TerminalApprover;
@@ -80,6 +81,9 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
     )
     .map_err(|error| format!("could not register tools: {error}"))?;
 
+    let lease = tramontana_platform::ProfileLease::try_acquire(path)
+        .map_err(|error| format!("could not acquire runtime profile lease: {error}"))?
+        .map(|lease| Arc::new(lease) as Arc<dyn Send + Sync>);
     let events = Arc::new(SqliteEventStore::new(database.clone())) as Arc<dyn EventStore>;
     let service = TaskService::new(
         Repositories {
@@ -87,6 +91,9 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
             conversations: Arc::new(SqliteConversationRepository::new(database.clone())),
             tasks: Arc::new(SqliteTaskRepository::new(database.clone())),
             events,
+            checkpoints: Arc::new(tramontana_persistence::SqliteCheckpointRepository::new(
+                database.clone(),
+            )),
             configuration: Arc::new(SqliteConfigurationRepository::new(database)),
         },
         Providers {
@@ -110,6 +117,8 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
         Arc::new(UuidIdSource::new()),
     );
 
+    let service = service.with_execution_guard(lease);
+
     // A process that died between appending an event and updating a task's
     // cached row leaves the two disagreeing. The events are the record, so the
     // cache is repaired before anything reads it.
@@ -122,4 +131,33 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
     }
 
     Ok(Arc::new(service))
+}
+
+/// Workers a task can be handed to by name.
+///
+/// A flat table rather than a registry: M4 has exactly two workers, both
+/// fakes, and inventing a discovery mechanism for them would be a shape M10
+/// then has to unpick. What it does establish is that handing a task over
+/// names a worker rather than assuming one.
+#[must_use]
+pub(crate) fn worker_named(agent_id: &str) -> Option<Arc<dyn AgentProvider>> {
+    match agent_id {
+        tramontana_core::testing::RECEIVING_AGENT_ID => {
+            // Pointed at the same tool, with the same arguments, as the
+            // reference worker above. A receiving worker that reconstructed
+            // the step differently would be refused rather than repeat it,
+            // which is correct but would make the handoff undemonstrable.
+            Some(Arc::new(ReceivingWorker::calling(
+                "builtin.fs.list",
+                serde_json::json!({ "path": "." }),
+            )) as Arc<dyn AgentProvider>)
+        }
+        _ => None,
+    }
+}
+
+/// The names [`worker_named`] accepts, for an error message worth reading.
+#[must_use]
+pub(crate) fn available_workers() -> Vec<&'static str> {
+    vec![tramontana_core::testing::RECEIVING_AGENT_ID]
 }

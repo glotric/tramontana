@@ -73,6 +73,9 @@ impl AppState {
         )
         .map_err(|error| format!("could not register tools: {error}"))?;
 
+        let lease = tramontana_platform::ProfileLease::try_acquire(path)
+            .map_err(|error| format!("could not acquire runtime profile lease: {error}"))?
+            .map(|lease| Arc::new(lease) as Arc<dyn Send + Sync>);
         let store: Arc<dyn EventStore> = Arc::new(SqliteEventStore::new(database.clone()));
         let service = TaskService::new(
             Repositories {
@@ -80,6 +83,9 @@ impl AppState {
                 conversations: Arc::new(SqliteConversationRepository::new(database.clone())),
                 tasks: Arc::new(SqliteTaskRepository::new(database.clone())),
                 events: store,
+                checkpoints: Arc::new(tramontana_persistence::SqliteCheckpointRepository::new(
+                    database.clone(),
+                )),
                 configuration: Arc::new(SqliteConfigurationRepository::new(database)),
             },
             Providers {
@@ -100,6 +106,7 @@ impl AppState {
             Arc::new(SystemClock::new()),
             Arc::new(UuidIdSource::new()),
         );
+        let service = service.with_execution_guard(lease);
         service
             .recover()
             .await

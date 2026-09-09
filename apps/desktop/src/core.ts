@@ -6,6 +6,7 @@ import type {
   ErrorEnvelope,
   EventEnvelope,
   ProjectRecord,
+  TaskCheckpoint,
   TaskRecord,
   TaskSnapshot,
   TaskUpdate,
@@ -105,6 +106,31 @@ export async function cancelTask(taskId: string): Promise<void> {
 /** Read the current view of a task. */
 export async function getTask(taskId: string): Promise<TaskSnapshot> {
   return invoke<TaskSnapshot>("get_task", { taskId });
+}
+
+/** Stop a task and write an inspectable checkpoint. */
+export async function createCheckpoint(taskId: string): Promise<TaskCheckpoint> {
+  return invoke<TaskCheckpoint>("create_checkpoint", { taskId });
+}
+
+/** Read the latest checkpoint. Inspection changes nothing. */
+export async function latestCheckpoint(taskId: string): Promise<TaskCheckpoint | undefined> {
+  return (await invoke<TaskCheckpoint | null>("latest_checkpoint", { taskId })) ?? undefined;
+}
+
+/**
+ * Resume the exact checkpoint that was inspected.
+ *
+ * The identifier is required by the command, not defaulted here: resuming
+ * "the latest" would let this client act on a checkpoint nobody saw.
+ */
+export async function resumeTask(taskId: string, checkpointId: string): Promise<void> {
+  return invoke("resume_task", { taskId, checkpointId });
+}
+
+/** Discard interrupted work. History is kept and no effect is undone. */
+export async function discardCheckpoint(taskId: string): Promise<void> {
+  return invoke("discard_checkpoint", { taskId });
 }
 
 /**

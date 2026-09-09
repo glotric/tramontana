@@ -82,8 +82,14 @@ pub struct NormalizedMessage {
     pub schema_version: u32,
     /// Unique identifier.
     pub message_id: MessageId,
-    /// Conversation this message belongs to.
-    pub conversation_id: ConversationId,
+    /// Conversation this message belongs to, when it has one.
+    ///
+    /// Optional because a task can be started outside a conversation, and its
+    /// assistant answer is still the durable record of what the model said.
+    /// Dropping the message because there was no conversation would leave the
+    /// exported task with tool calls and no answer.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub conversation_id: Option<ConversationId>,
     /// Task that produced it, when one did.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub task_id: Option<TaskId>,
@@ -102,7 +108,7 @@ impl NormalizedMessage {
     #[must_use]
     pub fn text(
         message_id: MessageId,
-        conversation_id: ConversationId,
+        conversation_id: Option<ConversationId>,
         role: MessageRole,
         created_at: Timestamp,
         text: impl Into<String>,
@@ -132,7 +138,7 @@ mod tests {
     fn a_text_message_serializes_with_tagged_parts() {
         let message = NormalizedMessage::text(
             MessageId::new("m1"),
-            ConversationId::new("c1"),
+            Some(ConversationId::new("c1")),
             MessageRole::Assistant,
             Timestamp::new("2026-09-07T12:00:00.000Z"),
             "hello",
@@ -144,6 +150,22 @@ mod tests {
         assert_eq!(json["parts"][0]["kind"], "text");
         assert_eq!(json["parts"][0]["text"], "hello");
         assert!(!json.as_object().unwrap().contains_key("taskId"));
+    }
+
+    #[test]
+    fn a_message_from_a_conversationless_task_omits_the_conversation() {
+        // The CLI starts tasks outside a conversation. The answer is still the
+        // durable record of what the model said, so the message exists and the
+        // field is simply absent.
+        let message = NormalizedMessage::text(
+            MessageId::new("m1"),
+            None,
+            MessageRole::Assistant,
+            Timestamp::new("2026-09-07T12:00:00.000Z"),
+            "hello",
+        );
+        let json = serde_json::to_value(&message).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("conversationId"));
     }
 
     #[test]

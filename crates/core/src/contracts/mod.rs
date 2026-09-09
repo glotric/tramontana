@@ -16,14 +16,17 @@
 
 mod checkpoint;
 mod configuration;
+mod context;
 mod descriptor;
 mod error;
 mod event;
+mod export;
 mod ids;
 mod message;
 mod permission;
 mod primitives;
 mod records;
+mod routing;
 mod task;
 mod time;
 
@@ -36,6 +39,9 @@ pub use configuration::{
     ConfigurationDiagnostic, ConfigurationKind, ConfigurationSource, DiagnosticSeverity,
     EffectiveConfiguration,
 };
+pub use context::{
+    ContextCategory, ContextManifest, ContextSource, DestinationClass, content_hash,
+};
 pub use descriptor::{
     AgentDescriptor, CheckpointSupport, Health, IntegrationMode, ModelCapability, ModelControl,
     ModelDescriptor, ModelLocation, NetworkControl, ToolControl, ToolDescriptor,
@@ -44,6 +50,11 @@ pub use error::{ErrorCode, ErrorEnvelope};
 pub use event::{
     CancellationOrigin, EventDraft, EventEnvelope, EventPayload, PermissionOrigin, StreamFrame,
     TaskEventKind, TaskUpdate,
+};
+pub use export::{
+    BUNDLE_MAJOR_VERSION, BUNDLE_MINOR_VERSION, BundleEntry, ExportBundle, ExportManifest,
+    ExportOptions, ExportedConfiguration, HandoffBundle, HandoffEntry, ImportedRecords, Omission,
+    OmissionCategory,
 };
 pub use ids::{
     AgentId, AgentProviderId, ApprovalId, CheckpointId, ConversationId, CorrelationId, EventId,
@@ -60,6 +71,7 @@ pub use primitives::{
     Visibility,
 };
 pub use records::{ConversationRecord, ProjectRecord, TaskRecord};
+pub use routing::{RoutedModel, RoutingDecision, RoutingFallback, reason as routing_reason};
 pub use task::{InvalidTransition, TaskSnapshot, TaskState};
 pub use time::Timestamp;
 

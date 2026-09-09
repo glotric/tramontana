@@ -95,6 +95,7 @@ fn service(chunk_delay_ms: u64) -> Result<Arc<TaskService>> {
             tasks: Arc::new(InMemoryTaskRepository::with_events(Arc::clone(&events))),
             events,
             configuration: Arc::new(InMemoryConfigurationRepository::new()),
+            checkpoints: Arc::new(tramontana_core::testing::InMemoryCheckpointRepository::new()),
         },
         Providers {
             model: Arc::new(FakeModelProvider::streaming_paced(
@@ -127,11 +128,15 @@ async fn completed_stream() -> Result<Vec<EventEnvelope>> {
 /// A task cancelled while the model is still streaming.
 ///
 /// Cancellation is triggered by *observing* the durable `modelStarted` event
-/// rather than by a timer. A timer would make the sequence at which
-/// cancellation lands vary between machines, which is exactly the property the
-/// old fixture README had to apologize for.
+/// rather than by a timer, so the sequence at which it lands is fixed rather
+/// than dependent on how fast the machine is.
+///
+/// The chunk delay is an hour for the same reason. It is not a pause anyone
+/// waits out: it makes the model block until cancellation wakes it, so the
+/// only thing that ends this stream is the cancel. A delay short enough to
+/// expire under load would occasionally produce a *completed* fixture.
 async fn cancelled_stream() -> Result<Vec<EventEnvelope>> {
-    let service = service(5_000)?;
+    let service = service(60 * 60 * 1_000)?;
     let task_id = service
         .start_task(StartTaskRequest {
             conversation_id: None,
@@ -140,26 +145,14 @@ async fn cancelled_stream() -> Result<Vec<EventEnvelope>> {
         .await
         .map_err(|error| anyhow!("could not start the fixture task: {}", error.message))?;
 
-    let (_, mut updates) = service
-        .subscribe_task_events(&task_id, 0)
-        .await
-        .map_err(|error| anyhow!("could not subscribe: {}", error.message))?;
-
-    tokio::time::timeout(RUN_TIMEOUT, async {
-        while let Ok(update) = updates.recv().await {
-            if let TaskUpdate::Event { event } = update
-                && matches!(
-                    event.payload,
-                    tramontana_core::contracts::EventPayload::ModelStarted { .. }
-                )
-            {
-                return Ok::<(), anyhow::Error>(());
-            }
-        }
-        Err(anyhow!("the task ended before the model started"))
+    await_event(&service, &task_id, |event| {
+        matches!(
+            event.payload,
+            tramontana_core::contracts::EventPayload::ModelStarted { .. }
+        )
     })
     .await
-    .map_err(|_| anyhow!("timed out waiting for the model to start"))??;
+    .map_err(|error| anyhow!("waiting for the model to start: {error}"))?;
 
     service
         .cancel_task(&task_id)
@@ -169,35 +162,57 @@ async fn cancelled_stream() -> Result<Vec<EventEnvelope>> {
     await_terminal(&service, &task_id).await
 }
 
+/// Wait until a durable event matching `wanted` exists.
+///
+/// The replayed batch is checked *before* the live channel, and that is the
+/// whole point of this helper rather than a bare `recv` loop. A task starts as
+/// soon as `start_task` returns, so by the time a subscription exists the
+/// event being waited for may already have been written — and waiting only on
+/// live delivery is then waiting for something that has already gone past.
+/// This code made exactly that mistake and it survived every local run,
+/// failing first on a CI machine where the driver won the race.
+async fn await_event(
+    service: &TaskService,
+    task_id: &TaskId,
+    wanted: impl Fn(&EventEnvelope) -> bool,
+) -> Result<()> {
+    // Subscribing precedes replaying inside the service, so an event landing
+    // between the two is delivered twice rather than lost: the union of the
+    // replay and the channel is complete.
+    let (replayed, mut updates) = service
+        .subscribe_task_events(task_id, 0)
+        .await
+        .map_err(|error| anyhow!("could not subscribe: {}", error.message))?;
+
+    if replayed.iter().any(&wanted) {
+        return Ok(());
+    }
+
+    tokio::time::timeout(RUN_TIMEOUT, async {
+        while let Ok(update) = updates.recv().await {
+            if let TaskUpdate::Event { event } = update
+                && wanted(&event)
+            {
+                return Ok(());
+            }
+        }
+        Err(anyhow!("the task ended before the event arrived"))
+    })
+    .await
+    .map_err(|_| anyhow!("timed out after {RUN_TIMEOUT:?}"))?
+}
+
 /// Replay a task's events once its stream has been closed by an outcome event.
 ///
 /// Waiting for a *terminal state* is one event too early: the state change to
 /// `cancelled` is written before the `taskCancelled` event that carries the
 /// outcome, so a reader that stops at the state sometimes captures a stream
 /// missing its last line. `is_terminal_outcome` exists for exactly this
-/// distinction (`CORE_CONTRACTS.md` §5), and the reproducibility test found
-/// the difference within a single run.
+/// distinction (`CORE_CONTRACTS.md` §5).
 async fn await_terminal(service: &TaskService, task_id: &TaskId) -> Result<Vec<EventEnvelope>> {
-    let (replayed, mut updates) = service
-        .subscribe_task_events(task_id, 0)
+    await_event(service, task_id, EventEnvelope::is_terminal_outcome)
         .await
-        .map_err(|error| anyhow!("could not subscribe: {}", error.message))?;
-
-    let already_closed = replayed.iter().any(EventEnvelope::is_terminal_outcome);
-    if !already_closed {
-        tokio::time::timeout(RUN_TIMEOUT, async {
-            while let Ok(update) = updates.recv().await {
-                if let TaskUpdate::Event { event } = update
-                    && event.is_terminal_outcome()
-                {
-                    return Ok::<(), anyhow::Error>(());
-                }
-            }
-            Err(anyhow!("the update channel closed before an outcome event"))
-        })
-        .await
-        .map_err(|_| anyhow!("timed out waiting for a terminal outcome"))??;
-    }
+        .map_err(|error| anyhow!("waiting for a terminal outcome: {error}"))?;
 
     service
         .replay_task_events(task_id, 0)
@@ -235,6 +250,43 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         emit_fixtures(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn an_event_that_already_happened_is_found_rather_than_waited_for() {
+        // The bug this guards: `await_event` used to watch only the live
+        // channel, so an event written before the subscription existed was
+        // waited for forever. It survived every local run and failed on a CI
+        // machine where the driver won the race.
+        //
+        // Deterministic here rather than timing-dependent: the task is run to
+        // completion *first*, so every event is unambiguously in the past.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let service = service(0).unwrap();
+            let task_id = service
+                .start_task(StartTaskRequest {
+                    conversation_id: None,
+                    goal: "Say hello".to_owned(),
+                })
+                .await
+                .unwrap();
+            await_terminal(&service, &task_id).await.unwrap();
+
+            // Long past by now. Waiting on live delivery would never return.
+            await_event(&service, &task_id, |event| {
+                matches!(
+                    event.payload,
+                    tramontana_core::contracts::EventPayload::ModelStarted { .. }
+                )
+            })
+            .await
+            .expect("an event already in the stream must be found in the replay");
+        });
     }
 
     #[test]

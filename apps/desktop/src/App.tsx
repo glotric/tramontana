@@ -9,6 +9,7 @@ import type {
 } from "@tramontana/shared";
 
 import { describeEvent, isTerminal, projectState } from "./activity.js";
+import { CheckpointPanel } from "./CheckpointPanel.js";
 import {
   asErrorEnvelope,
   cancelTask,
@@ -474,6 +475,18 @@ export function App(): React.JSX.Element {
                 </div>
               )}
             </section>
+
+            {selectedTask?.state === "interrupted" && selectedTaskId !== undefined && (
+              <CheckpointPanel
+                key={selectedTaskId}
+                taskId={selectedTaskId}
+                onChanged={() => {
+                  if (selectedConversationId !== undefined) {
+                    void selectConversation(selectedConversationId);
+                  }
+                }}
+              />
+            )}
 
             <section className="activity" aria-labelledby="activity-heading">
               <div className="section-heading-row">

@@ -11,8 +11,8 @@ use crate::contracts::{
     ProjectRecord, SCHEMA_VERSION, TaskEventKind, TaskId, TaskRecord, TaskSnapshot, TaskUpdate,
 };
 use crate::ports::{
-    AgentProvider, Clock, ConfigurationRepository, ConversationRepository, EventStore, IdSource,
-    ModelProvider, ProjectRepository, RepositoryError, TaskRepository,
+    AgentProvider, CheckpointRepository, Clock, ConfigurationRepository, ConversationRepository,
+    EventStore, IdSource, ModelProvider, ProjectRepository, RepositoryError, TaskRepository,
 };
 use crate::services::journal::{JournalPorts, TaskJournal};
 use crate::services::projection::TaskProjectionWriter;
@@ -42,6 +42,8 @@ pub struct StartTaskRequest {
 pub(crate) struct LiveTask {
     pub(crate) cancel: CancellationToken,
     pub(crate) updates: broadcast::Sender<TaskUpdate>,
+    pub(crate) interrupt: CancellationToken,
+    pub(crate) finished: tokio::sync::watch::Receiver<bool>,
 }
 
 /// Tasks running in this process.
@@ -63,6 +65,8 @@ pub struct Repositories {
     pub events: Arc<dyn EventStore>,
     /// Secret-free effective-configuration manifests.
     pub configuration: Arc<dyn ConfigurationRepository>,
+    /// Derived checkpoints kept alongside canonical events.
+    pub checkpoints: Arc<dyn CheckpointRepository>,
 }
 
 impl std::fmt::Debug for Repositories {
@@ -96,11 +100,14 @@ impl std::fmt::Debug for Providers {
 /// their transport into these calls and translate results back; they add no
 /// behavior of their own.
 pub struct TaskService {
-    repositories: Repositories,
-    providers: Providers,
-    clock: Arc<dyn Clock>,
-    ids: Arc<dyn IdSource>,
-    live: LiveTasks,
+    pub(super) repositories: Repositories,
+    pub(super) providers: Providers,
+    pub(super) clock: Arc<dyn Clock>,
+    pub(super) ids: Arc<dyn IdSource>,
+    pub(super) live: LiveTasks,
+    pub(super) lifecycle: tokio::sync::Mutex<()>,
+    pub(super) execution_allowed: bool,
+    pub(super) execution_guard: Option<Arc<dyn Send + Sync>>,
 }
 
 impl std::fmt::Debug for TaskService {
@@ -124,7 +131,19 @@ impl TaskService {
             clock,
             ids,
             live: Arc::new(Mutex::new(HashMap::new())),
+            lifecycle: tokio::sync::Mutex::new(()),
+            execution_allowed: true,
+            execution_guard: None,
         }
+    }
+
+    /// Bind production execution to an adapter-owned exclusive profile lease.
+    /// A reader without the lease may inspect records but cannot recover or run work.
+    #[must_use]
+    pub fn with_execution_guard(mut self, guard: Option<Arc<dyn Send + Sync>>) -> Self {
+        self.execution_allowed = guard.is_some();
+        self.execution_guard = guard;
+        self
     }
 
     /// Repair any task whose cached projection disagrees with its events.
@@ -139,11 +158,7 @@ impl TaskService {
     ///
     /// A persistence error when storage is unavailable.
     pub async fn recover(&self) -> Result<usize, ErrorEnvelope> {
-        self.repositories
-            .tasks
-            .rebuild_from_events()
-            .await
-            .map_err(|error| self.repository_error(&error))
+        self.recover_interrupted().await
     }
 
     /// Create a project with its already-canonicalized roots.
@@ -398,6 +413,8 @@ impl TaskService {
     /// [`ErrorCode::NotFound`] for an unknown conversation, or a persistence
     /// error if the opening event cannot be journaled.
     pub async fn start_task(&self, request: StartTaskRequest) -> Result<TaskId, ErrorEnvelope> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.require_execution()?;
         let project_id = match &request.conversation_id {
             Some(id) => {
                 let conversation = self
@@ -475,6 +492,11 @@ impl TaskService {
                 correlation_id.clone(),
             ),
         ];
+        // Cloned before the event takes ownership: the driver needs the same
+        // manifest to name the instruction sources in its context record, and
+        // reading it back from storage would be a second source of truth for
+        // something already in hand.
+        let resolved_configuration = configuration.clone();
         if let Some(configuration) = configuration {
             initial_events.push(
                 EventDraft::user(
@@ -498,11 +520,15 @@ impl TaskService {
             .await
             .map_err(|error| self.repository_error(&error))?;
 
+        let interrupt = CancellationToken::new();
+        let (finished, finish_receiver) = tokio::sync::watch::channel(false);
         self.lock_live()?.insert(
             task_id.clone(),
             LiveTask {
                 cancel: cancel.clone(),
                 updates: updates.clone(),
+                interrupt: interrupt.clone(),
+                finished: finish_receiver,
             },
         );
 
@@ -535,10 +561,15 @@ impl TaskService {
             self.providers.clone(),
             scope,
             Arc::clone(&self.clock),
-        );
+        )
+        .with_configuration(resolved_configuration)
+        .continuing(None, super::ResumePlan::default(), interrupt);
         let goal = request.goal;
+        let execution_guard = self.execution_guard.clone();
         tokio::spawn(async move {
+            let _execution_guard = execution_guard;
             driver.run(goal, cancel).await;
+            let _ = finished.send(true);
         });
 
         Ok(task_id)
@@ -554,12 +585,17 @@ impl TaskService {
     ///
     /// [`ErrorCode::NotFound`] when the task is unknown to storage.
     pub async fn cancel_task(&self, task_id: &TaskId) -> Result<(), ErrorEnvelope> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.require_execution()?;
         self.repositories
             .tasks
             .get(task_id)
             .await
             .map_err(|error| self.repository_error(&error))?;
 
+        if self.get_task_record(task_id).await?.state == crate::contracts::TaskState::Interrupted {
+            return self.discard_interrupted(task_id).await;
+        }
         if let Some(live) = self.lock_live()?.get(task_id) {
             live.cancel.cancel();
         }
@@ -626,7 +662,7 @@ impl TaskService {
         Ok((replayed, receiver))
     }
 
-    fn error(&self, code: ErrorCode, message: impl Into<String>) -> ErrorEnvelope {
+    pub(super) fn error(&self, code: ErrorCode, message: impl Into<String>) -> ErrorEnvelope {
         ErrorEnvelope::new(
             code,
             message,
@@ -635,7 +671,7 @@ impl TaskService {
     }
 
     /// Map a repository failure onto the normalized error taxonomy.
-    fn repository_error(&self, error: &RepositoryError) -> ErrorEnvelope {
+    pub(super) fn repository_error(&self, error: &RepositoryError) -> ErrorEnvelope {
         let code = match error {
             RepositoryError::NotFound { .. } => ErrorCode::NotFound,
             RepositoryError::Conflict { .. } => ErrorCode::Conflict,
@@ -644,7 +680,7 @@ impl TaskService {
         self.error(code, error.to_string())
     }
 
-    fn lock_live(
+    pub(super) fn lock_live(
         &self,
     ) -> Result<std::sync::MutexGuard<'_, HashMap<TaskId, LiveTask>>, ErrorEnvelope> {
         self.live

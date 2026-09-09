@@ -16,13 +16,15 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings};
 use tramontana_core::contracts::{
-    AgentDescriptor, CheckpointWorker, ConfigurationDiagnostic, ConfigurationKind,
-    ConfigurationSource, ConversationRecord, DataClass, DiagnosticSeverity, EffectiveConfiguration,
-    ErrorCode, ErrorEnvelope, EventEnvelope, EventPayload, ExecutionLocation, ModelDescriptor,
-    NormalizedMessage, PendingAction, PendingActionKind, ProjectRecord, ReplaySafety,
-    ResumeEligibility, ResumeMode, RiskClass, RoutingMode, SecretRef, SecretStore, SideEffect,
-    StreamFrame, TaskCheckpoint, TaskEventKind, TaskRecord, TaskSnapshot, TaskState, TaskUpdate,
-    ToolDescriptor, Visibility,
+    AgentDescriptor, BundleEntry, CheckpointWorker, ConfigurationDiagnostic, ConfigurationKind,
+    ConfigurationSource, ContextCategory, ContextManifest, ContextSource, ConversationRecord,
+    DataClass, DestinationClass, DiagnosticSeverity, EffectiveConfiguration, ErrorCode,
+    ErrorEnvelope, EventEnvelope, EventPayload, ExecutionLocation, ExportManifest, ExportOptions,
+    ExportedConfiguration, HandoffBundle, HandoffEntry, ModelDescriptor, NormalizedMessage,
+    Omission, OmissionCategory, PendingAction, PendingActionKind, ProjectRecord, ReplaySafety,
+    ResumeEligibility, ResumeMode, RiskClass, RoutedModel, RoutingDecision, RoutingFallback,
+    RoutingMode, SecretRef, SecretStore, SideEffect, StreamFrame, TaskCheckpoint, TaskEventKind,
+    TaskRecord, TaskSnapshot, TaskState, TaskUpdate, ToolDescriptor, Visibility,
 };
 
 /// Filename of the single bundled contract schema.
@@ -110,6 +112,13 @@ fn emit_schema(dir: &Path) -> Result<PathBuf> {
     register::<ProjectRecord>(&mut generator);
     register::<ConversationRecord>(&mut generator);
     register::<TaskRecord>(&mut generator);
+    register::<ContextCategory>(&mut generator);
+    register::<DestinationClass>(&mut generator);
+    register::<ContextSource>(&mut generator);
+    register::<ContextManifest>(&mut generator);
+    register::<RoutedModel>(&mut generator);
+    register::<RoutingFallback>(&mut generator);
+    register::<RoutingDecision>(&mut generator);
     register::<PendingActionKind>(&mut generator);
     register::<ReplaySafety>(&mut generator);
     register::<PendingAction>(&mut generator);
@@ -122,6 +131,14 @@ fn emit_schema(dir: &Path) -> Result<PathBuf> {
     register::<ConfigurationDiagnostic>(&mut generator);
     register::<ConfigurationSource>(&mut generator);
     register::<EffectiveConfiguration>(&mut generator);
+    register::<OmissionCategory>(&mut generator);
+    register::<Omission>(&mut generator);
+    register::<BundleEntry>(&mut generator);
+    register::<ExportOptions>(&mut generator);
+    register::<ExportedConfiguration>(&mut generator);
+    register::<ExportManifest>(&mut generator);
+    register::<HandoffEntry>(&mut generator);
+    register::<HandoffBundle>(&mut generator);
 
     let mut defs = generator.take_definitions(true);
     for schema in defs.values_mut() {
@@ -189,16 +206,45 @@ fn drop_null_from_optional_properties(schema: &mut serde_json::Value) {
     }
 }
 
-/// Collapse `"type": ["x", "null"]` to `"type": "x"` on one schema node.
+/// Collapse the two shapes schemars uses for an `Option<T>` into just `T`.
+///
+/// A plain type becomes `"type": ["x", "null"]`, but an `Option` of a
+/// referenced type becomes `anyOf: [{ $ref }, { type: null }]`. Handling only
+/// the first left every optional contract *type* nullable in the generated
+/// TypeScript, which contradicts `CORE_CONTRACTS.md` §2 and forced callers to
+/// null-check a field that is never sent as null.
 fn remove_null_type(schema: &mut serde_json::Value) {
-    let Some(types) = schema.get_mut("type").and_then(|t| t.as_array_mut()) else {
+    if let Some(types) = schema.get_mut("type").and_then(|t| t.as_array_mut()) {
+        types.retain(|entry| entry.as_str() != Some("null"));
+        if types.len() == 1 {
+            let only = types[0].clone();
+            if let Some(object) = schema.as_object_mut() {
+                object.insert("type".to_owned(), only);
+            }
+        }
+        return;
+    }
+
+    let Some(object) = schema.as_object_mut() else {
         return;
     };
-    types.retain(|entry| entry.as_str() != Some("null"));
-    if types.len() == 1 {
-        let only = types[0].clone();
-        if let Some(object) = schema.as_object_mut() {
-            object.insert("type".to_owned(), only);
+    let Some(branches) = object.get("anyOf").and_then(|value| value.as_array()) else {
+        return;
+    };
+    let kept: Vec<_> = branches
+        .iter()
+        .filter(|branch| branch.get("type").and_then(|t| t.as_str()) != Some("null"))
+        .cloned()
+        .collect();
+    // Only when removing `null` leaves exactly one branch: a genuine union of
+    // several types stays a union.
+    if kept.len() != 1 || kept.len() == branches.len() {
+        return;
+    }
+    object.remove("anyOf");
+    if let Some(only) = kept[0].as_object() {
+        for (key, value) in only {
+            object.entry(key.clone()).or_insert_with(|| value.clone());
         }
     }
 }
@@ -245,6 +291,13 @@ mod tests {
             "ProjectRecord",
             "ConversationRecord",
             "TaskRecord",
+            "ContextCategory",
+            "DestinationClass",
+            "ContextSource",
+            "ContextManifest",
+            "RoutedModel",
+            "RoutingFallback",
+            "RoutingDecision",
             "PendingActionKind",
             "ReplaySafety",
             "PendingAction",
@@ -257,6 +310,14 @@ mod tests {
             "ConfigurationDiagnostic",
             "ConfigurationSource",
             "EffectiveConfiguration",
+            "OmissionCategory",
+            "Omission",
+            "BundleEntry",
+            "ExportOptions",
+            "ExportedConfiguration",
+            "ExportManifest",
+            "HandoffEntry",
+            "HandoffBundle",
         ] {
             assert!(defs.contains_key(name), "missing definition for {name}");
         }
@@ -286,6 +347,47 @@ mod tests {
         assert_eq!(
             schema["properties"]["optional"]["type"],
             serde_json::json!("string")
+        );
+    }
+
+    #[test]
+    fn an_optional_referenced_type_is_absent_rather_than_nullable() {
+        // schemars writes `Option<SomeType>` as an `anyOf` with a null branch
+        // rather than a nullable `type`, so the collapse has to cover both or
+        // every optional contract type stays nullable in TypeScript.
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "pendingAction": {
+                    "anyOf": [{ "$ref": "#/$defs/PendingAction" }, { "type": "null" }],
+                    "description": "kept",
+                },
+            },
+            "required": [],
+        });
+        drop_null_from_optional_properties(&mut schema);
+
+        let property = &schema["properties"]["pendingAction"];
+        assert_eq!(property["$ref"], "#/$defs/PendingAction");
+        assert!(property.get("anyOf").is_none());
+        assert_eq!(property["description"], "kept", "the doc comment survived");
+    }
+
+    #[test]
+    fn a_genuine_union_is_left_alone() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "either": { "anyOf": [{ "type": "string" }, { "type": "number" }] },
+            },
+            "required": [],
+        });
+        drop_null_from_optional_properties(&mut schema);
+        assert_eq!(
+            schema["properties"]["either"]["anyOf"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
         );
     }
 }

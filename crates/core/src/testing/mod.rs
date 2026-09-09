@@ -17,6 +17,7 @@ mod event_store;
 mod ids;
 mod model;
 mod permission;
+mod receiving_worker;
 mod repositories;
 mod tool;
 mod tool_plane;
@@ -27,6 +28,7 @@ pub use event_store::InMemoryEventStore;
 pub use ids::SequentialIdSource;
 pub use model::{FakeModelProvider, FakeModelScript};
 pub use permission::{InMemoryApprovalStore, ScriptedApprover};
+pub use receiving_worker::{HANDOFF_RECEIVED, RECEIVING_AGENT_ID, ReceivingWorker};
 pub use repositories::{
     InMemoryCheckpointRepository, InMemoryConfigurationRepository, InMemoryConversationRepository,
     InMemoryProjectRepository, InMemoryTaskRepository,

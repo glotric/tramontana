@@ -47,6 +47,7 @@ fn service_with_store() -> (Arc<TaskService>, Arc<InMemoryEventStore>) {
             tasks: Arc::new(InMemoryTaskRepository::with_events(Arc::clone(&events))),
             events,
             configuration: Arc::new(InMemoryConfigurationRepository::new()),
+            checkpoints: Arc::new(tramontana_core::testing::InMemoryCheckpointRepository::new()),
         },
         Providers {
             model: Arc::new(FakeModelProvider::streaming(["Hello", ", ", "world"])),

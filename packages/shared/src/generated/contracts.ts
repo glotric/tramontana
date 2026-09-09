@@ -55,6 +55,24 @@ export interface AgentDescriptor {
 }
 
 /**
+ * One file in a bundle, with what a reader needs to trust it.
+ */
+export interface BundleEntry {
+  /**
+   * Size in bytes, checked against the contents before the checksum.
+   */
+  byteCount: number;
+  /**
+   * Bundle-relative path. Validated on import before it is used.
+   */
+  path: string;
+  /**
+   * Lowercase hex SHA-256 of the contents.
+   */
+  sha256: string;
+}
+
+/**
  * Who requested a cancellation.
  */
 export type CancellationOrigin = "user" | "system";
@@ -71,7 +89,7 @@ export interface CapabilityScope {
    * The project this is limited to. Absent means a projectless task, which
    * has no filesystem access at all.
    */
-  projectId?: ProjectId | null;
+  projectId?: string;
   /**
    * Whether the operation sends project-derived data off the device.
    *
@@ -237,6 +255,92 @@ export interface ConfigurationSource {
 }
 
 /**
+ * Where a piece of context came from.
+ */
+export type ContextCategory =
+  "conversation" | "selectedFile" | "instruction" | "skill" | "repositoryMetadata" | "toolResult";
+
+/**
+ * Everything assembled for one destination.
+ */
+export interface ContextManifest {
+  /**
+   * Stable identifier, referenced by routing decisions and checkpoints.
+   */
+  contextManifestId: string;
+  /**
+   * When it was assembled.
+   */
+  createdAt: string;
+  /**
+   * Where it was going.
+   */
+  destinationClass: "local" | "cloud" | "worker";
+  /**
+   * Stable codes for redactions applied before release.
+   */
+  redactions: string[];
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  /**
+   * Everything considered, included or not.
+   */
+  sources: ContextSource[];
+  /**
+   * The task this was assembled for.
+   */
+  taskId: string;
+  /**
+   * Total bytes actually sent.
+   */
+  totalBytes: number;
+  /**
+   * Approximate total token cost, when estimated.
+   */
+  totalTokenEstimate?: number;
+}
+
+/**
+ * One thing that was considered for a context bundle.
+ */
+export interface ContextSource {
+  /**
+   * Size of the content in bytes.
+   */
+  byteCount: number;
+  /**
+   * What kind of source it is.
+   */
+  category: "conversation" | "selectedFile" | "instruction" | "skill" | "repositoryMetadata" | "toolResult";
+  /**
+   * Hash of the content, so the manifest explains without copying.
+   */
+  contentHash: string;
+  /**
+   * How sensitive its content is.
+   */
+  dataClass: "public" | "project" | "sensitive" | "secret";
+  /**
+   * Why it was not, when it was not.
+   */
+  exclusionReason?: string;
+  /**
+   * Whether it was actually sent.
+   */
+  included: boolean;
+  /**
+   * Stable identifier for this source within the task.
+   */
+  sourceId: string;
+  /**
+   * Approximate token cost, when one was estimated.
+   */
+  tokenEstimate?: number;
+}
+
+/**
  * A conversation within a project, or a projectless conversation.
  */
 export type ConversationId = string;
@@ -248,20 +352,20 @@ export interface ConversationRecord {
   /**
    * When it was archived, if it has been.
    */
-  archivedAt?: Timestamp | null;
+  archivedAt?: string;
   /**
    * Stable identifier.
    */
   conversationId: string;
   /**
-   * An instant, serialized as a UTC RFC 3339 string.
+   * When it was created.
    */
   createdAt: string;
   /**
    * Project this belongs to. Absent means projectless, which carries no
    * implicit filesystem access (`PHASE_1_ACCEPTANCE_CRITERIA.md` §8).
    */
-  projectId?: ProjectId | null;
+  projectId?: string;
   /**
    * Contract schema version.
    */
@@ -281,6 +385,16 @@ export type CorrelationId = string;
  * Sensitivity of a piece of content, used to decide what may leave the device.
  */
 export type DataClass = "public" | "project" | "sensitive" | "secret";
+
+/**
+ * Where assembled context is about to go.
+ *
+ * The distinction is a policy one, not a technical one: crossing to `Cloud`
+ * is a data-release decision that needs a disclosure, and `Worker` means a
+ * process that is not the model and not Tramontana
+ * (`SECURITY_AND_PERMISSIONS.md` §8).
+ */
+export type DestinationClass = "local" | "cloud" | "worker";
 
 /**
  * Why a source was rejected or flagged.
@@ -410,7 +524,7 @@ export interface EventEnvelope {
   /**
    * Conversation, when the task has one.
    */
-  conversationId?: ConversationId | null;
+  conversationId?: string;
   /**
    * Shared by everything caused by one originating request.
    */
@@ -456,9 +570,20 @@ export interface EventEnvelope {
   payload:
     | {
         /**
+         * Stable machine-readable code.
+         */
+        code: string;
+        kind: "diagnosticRecorded";
+        /**
+         * Secret-free description.
+         */
+        summary: string;
+      }
+    | {
+        /**
          * Conversation this task belongs to, when it has one.
          */
-        conversationId?: ConversationId | null;
+        conversationId?: string;
         /**
          * One-line, secret-free summary of what was asked for.
          */
@@ -509,6 +634,14 @@ export interface EventEnvelope {
         kind: "configurationResolved";
       }
     | {
+        kind: "contextPrepared";
+        manifest: ContextManifest;
+      }
+    | {
+        decision: RoutingDecision;
+        kind: "routingDecided";
+      }
+    | {
         descriptor: AgentDescriptor;
         kind: "workerSelected";
       }
@@ -538,9 +671,17 @@ export interface EventEnvelope {
         invocationId: string;
         kind: "toolRequested";
         /**
+         * Hash of the tool identity and normalized arguments, never raw values.
+         */
+        requestHash?: string;
+        /**
          * How much damage the tool could do.
          */
         riskClass: "read" | "modify" | "dangerous";
+        /**
+         * Worker-supplied stable step identity, scoped to this task.
+         */
+        stepId?: string;
         /**
          * Namespaced tool identifier.
          */
@@ -558,7 +699,7 @@ export interface EventEnvelope {
         /**
          * How the authorization was obtained, when it was allowed.
          */
-        grantKind?: GrantKind | null;
+        grantKind?: "implicitSafeDefault" | "once" | "project";
         /**
          * The invocation the decision covers.
          */
@@ -597,6 +738,10 @@ export interface EventEnvelope {
          */
         invocationId: string;
         kind: "toolStarted";
+        /**
+         * Effect classification recorded before execution. Legacy events are unknown.
+         */
+        replaySafety: "safe" | "unsafe" | "unknown";
         /**
          * The tool.
          */
@@ -643,10 +788,7 @@ export interface EventEnvelope {
          */
         eventSequence: number;
         kind: "checkpointSaved";
-        /**
-         * What was in flight, when anything was.
-         */
-        pendingAction?: PendingAction | null;
+        pendingAction?: PendingAction;
         resume: ResumeEligibility;
       }
     | {
@@ -679,7 +821,7 @@ export interface EventEnvelope {
    */
   sequence: number;
   /**
-   * A unit of work with its own event stream and exactly one terminal state.
+   * Task this event belongs to.
    */
   taskId: string;
   /**
@@ -703,9 +845,20 @@ export type EventId = string;
 export type EventPayload =
   | {
       /**
+       * Stable machine-readable code.
+       */
+      code: string;
+      kind: "diagnosticRecorded";
+      /**
+       * Secret-free description.
+       */
+      summary: string;
+    }
+  | {
+      /**
        * Conversation this task belongs to, when it has one.
        */
-      conversationId?: ConversationId | null;
+      conversationId?: string;
       /**
        * One-line, secret-free summary of what was asked for.
        */
@@ -756,6 +909,14 @@ export type EventPayload =
       kind: "configurationResolved";
     }
   | {
+      kind: "contextPrepared";
+      manifest: ContextManifest;
+    }
+  | {
+      decision: RoutingDecision;
+      kind: "routingDecided";
+    }
+  | {
       descriptor: AgentDescriptor;
       kind: "workerSelected";
     }
@@ -785,9 +946,17 @@ export type EventPayload =
       invocationId: string;
       kind: "toolRequested";
       /**
+       * Hash of the tool identity and normalized arguments, never raw values.
+       */
+      requestHash?: string;
+      /**
        * How much damage the tool could do.
        */
       riskClass: "read" | "modify" | "dangerous";
+      /**
+       * Worker-supplied stable step identity, scoped to this task.
+       */
+      stepId?: string;
       /**
        * Namespaced tool identifier.
        */
@@ -805,7 +974,7 @@ export type EventPayload =
       /**
        * How the authorization was obtained, when it was allowed.
        */
-      grantKind?: GrantKind | null;
+      grantKind?: "implicitSafeDefault" | "once" | "project";
       /**
        * The invocation the decision covers.
        */
@@ -844,6 +1013,10 @@ export type EventPayload =
        */
       invocationId: string;
       kind: "toolStarted";
+      /**
+       * Effect classification recorded before execution. Legacy events are unknown.
+       */
+      replaySafety: "safe" | "unsafe" | "unknown";
       /**
        * The tool.
        */
@@ -890,10 +1063,7 @@ export type EventPayload =
        */
       eventSequence: number;
       kind: "checkpointSaved";
-      /**
-       * What was in flight, when anything was.
-       */
-      pendingAction?: PendingAction | null;
+      pendingAction?: PendingAction;
       resume: ResumeEligibility;
     }
   | {
@@ -949,9 +1119,165 @@ export type ExecutionLocation =
     };
 
 /**
+ * The bundle's table of contents.
+ */
+export interface ExportManifest {
+  /**
+   * Major version of the bundle layout. Refused when unrecognized.
+   */
+  bundleMajorVersion: number;
+  /**
+   * Minor version. A reader may ignore what it does not know.
+   */
+  bundleMinorVersion: number;
+  /**
+   * When the bundle was produced.
+   */
+  createdAt: string;
+  /**
+   * Every file in the bundle.
+   */
+  entries: BundleEntry[];
+  /**
+   * What was left out, and how much.
+   */
+  omissions: Omission[];
+  options: ExportOptions;
+  /**
+   * The project, when the export was scoped to one.
+   */
+  projectId?: string;
+  /**
+   * Version of the records inside the bundle.
+   */
+  schemaVersion: number;
+  /**
+   * Tasks included, in export order.
+   */
+  taskIds: TaskId[];
+}
+
+/**
+ * What an export chose to include.
+ *
+ * Absent means the default, which is to exclude. The flags exist so a bundle
+ * records the decision that produced it rather than leaving a reader to infer
+ * it from what happens to be present.
+ */
+export interface ExportOptions {
+  /**
+   * Keep absolute device paths instead of redacting them.
+   */
+  includeAbsolutePaths: boolean;
+  /**
+   * Include artifact files.
+   */
+  includeArtifacts: boolean;
+  /**
+   * Keep unredacted tool output.
+   */
+  includeRawToolOutput: boolean;
+}
+
+/**
+ * A configuration manifest with the project it belongs to.
+ *
+ * The manifest itself does not name its project — it is stored under one —
+ * so a bundle has to carry the pairing. Without it an imported task would
+ * reference a manifest nothing could resolve, and the record could not say
+ * which instructions were in force when the work happened.
+ */
+export interface ExportedConfiguration {
+  configuration: EffectiveConfiguration;
+  /**
+   * The project this manifest was resolved for.
+   */
+  projectId: string;
+}
+
+/**
  * How long an authorization lasts.
  */
 export type GrantKind = "implicitSafeDefault" | "once" | "project";
+
+/**
+ * Everything a different worker needs to continue a task.
+ *
+ * Assembled from canonical records only. A worker's opaque continuation data
+ * is never read to build this, which is what makes the claim in
+ * `PROJECT_FORMAT.md` §4 — that canonical state is sufficient — testable
+ * rather than aspirational.
+ */
+export interface HandoffBundle {
+  /**
+   * Steps already done, which the receiving worker must not repeat.
+   */
+  completedStepIds: string[];
+  /**
+   * The effective configuration in force, for a project task.
+   */
+  configurationManifestHash?: string;
+  /**
+   * Its conversation, when it has one.
+   */
+  conversationId?: string;
+  /**
+   * When the handoff was assembled.
+   */
+  createdAt: string;
+  /**
+   * The point being handed over.
+   */
+  eventSequence: number;
+  /**
+   * What the user asked for.
+   */
+  goal: string;
+  /**
+   * The task's normalized history.
+   */
+  history: HandoffEntry[];
+  /**
+   * What this handoff does not carry.
+   */
+  omissions: Omission[];
+  pendingAction?: PendingAction;
+  previousWorker?: AgentDescriptor;
+  /**
+   * Its project, when it has one.
+   */
+  projectId?: string;
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  /**
+   * The task being handed over.
+   */
+  taskId: string;
+}
+
+/**
+ * One fact in a handoff, normalized so any worker can read it.
+ */
+export interface HandoffEntry {
+  /**
+   * What kind of fact this is.
+   */
+  kind: string;
+  /**
+   * When it happened.
+   */
+  occurredAt: string;
+  /**
+   * Position in the task's durable stream.
+   */
+  sequence: number;
+  /**
+   * A secret-free description.
+   */
+  summary: string;
+}
 
 /**
  * Whether a provider or worker is usable right now.
@@ -1095,9 +1421,14 @@ export type NetworkControl = "denied" | "brokered" | "constrained" | "unobservab
  */
 export interface NormalizedMessage {
   /**
-   * Conversation this message belongs to.
+   * Conversation this message belongs to, when it has one.
+   *
+   * Optional because a task can be started outside a conversation, and its
+   * assistant answer is still the durable record of what the model said.
+   * Dropping the message because there was no conversation would leave the
+   * exported task with tool calls and no answer.
    */
-  conversationId: string;
+  conversationId?: string;
   /**
    * When it was created.
    */
@@ -1125,8 +1456,32 @@ export interface NormalizedMessage {
   /**
    * Task that produced it, when one did.
    */
-  taskId?: TaskId | null;
+  taskId?: string;
 }
+
+/**
+ * One thing an export left out, and how much of it.
+ */
+export interface Omission {
+  /**
+   * What kind of data.
+   */
+  category: "secret" | "absolutePath" | "rawToolOutput" | "artifact" | "internalEvent" | "workerPrivateState";
+  /**
+   * How many values were affected.
+   */
+  count: number;
+  /**
+   * Why it was left out, in a sentence a person can act on.
+   */
+  reason: string;
+}
+
+/**
+ * What kind of data was left out of an export.
+ */
+export type OmissionCategory =
+  "secret" | "absolutePath" | "rawToolOutput" | "artifact" | "internalEvent" | "workerPrivateState";
 
 /**
  * The one action that had started and not finished.
@@ -1232,7 +1587,7 @@ export interface ResumeEligibility {
   /**
    * How, when it is.
    */
-  mode?: ResumeMode | null;
+  mode?: "sameWorker" | "canonicalHandoff";
   /**
    * Stable reason, present whenever the answer needs explaining.
    */
@@ -1248,6 +1603,128 @@ export type ResumeMode = "sameWorker" | "canonicalHandoff";
  * How much damage a tool invocation could do if the model asked for it wrongly.
  */
 export type RiskClass = "read" | "modify" | "dangerous";
+
+/**
+ * One model a decision could use.
+ */
+export interface RoutedModel {
+  /**
+   * The model.
+   */
+  modelId: string;
+  /**
+   * The provider offering it.
+   */
+  providerId: string;
+}
+
+/**
+ * Where a task's inference was sent, and why.
+ */
+export interface RoutingDecision {
+  /**
+   * The availability snapshot the decision was made against.
+   *
+   * Recorded so a decision can be explained later even though availability
+   * has moved on. Without it, "why not the other model?" is unanswerable.
+   */
+  availabilitySnapshotId: string;
+  /**
+   * The context this decision released.
+   */
+  contextManifestId: string;
+  /**
+   * Stable identifier for this decision.
+   */
+  decisionId: string;
+  /**
+   * What would have been tried next, in order.
+   */
+  fallbackOrder: RoutingFallback[];
+  /**
+   * Where it runs.
+   */
+  location:
+    | {
+        /**
+         * Human-readable name for the interface.
+         */
+        displayName: string;
+        kind: "local";
+        /**
+         * Stable identifier for the compute target.
+         */
+        targetId: string;
+      }
+    | {
+        kind: "cloud";
+        /**
+         * Stable provider identifier.
+         */
+        providerId: string;
+        /**
+         * Provider region, when the provider exposes one.
+         */
+        region?: string;
+      };
+  /**
+   * The routing mode in force when it was made.
+   */
+  mode: "localOnly" | "automatic" | "cloudPreferred";
+  model: RoutedModel;
+  /**
+   * Why, in deterministic order.
+   */
+  reasonCodes: string[];
+  /**
+   * Whether reaching this route needs the user told.
+   */
+  requiresDisclosure: boolean;
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+}
+
+/**
+ * A model and where it would run, as a fallback option.
+ */
+export interface RoutingFallback {
+  /**
+   * Where it would run.
+   */
+  location:
+    | {
+        /**
+         * Human-readable name for the interface.
+         */
+        displayName: string;
+        kind: "local";
+        /**
+         * Stable identifier for the compute target.
+         */
+        targetId: string;
+      }
+    | {
+        kind: "cloud";
+        /**
+         * Stable provider identifier.
+         */
+        providerId: string;
+        /**
+         * Provider region, when the provider exposes one.
+         */
+        region?: string;
+      };
+  /**
+   * The model.
+   */
+  modelId: string;
+  /**
+   * The provider offering it.
+   */
+  providerId: string;
+}
 
 /**
  * The user's standing policy for where inference may run.
@@ -1352,10 +1829,7 @@ export interface TaskCheckpoint {
    * here; anything above it happened afterwards.
    */
   eventSequence: number;
-  /**
-   * The action that had started and not finished, when there was one.
-   */
-  pendingAction?: PendingAction | null;
+  pendingAction?: PendingAction;
   resume: ResumeEligibility;
   /**
    * Contract schema version.
@@ -1381,10 +1855,7 @@ export interface TaskCheckpoint {
     | "completed"
     | "failed"
     | "cancelled";
-  /**
-   * The worker, when one had been selected.
-   */
-  worker?: CheckpointWorker | null;
+  worker?: CheckpointWorker;
 }
 
 /**
@@ -1438,7 +1909,7 @@ export interface TaskRecord {
   /**
    * Conversation this belongs to, when it has one.
    */
-  conversationId?: ConversationId | null;
+  conversationId?: string;
   /**
    * When the task was created.
    */
@@ -1454,7 +1925,7 @@ export interface TaskRecord {
   /**
    * Project this belongs to, when it has one.
    */
-  projectId?: ProjectId | null;
+  projectId?: string;
   /**
    * Contract schema version.
    */

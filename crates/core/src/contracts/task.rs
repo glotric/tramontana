@@ -63,7 +63,7 @@ impl TaskState {
             Preparing, Queued, Routing, Running, StartingWorker,
         };
         match self {
-            Queued => &[Preparing, Cancelling, Failed],
+            Queued => &[Preparing, Cancelling, Failed, Interrupted],
             Preparing => &[Routing, Cancelling, Failed, Interrupted],
             Routing => &[StartingWorker, Cancelling, Failed, Interrupted],
             StartingWorker => &[Running, Cancelling, Failed, Interrupted],
@@ -167,7 +167,7 @@ mod tests {
     /// independently of the implementation so a typo in one shows up as a
     /// disagreement rather than agreeing with itself.
     const TABLE: &[(TaskState, &[TaskState])] = &[
-        (Queued, &[Preparing, Cancelling, Failed]),
+        (Queued, &[Preparing, Cancelling, Failed, Interrupted]),
         (Preparing, &[Routing, Cancelling, Failed, Interrupted]),
         (Routing, &[StartingWorker, Cancelling, Failed, Interrupted]),
         (StartingWorker, &[Running, Cancelling, Failed, Interrupted]),

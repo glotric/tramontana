@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use crate::contracts::{AgentDescriptor, ErrorEnvelope, EventDraft, StreamFrame, TaskId};
+use crate::contracts::{
+    AgentDescriptor, ErrorEnvelope, EventDraft, HandoffBundle, StreamFrame, TaskCheckpoint, TaskId,
+};
 
 /// What a worker was asked to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,6 +12,17 @@ pub struct WorkerRequest {
     pub task_id: TaskId,
     /// The user's goal, already minimized for this destination.
     pub goal: String,
+    /// Canonical checkpoint on explicit resume. Never opaque worker state.
+    pub checkpoint: Option<TaskCheckpoint>,
+    /// Canonical handoff when a *different* worker is taking the task over.
+    ///
+    /// Separate from `checkpoint` because the two answer different questions.
+    /// A checkpoint says "here is where you left off" to the worker that was
+    /// already running. A handoff says "here is what happened, none of it
+    /// yours" to one that was not — and carries the normalized history a
+    /// stranger needs, with nothing private to the previous worker in it
+    /// (`PROJECT_FORMAT.md` §4).
+    pub handoff: Option<HandoffBundle>,
 }
 
 /// How a worker session ended.
@@ -58,14 +71,12 @@ pub trait WorkerHost: Send + Sync {
         cancel: &CancellationToken,
     ) -> Result<String, ErrorEnvelope>;
 
-    /// Ask the core to run a tool on the worker's behalf.
-    ///
-    /// # Errors
-    ///
-    /// Returns a normalized error when validation, policy, the tool, or
-    /// cancellation prevents a result.
-    async fn call_tool(
+    /// Run a stable logical step. Reusing an ID with changed arguments is refused.
+    /// A completed step returns a safe summary with `skipped: true`, not its raw
+    /// historical output. Workers must not treat that summary as raw tool data.
+    async fn call_tool_step(
         &self,
+        step_id: &str,
         tool_id: &str,
         arguments: serde_json::Value,
         cancel: &CancellationToken,

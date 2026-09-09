@@ -57,6 +57,31 @@
       ],
       "type": "object"
     },
+    "BundleEntry": {
+      "description": "One file in a bundle, with what a reader needs to trust it.",
+      "properties": {
+        "byteCount": {
+          "description": "Size in bytes, checked against the contents before the checksum.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "Bundle-relative path. Validated on import before it is used.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Lowercase hex SHA-256 of the contents.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "byteCount"
+      ],
+      "type": "object"
+    },
     "CancellationOrigin": {
       "description": "Who requested a cancellation.",
       "oneOf": [
@@ -76,14 +101,7 @@
       "description": "What an authorization is limited to.\n\n`SECURITY_AND_PERMISSIONS.md` §3.2. A scope binds the project and, for\nfilesystem work, the canonical roots it may touch. Authorizations are\nnon-transferable: a grant naming one project authorizes nothing in another.",
       "properties": {
         "projectId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ProjectId"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/ProjectId",
           "description": "The project this is limited to. Absent means a projectless task, which\nhas no filesystem access at all."
         },
         "releasesData": {
@@ -309,6 +327,155 @@
       ],
       "type": "object"
     },
+    "ContextCategory": {
+      "description": "Where a piece of context came from.",
+      "oneOf": [
+        {
+          "const": "conversation",
+          "description": "The conversation, including the user's goal.",
+          "type": "string"
+        },
+        {
+          "const": "selectedFile",
+          "description": "A file the user chose.",
+          "type": "string"
+        },
+        {
+          "const": "instruction",
+          "description": "Project-authored instructions.",
+          "type": "string"
+        },
+        {
+          "const": "skill",
+          "description": "A named skill definition.",
+          "type": "string"
+        },
+        {
+          "const": "repositoryMetadata",
+          "description": "Facts about the repository, such as its branch.",
+          "type": "string"
+        },
+        {
+          "const": "toolResult",
+          "description": "Output an earlier tool produced.",
+          "type": "string"
+        }
+      ]
+    },
+    "ContextManifest": {
+      "description": "Everything assembled for one destination.",
+      "properties": {
+        "contextManifestId": {
+          "description": "Stable identifier, referenced by routing decisions and checkpoints.",
+          "type": "string"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it was assembled."
+        },
+        "destinationClass": {
+          "$ref": "#/$defs/DestinationClass",
+          "description": "Where it was going."
+        },
+        "redactions": {
+          "description": "Stable codes for redactions applied before release.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sources": {
+          "description": "Everything considered, included or not.",
+          "items": {
+            "$ref": "#/$defs/ContextSource"
+          },
+          "type": "array"
+        },
+        "taskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "The task this was assembled for."
+        },
+        "totalBytes": {
+          "description": "Total bytes actually sent.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "totalTokenEstimate": {
+          "description": "Approximate total token cost, when estimated.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "contextManifestId",
+        "taskId",
+        "destinationClass",
+        "sources",
+        "totalBytes",
+        "redactions",
+        "createdAt"
+      ],
+      "type": "object"
+    },
+    "ContextSource": {
+      "description": "One thing that was considered for a context bundle.",
+      "properties": {
+        "byteCount": {
+          "description": "Size of the content in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "category": {
+          "$ref": "#/$defs/ContextCategory",
+          "description": "What kind of source it is."
+        },
+        "contentHash": {
+          "description": "Hash of the content, so the manifest explains without copying.",
+          "type": "string"
+        },
+        "dataClass": {
+          "$ref": "#/$defs/DataClass",
+          "description": "How sensitive its content is."
+        },
+        "exclusionReason": {
+          "description": "Why it was not, when it was not.",
+          "type": "string"
+        },
+        "included": {
+          "description": "Whether it was actually sent.",
+          "type": "boolean"
+        },
+        "sourceId": {
+          "description": "Stable identifier for this source within the task.",
+          "type": "string"
+        },
+        "tokenEstimate": {
+          "description": "Approximate token cost, when one was estimated.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sourceId",
+        "category",
+        "dataClass",
+        "contentHash",
+        "byteCount",
+        "included"
+      ],
+      "type": "object"
+    },
     "ConversationId": {
       "description": "A conversation within a project, or a projectless conversation.",
       "type": "string"
@@ -317,14 +484,7 @@
       "description": "A conversation, optionally scoped to a project.",
       "properties": {
         "archivedAt": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Timestamp"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/Timestamp",
           "description": "When it was archived, if it has been."
         },
         "conversationId": {
@@ -336,14 +496,7 @@
           "description": "When it was created."
         },
         "projectId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ProjectId"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/ProjectId",
           "description": "Project this belongs to. Absent means projectless, which carries no\nimplicit filesystem access (`PHASE_1_ACCEPTANCE_CRITERIA.md` §8)."
         },
         "schemaVersion": {
@@ -390,6 +543,26 @@
         {
           "const": "secret",
           "description": "A credential or token. Never serialized; see [`SecretRef`].",
+          "type": "string"
+        }
+      ]
+    },
+    "DestinationClass": {
+      "description": "Where assembled context is about to go.\n\nThe distinction is a policy one, not a technical one: crossing to `Cloud`\nis a data-release decision that needs a disclosure, and `Worker` means a\nprocess that is not the model and not Tramontana\n(`SECURITY_AND_PERMISSIONS.md` §8).",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "A model running on this device.",
+          "type": "string"
+        },
+        {
+          "const": "cloud",
+          "description": "A third-party endpoint.",
+          "type": "string"
+        },
+        {
+          "const": "worker",
+          "description": "A worker process.",
           "type": "string"
         }
       ]
@@ -608,14 +781,7 @@
           "type": "string"
         },
         "conversationId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ConversationId"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/ConversationId",
           "description": "Conversation, when the task has one."
         },
         "correlationId": {
@@ -680,17 +846,33 @@
       "description": "The body of a durable event.\n\nTagged by `kind` so the discriminator is one field in both Rust and\nTypeScript. M1 defines the payloads the walking skeleton emits; the rest\narrive with the milestones that produce them.",
       "oneOf": [
         {
+          "description": "A bounded explanation of a core lifecycle decision.",
+          "properties": {
+            "code": {
+              "description": "Stable machine-readable code.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "diagnosticRecorded",
+              "type": "string"
+            },
+            "summary": {
+              "description": "Secret-free description.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "code",
+            "summary"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The task was created.",
           "properties": {
             "conversationId": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ConversationId"
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "$ref": "#/$defs/ConversationId",
               "description": "Conversation this task belongs to, when it has one."
             },
             "goalSummary": {
@@ -751,6 +933,42 @@
           "required": [
             "kind",
             "configuration"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A context bundle was assembled for a destination.\n\nCarries the manifest whole rather than an identifier, because the\nrecord has to explain a data release without a second lookup — and\nbecause an exported bundle must still explain it on a machine that has\nnone of the original storage.",
+          "properties": {
+            "kind": {
+              "const": "contextPrepared",
+              "type": "string"
+            },
+            "manifest": {
+              "$ref": "#/$defs/ContextManifest",
+              "description": "What was assembled, and what was withheld."
+            }
+          },
+          "required": [
+            "kind",
+            "manifest"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A model and a location were chosen.",
+          "properties": {
+            "decision": {
+              "$ref": "#/$defs/RoutingDecision",
+              "description": "The decision, its reasons, and the context it released."
+            },
+            "kind": {
+              "const": "routingDecided",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "decision"
           ],
           "type": "object"
         },
@@ -828,9 +1046,17 @@
               "const": "toolRequested",
               "type": "string"
             },
+            "requestHash": {
+              "description": "Hash of the tool identity and normalized arguments, never raw values.",
+              "type": "string"
+            },
             "riskClass": {
               "$ref": "#/$defs/RiskClass",
               "description": "How much damage the tool could do."
+            },
+            "stepId": {
+              "description": "Worker-supplied stable step identity, scoped to this task.",
+              "type": "string"
             },
             "toolId": {
               "description": "Namespaced tool identifier.",
@@ -858,14 +1084,7 @@
               "type": "string"
             },
             "grantKind": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/GrantKind"
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "$ref": "#/$defs/GrantKind",
               "description": "How the authorization was obtained, when it was allowed."
             },
             "invocationId": {
@@ -911,6 +1130,11 @@
               "const": "toolStarted",
               "type": "string"
             },
+            "replaySafety": {
+              "$ref": "#/$defs/ReplaySafety",
+              "default": "unknown",
+              "description": "Effect classification recorded before execution. Legacy events are unknown."
+            },
             "toolId": {
               "description": "The tool.",
               "type": "string"
@@ -919,7 +1143,8 @@
           "required": [
             "kind",
             "invocationId",
-            "toolId"
+            "toolId",
+            "replaySafety"
           ],
           "type": "object"
         },
@@ -1003,14 +1228,7 @@
               "type": "string"
             },
             "pendingAction": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/PendingAction"
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "$ref": "#/$defs/PendingAction",
               "description": "What was in flight, when anything was."
             },
             "resume": {
@@ -1146,6 +1364,117 @@
         }
       ]
     },
+    "ExportManifest": {
+      "description": "The bundle's table of contents.",
+      "properties": {
+        "bundleMajorVersion": {
+          "description": "Major version of the bundle layout. Refused when unrecognized.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bundleMinorVersion": {
+          "description": "Minor version. A reader may ignore what it does not know.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the bundle was produced."
+        },
+        "entries": {
+          "description": "Every file in the bundle.",
+          "items": {
+            "$ref": "#/$defs/BundleEntry"
+          },
+          "type": "array"
+        },
+        "omissions": {
+          "description": "What was left out, and how much.",
+          "items": {
+            "$ref": "#/$defs/Omission"
+          },
+          "type": "array"
+        },
+        "options": {
+          "$ref": "#/$defs/ExportOptions",
+          "description": "What the export chose to include."
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId",
+          "description": "The project, when the export was scoped to one."
+        },
+        "schemaVersion": {
+          "description": "Version of the records inside the bundle.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "taskIds": {
+          "description": "Tasks included, in export order.",
+          "items": {
+            "$ref": "#/$defs/TaskId"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "bundleMajorVersion",
+        "bundleMinorVersion",
+        "createdAt",
+        "taskIds",
+        "entries",
+        "omissions",
+        "options"
+      ],
+      "type": "object"
+    },
+    "ExportOptions": {
+      "description": "What an export chose to include.\n\nAbsent means the default, which is to exclude. The flags exist so a bundle\nrecords the decision that produced it rather than leaving a reader to infer\nit from what happens to be present.",
+      "properties": {
+        "includeAbsolutePaths": {
+          "default": false,
+          "description": "Keep absolute device paths instead of redacting them.",
+          "type": "boolean"
+        },
+        "includeArtifacts": {
+          "default": false,
+          "description": "Include artifact files.",
+          "type": "boolean"
+        },
+        "includeRawToolOutput": {
+          "default": false,
+          "description": "Keep unredacted tool output.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "includeAbsolutePaths",
+        "includeRawToolOutput",
+        "includeArtifacts"
+      ],
+      "type": "object"
+    },
+    "ExportedConfiguration": {
+      "description": "A configuration manifest with the project it belongs to.\n\nThe manifest itself does not name its project — it is stored under one —\nso a bundle has to carry the pairing. Without it an imported task would\nreference a manifest nothing could resolve, and the record could not say\nwhich instructions were in force when the work happened.",
+      "properties": {
+        "configuration": {
+          "$ref": "#/$defs/EffectiveConfiguration",
+          "description": "The secret-free manifest. Instruction bodies are not copied."
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId",
+          "description": "The project this manifest was resolved for."
+        }
+      },
+      "required": [
+        "projectId",
+        "configuration"
+      ],
+      "type": "object"
+    },
     "GrantKind": {
       "description": "How long an authorization lasts.",
       "oneOf": [
@@ -1165,6 +1494,117 @@
           "type": "string"
         }
       ]
+    },
+    "HandoffBundle": {
+      "description": "Everything a different worker needs to continue a task.\n\nAssembled from canonical records only. A worker's opaque continuation data\nis never read to build this, which is what makes the claim in\n`PROJECT_FORMAT.md` §4 — that canonical state is sufficient — testable\nrather than aspirational.",
+      "properties": {
+        "completedStepIds": {
+          "description": "Steps already done, which the receiving worker must not repeat.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "configurationManifestHash": {
+          "description": "The effective configuration in force, for a project task.",
+          "type": "string"
+        },
+        "conversationId": {
+          "$ref": "#/$defs/ConversationId",
+          "description": "Its conversation, when it has one."
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the handoff was assembled."
+        },
+        "eventSequence": {
+          "description": "The point being handed over.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "goal": {
+          "description": "What the user asked for.",
+          "type": "string"
+        },
+        "history": {
+          "description": "The task's normalized history.",
+          "items": {
+            "$ref": "#/$defs/HandoffEntry"
+          },
+          "type": "array"
+        },
+        "omissions": {
+          "description": "What this handoff does not carry.",
+          "items": {
+            "$ref": "#/$defs/Omission"
+          },
+          "type": "array"
+        },
+        "pendingAction": {
+          "$ref": "#/$defs/PendingAction",
+          "description": "What was in flight, when anything was."
+        },
+        "previousWorker": {
+          "$ref": "#/$defs/AgentDescriptor",
+          "description": "The worker that had the task, for provenance only.\n\nA receiving worker is told who held it before, not asked to imitate\nthem. Nothing private to that worker is carried."
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId",
+          "description": "Its project, when it has one."
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "taskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "The task being handed over."
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "taskId",
+        "goal",
+        "createdAt",
+        "eventSequence",
+        "history",
+        "completedStepIds",
+        "omissions"
+      ],
+      "type": "object"
+    },
+    "HandoffEntry": {
+      "description": "One fact in a handoff, normalized so any worker can read it.",
+      "properties": {
+        "kind": {
+          "description": "What kind of fact this is.",
+          "type": "string"
+        },
+        "occurredAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it happened."
+        },
+        "sequence": {
+          "description": "Position in the task's durable stream.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "summary": {
+          "description": "A secret-free description.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sequence",
+        "occurredAt",
+        "kind",
+        "summary"
+      ],
+      "type": "object"
     },
     "Health": {
       "description": "Whether a provider or worker is usable right now.",
@@ -1500,7 +1940,7 @@
       "properties": {
         "conversationId": {
           "$ref": "#/$defs/ConversationId",
-          "description": "Conversation this message belongs to."
+          "description": "Conversation this message belongs to, when it has one.\n\nOptional because a task can be started outside a conversation, and its\nassistant answer is still the durable record of what the model said.\nDropping the message because there was no conversation would leave the\nexported task with tool calls and no answer."
         },
         "createdAt": {
           "$ref": "#/$defs/Timestamp",
@@ -1532,27 +1972,79 @@
           "description": "Whether it is finished."
         },
         "taskId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TaskId"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/TaskId",
           "description": "Task that produced it, when one did."
         }
       },
       "required": [
         "schemaVersion",
         "messageId",
-        "conversationId",
         "role",
         "createdAt",
         "status",
         "parts"
       ],
       "type": "object"
+    },
+    "Omission": {
+      "description": "One thing an export left out, and how much of it.",
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/OmissionCategory",
+          "description": "What kind of data."
+        },
+        "count": {
+          "description": "How many values were affected.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "description": "Why it was left out, in a sentence a person can act on.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "category",
+        "reason",
+        "count"
+      ],
+      "type": "object"
+    },
+    "OmissionCategory": {
+      "description": "What kind of data was left out of an export.",
+      "oneOf": [
+        {
+          "const": "secret",
+          "description": "A secret reference or credential-store value. Never included.",
+          "type": "string"
+        },
+        {
+          "const": "absolutePath",
+          "description": "An absolute device path, which names a machine and often a person.",
+          "type": "string"
+        },
+        {
+          "const": "rawToolOutput",
+          "description": "Unredacted output a tool produced.",
+          "type": "string"
+        },
+        {
+          "const": "artifact",
+          "description": "A file an invocation produced.",
+          "type": "string"
+        },
+        {
+          "const": "internalEvent",
+          "description": "An internal audit marker never shown outside the application.",
+          "type": "string"
+        },
+        {
+          "const": "workerPrivateState",
+          "description": "A worker's private continuation data.",
+          "type": "string"
+        }
+      ]
     },
     "PendingAction": {
       "description": "The one action that had started and not finished.",
@@ -1731,14 +2223,7 @@
           "type": "boolean"
         },
         "mode": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ResumeMode"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/ResumeMode",
           "description": "How, when it is."
         },
         "reasonCode": {
@@ -1785,6 +2270,113 @@
           "type": "string"
         }
       ]
+    },
+    "RoutedModel": {
+      "description": "One model a decision could use.",
+      "properties": {
+        "modelId": {
+          "description": "The model.",
+          "type": "string"
+        },
+        "providerId": {
+          "description": "The provider offering it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "providerId",
+        "modelId"
+      ],
+      "type": "object"
+    },
+    "RoutingDecision": {
+      "description": "Where a task's inference was sent, and why.",
+      "properties": {
+        "availabilitySnapshotId": {
+          "description": "The availability snapshot the decision was made against.\n\nRecorded so a decision can be explained later even though availability\nhas moved on. Without it, \"why not the other model?\" is unanswerable.",
+          "type": "string"
+        },
+        "contextManifestId": {
+          "description": "The context this decision released.",
+          "type": "string"
+        },
+        "decisionId": {
+          "description": "Stable identifier for this decision.",
+          "type": "string"
+        },
+        "fallbackOrder": {
+          "description": "What would have been tried next, in order.",
+          "items": {
+            "$ref": "#/$defs/RoutingFallback"
+          },
+          "type": "array"
+        },
+        "location": {
+          "$ref": "#/$defs/ExecutionLocation",
+          "description": "Where it runs."
+        },
+        "mode": {
+          "$ref": "#/$defs/RoutingMode",
+          "description": "The routing mode in force when it was made."
+        },
+        "model": {
+          "$ref": "#/$defs/RoutedModel",
+          "description": "The model chosen."
+        },
+        "reasonCodes": {
+          "description": "Why, in deterministic order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "requiresDisclosure": {
+          "description": "Whether reaching this route needs the user told.",
+          "type": "boolean"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "decisionId",
+        "mode",
+        "model",
+        "location",
+        "availabilitySnapshotId",
+        "reasonCodes",
+        "fallbackOrder",
+        "contextManifestId",
+        "requiresDisclosure"
+      ],
+      "type": "object"
+    },
+    "RoutingFallback": {
+      "description": "A model and where it would run, as a fallback option.",
+      "properties": {
+        "location": {
+          "$ref": "#/$defs/ExecutionLocation",
+          "description": "Where it would run."
+        },
+        "modelId": {
+          "description": "The model.",
+          "type": "string"
+        },
+        "providerId": {
+          "description": "The provider offering it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "providerId",
+        "modelId",
+        "location"
+      ],
+      "type": "object"
     },
     "RoutingMode": {
       "description": "The user's standing policy for where inference may run.",
@@ -1917,14 +2509,7 @@
           "type": "integer"
         },
         "pendingAction": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/PendingAction"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/PendingAction",
           "description": "The action that had started and not finished, when there was one."
         },
         "resume": {
@@ -1946,14 +2531,7 @@
           "description": "The task's state at that sequence."
         },
         "worker": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CheckpointWorker"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/CheckpointWorker",
           "description": "The worker, when one had been selected."
         }
       },
@@ -2096,14 +2674,7 @@
           "type": "string"
         },
         "conversationId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ConversationId"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/ConversationId",
           "description": "Conversation this belongs to, when it has one."
         },
         "createdAt": {
@@ -2121,14 +2692,7 @@
           "type": "integer"
         },
         "projectId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ProjectId"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/ProjectId",
           "description": "Project this belongs to, when it has one."
         },
         "schemaVersion": {
