@@ -14,6 +14,7 @@ mod ids;
 mod model;
 mod permission;
 mod repository;
+mod secret;
 mod tool;
 mod worker;
 
@@ -29,5 +30,6 @@ pub use repository::{
     CheckpointRepository, ConfigurationRepository, ConversationRepository, ProjectRepository,
     RepositoryError, TaskRepository,
 };
+pub use secret::SecretResolver;
 pub use tool::{ToolInvocation, ToolOutcome, ToolProvider};
 pub use worker::{AgentProvider, WorkerHost, WorkerOutcome, WorkerRequest};
