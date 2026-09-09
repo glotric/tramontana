@@ -140,20 +140,28 @@ impl TaskDriver {
             TaskState::Routing,
             TaskState::StartingWorker,
         ] {
-            // Explicit resume journals Interrupted -> Preparing before returning
-            // to its caller, so a second command cannot observe a resumable task.
-            if next == state {
-                continue;
-            }
             if cancel.is_cancelled() {
                 self.finish_cancelled(state).await;
                 return;
             }
-            match self.change_state(state, next, "task.advanced").await {
-                Ok(current) => state = current,
-                Err(error) => {
-                    self.finish_failed(state, error).await;
-                    return;
+
+            // Explicit resume journals Interrupted -> Preparing before it
+            // returns to its caller, so a second command cannot observe a
+            // still-resumable task. The transition is therefore already
+            // written and must not be written twice.
+            //
+            // Only the transition, though. Skipping the *work* of a state
+            // along with its transition is how a resumed run came to record a
+            // routing decision naming a context manifest that was never
+            // assembled — visible in an exported record as
+            // `contextManifestId: "context.unavailable"`.
+            if next != state {
+                match self.change_state(state, next, "task.advanced").await {
+                    Ok(current) => state = current,
+                    Err(error) => {
+                        self.finish_failed(state, error).await;
+                        return;
+                    }
                 }
             }
 

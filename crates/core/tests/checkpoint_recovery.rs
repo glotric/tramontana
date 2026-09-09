@@ -490,3 +490,60 @@ fn missing_safety_in_older_started_events_is_unknown_and_blocks_replay() {
     );
     assert!(!checkpoint.resume.eligible);
 }
+
+#[tokio::test]
+async fn a_resumed_run_prepares_context_again_and_routes_against_it() {
+    // Found by reading an exported record rather than by a failing test: a
+    // resumed run journaled `interrupted -> preparing` in the resume command,
+    // so the driver skipped its Preparing iteration — and skipped assembling
+    // context along with it. The routing decision that followed named
+    // `context.unavailable`, a manifest nobody had written.
+    //
+    // The property worth holding is not "an event exists" but "every routing
+    // decision names a context that was actually assembled", which is what
+    // makes a disclosure traceable to what was really sent.
+    let harness = Harness::new(false);
+    let service = harness.service();
+    let task = harness.start(&service).await;
+    let checkpoint = service.create_checkpoint(&task).await.unwrap();
+
+    service
+        .resume_task(&task, &checkpoint.checkpoint_id)
+        .await
+        .unwrap();
+    stopped(&service, &task).await;
+
+    let events = service.replay_task_events(&task, 0).await.unwrap();
+    let assembled: Vec<String> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ContextPrepared { manifest } => {
+                Some(manifest.context_manifest_id.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    let routed: Vec<String> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::RoutingDecided { decision } => Some(decision.context_manifest_id.clone()),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        assembled.len() >= 2,
+        "a resumed run must assemble context again, not reuse a stale manifest"
+    );
+    assert_eq!(
+        routed.len(),
+        assembled.len(),
+        "every preparation should be followed by a routing decision"
+    );
+    for context in &routed {
+        assert!(
+            assembled.contains(context),
+            "a routing decision named {context}, which was never assembled"
+        );
+    }
+}
