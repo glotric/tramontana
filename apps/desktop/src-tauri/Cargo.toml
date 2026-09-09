@@ -12,10 +12,8 @@ repository.workspace = true
 # `run()`.
 #
 # Deliberately `rlib` only. The `staticlib` and `cdylib` types Tauri scaffolds
-# are for mobile, which Phase 1 excludes (`ROADMAP.md`). On Windows they also
-# make the unit-test executable fail to load with STATUS_ENTRYPOINT_NOT_FOUND,
-# because the harness inherits the dynamic library's imports. If mobile ever
-# comes into scope, they come back with it.
+# are for mobile, which Phase 1 excludes (`ROADMAP.md`). If mobile ever comes
+# into scope, they come back with it.
 [lib]
 name = "tramontana_desktop_lib"
 crate-type = ["rlib"]
