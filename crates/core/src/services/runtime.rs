@@ -7,8 +7,8 @@ use crate::contracts::{
     AuthorizedToolRequest, CancellationOrigin, CapabilityScope, DataClass, EffectiveConfiguration,
     ErrorCode, ErrorEnvelope, EventDraft, EventPayload, HandoffBundle, InvocationId, MessageId,
     MessageRole, MessageStatus, ModelEvent, ModelRequest, NormalizedMessage, PermissionOrigin,
-    ReplaySafety, RiskClass, SideEffect, StopReason, StreamFrame, TaskCheckpoint, TaskEventKind,
-    TaskState,
+    ReplaySafety, RiskClass, RoutingMode, SideEffect, StopReason, StreamFrame, TaskCheckpoint,
+    TaskEventKind, TaskState,
 };
 use crate::ports::{AgentProvider, ModelProvider, WorkerHost, WorkerOutcome, WorkerRequest};
 use crate::ports::{Clock, PermissionQuery};
@@ -16,7 +16,8 @@ use crate::services::PermissionManager;
 use crate::services::ToolRegistry;
 use crate::services::checkpoint::ResumePlan;
 use crate::services::journal::TaskJournal;
-use crate::services::preparation::{assemble_context, choose_route};
+use crate::services::preparation::assemble_context;
+use crate::services::routing::{AvailabilitySnapshot, RoutingInput, route};
 use crate::services::task_service::Providers;
 
 /// Drives one task through its state machine.
@@ -34,6 +35,8 @@ pub(crate) struct TaskDriver {
     scope: CapabilityScope,
     /// Source of decision timestamps.
     clock: Arc<dyn Clock>,
+    /// The routing mode in force for this task.
+    routing_mode: RoutingMode,
     /// The effective configuration this task started under, when it has one.
     ///
     /// Held so the context manifest can name the instruction sources in force
@@ -62,6 +65,7 @@ impl TaskDriver {
             providers,
             scope,
             clock,
+            routing_mode: RoutingMode::Automatic,
             configuration: None,
             checkpoint: None,
             handoff: None,
@@ -69,6 +73,12 @@ impl TaskDriver {
             resume: ResumePlan::default(),
             interrupt: CancellationToken::new(),
         }
+    }
+
+    /// Run this task under `mode`.
+    pub(crate) fn with_routing_mode(mut self, mode: RoutingMode) -> Self {
+        self.routing_mode = mode;
+        self
     }
 
     /// Attach the effective configuration this task resolved at start.
@@ -124,7 +134,7 @@ impl TaskDriver {
         // earlier attempt assembled: the project may have changed while the
         // task was interrupted, and routing against a stale manifest would
         // describe a release that did not happen.
-        let mut context_manifest_id: Option<String> = None;
+        let mut context: Option<crate::contracts::ContextManifest> = None;
 
         // Each step checks cancellation first. A cancel that arrives before the
         // task really starts still produces a proper Cancelling -> Cancelled
@@ -165,13 +175,13 @@ impl TaskDriver {
 
             let recorded = match state {
                 TaskState::Preparing => match self.record_context(&goal).await {
-                    Ok(manifest_id) => {
-                        context_manifest_id = Some(manifest_id);
+                    Ok(manifest) => {
+                        context = Some(manifest);
                         Ok(())
                     }
                     Err(error) => Err(error),
                 },
-                TaskState::Routing => self.record_route(context_manifest_id.as_deref()).await,
+                TaskState::Routing => self.record_route(context.as_ref()).await,
                 _ => Ok(()),
             };
             if let Err(error) = recorded {
@@ -214,7 +224,9 @@ impl TaskDriver {
         let host = BrokeredHost {
             journal: self.journal.clone(),
             model: Arc::clone(&self.providers.model),
-            context_manifest_id: context_manifest_id.clone(),
+            context_manifest_id: context
+                .as_ref()
+                .map(|manifest| manifest.context_manifest_id.clone()),
             tools: ToolBroker {
                 registry: Arc::clone(&self.providers.tools),
                 permissions: Arc::clone(&self.providers.permissions),
@@ -252,10 +264,13 @@ impl TaskDriver {
 
     /// Assemble the context for this task and record what it holds.
     ///
-    /// Returns the manifest identifier so the routing decision can name the
-    /// context it released — the link that makes a disclosure traceable to
-    /// what was actually sent.
-    async fn record_context(&self, goal: &str) -> Result<String, ErrorEnvelope> {
+    /// Returns the manifest so routing can name the release it is deciding
+    /// about, and can see what data classes it would be sending — the link
+    /// that makes a disclosure traceable to what was actually assembled.
+    async fn record_context(
+        &self,
+        goal: &str,
+    ) -> Result<crate::contracts::ContextManifest, ErrorEnvelope> {
         let manifest = assemble_context(
             self.journal.next_id("context"),
             self.journal.task_id().clone(),
@@ -263,33 +278,53 @@ impl TaskDriver {
             self.configuration.as_ref(),
             self.clock.now(),
         );
-        let manifest_id = manifest.context_manifest_id.clone();
 
         self.record(EventDraft::user(
             TaskEventKind::ContextPrepared,
-            EventPayload::ContextPrepared { manifest },
+            EventPayload::ContextPrepared {
+                manifest: manifest.clone(),
+            },
         ))
         .await?;
-        Ok(manifest_id)
+        Ok(manifest)
     }
 
     /// Choose a route for the context just prepared and record why.
     ///
-    /// A task with no model available records no decision rather than an
-    /// invented one; the failure surfaces when the worker asks for inference.
-    async fn record_route(&self, context_manifest_id: Option<&str>) -> Result<(), ErrorEnvelope> {
-        let available = self.providers.model.list_models().await;
-        let Some(decision) = choose_route(
-            self.journal.next_id("decision"),
-            &available,
-            // Absent only when preparation recorded no manifest, which is a
-            // state the loop above does not reach. Named rather than empty so
-            // a reader is never left wondering what an empty string meant.
-            context_manifest_id.unwrap_or("context.unavailable"),
-            self.journal.next_id("availability"),
-        ) else {
-            return Ok(());
+    /// A refusal is recorded as a task failure rather than silently skipped:
+    /// "no model could serve this" is something the user has to be told, and
+    /// the reasons are the same vocabulary a successful decision uses.
+    async fn record_route(
+        &self,
+        context: Option<&crate::contracts::ContextManifest>,
+    ) -> Result<(), ErrorEnvelope> {
+        let snapshot = AvailabilitySnapshot {
+            snapshot_id: self.journal.next_id("availability"),
+            models: self.providers.model.list_models().await,
+            taken_at: self.clock.now(),
         };
+
+        let mut input = RoutingInput::new(
+            self.routing_mode,
+            snapshot,
+            context.map_or("context.unavailable", |manifest| {
+                manifest.context_manifest_id.as_str()
+            }),
+        );
+        input.carries_private_data = context.is_some_and(|manifest| {
+            manifest
+                .released_data_classes()
+                .iter()
+                .any(|class| *class != DataClass::Public)
+        });
+
+        let decision = route(self.journal.next_id("decision"), &input).map_err(|refusal| {
+            ErrorEnvelope::new(
+                ErrorCode::ProviderUnavailable,
+                format!("no model could serve this task: {refusal}"),
+                self.journal.correlation_id().clone(),
+            )
+        })?;
 
         self.record(EventDraft::user(
             TaskEventKind::RoutingDecided,

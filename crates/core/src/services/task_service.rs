@@ -8,7 +8,8 @@ use crate::config::{ConfigurationSelection, RawSource, resolve_with_selection};
 use crate::contracts::{
     CapabilityScope, ConversationId, ConversationRecord, CorrelationId, EffectiveConfiguration,
     ErrorCode, ErrorEnvelope, EventDraft, EventEnvelope, EventId, EventPayload, ProjectId,
-    ProjectRecord, SCHEMA_VERSION, TaskEventKind, TaskId, TaskRecord, TaskSnapshot, TaskUpdate,
+    ProjectRecord, RoutingMode, SCHEMA_VERSION, TaskEventKind, TaskId, TaskRecord, TaskSnapshot,
+    TaskUpdate,
 };
 use crate::ports::{
     AgentProvider, CheckpointRepository, Clock, ConfigurationRepository, ConversationRepository,
@@ -106,6 +107,11 @@ pub struct TaskService {
     pub(super) ids: Arc<dyn IdSource>,
     pub(super) live: LiveTasks,
     pub(super) lifecycle: tokio::sync::Mutex<()>,
+    /// The routing mode every task in this profile starts under.
+    ///
+    /// Behind a lock because `setRoutingMode` (`CORE_CONTRACTS.md` §13) changes
+    /// it while tasks are running, and a task reads it once when it routes.
+    pub(super) routing_mode: Mutex<RoutingMode>,
     pub(super) execution_allowed: bool,
     pub(super) execution_guard: Option<Arc<dyn Send + Sync>>,
 }
@@ -132,9 +138,39 @@ impl TaskService {
             ids,
             live: Arc::new(Mutex::new(HashMap::new())),
             lifecycle: tokio::sync::Mutex::new(()),
+            // Local-first by default: work stays on the device until someone
+            // chooses otherwise.
+            routing_mode: Mutex::new(RoutingMode::Automatic),
             execution_allowed: true,
             execution_guard: None,
         }
+    }
+
+    /// Start every task under `mode`.
+    #[must_use]
+    pub fn with_routing_mode(self, mode: RoutingMode) -> Self {
+        self.set_routing_mode(mode);
+        self
+    }
+
+    /// Change the routing mode. `setRoutingMode` in `CORE_CONTRACTS.md` §13.
+    ///
+    /// Takes effect for tasks that route after this returns; a task already
+    /// past its routing decision keeps the destination it was given, because
+    /// the record must say where the work actually went.
+    pub fn set_routing_mode(&self, mode: RoutingMode) {
+        match self.routing_mode.lock() {
+            Ok(mut current) => *current = mode,
+            Err(poisoned) => *poisoned.into_inner() = mode,
+        }
+    }
+
+    /// The routing mode in force.
+    #[must_use]
+    pub fn routing_mode(&self) -> RoutingMode {
+        self.routing_mode
+            .lock()
+            .map_or(RoutingMode::Automatic, |mode| *mode)
     }
 
     /// Bind production execution to an adapter-owned exclusive profile lease.
@@ -562,6 +598,7 @@ impl TaskService {
             scope,
             Arc::clone(&self.clock),
         )
+        .with_routing_mode(self.routing_mode())
         .with_configuration(resolved_configuration)
         .continuing(None, super::ResumePlan::default(), interrupt);
         let goal = request.goal;

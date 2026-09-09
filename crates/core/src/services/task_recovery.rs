@@ -367,6 +367,7 @@ impl TaskService {
 
         let plan = ResumePlan::from_events(&events);
         let driver = TaskDriver::new(journal, self.providers.clone(), scope, self.clock.clone())
+            .with_routing_mode(self.routing_mode())
             .with_configuration(configuration);
         let driver = match taking_over {
             Some((receiving, handoff)) => driver.handing_over(receiving, handoff, plan, interrupt),

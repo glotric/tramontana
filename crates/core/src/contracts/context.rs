@@ -199,6 +199,28 @@ impl ContextManifest {
             .any(|source| source.included && source.data_class == DataClass::Sensitive)
     }
 
+    /// The data classes actually released, strongest first.
+    ///
+    /// What a routing decision turns on: sending public content to a cloud
+    /// endpoint is not the same act as sending a user's project to one.
+    #[must_use]
+    pub fn released_data_classes(&self) -> Vec<DataClass> {
+        let mut classes: Vec<DataClass> = self
+            .sources
+            .iter()
+            .filter(|source| source.included)
+            .map(|source| source.data_class)
+            .collect();
+        classes.sort_unstable_by_key(|class| match class {
+            DataClass::Secret => 0,
+            DataClass::Sensitive => 1,
+            DataClass::Project => 2,
+            DataClass::Public => 3,
+        });
+        classes.dedup();
+        classes
+    }
+
     /// Sources that were gathered and withheld.
     pub fn exclusions(&self) -> impl Iterator<Item = &ContextSource> {
         self.sources.iter().filter(|source| !source.included)
