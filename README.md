@@ -20,9 +20,18 @@ Phase 1 has no enterprise server dependency. The default architecture is persona
 
 ## Status
 
-Milestone M3 is complete. Every tool call now passes a fail-closed permission boundary and lands in the durable record with its origin, capability, scope, and decision — refusals included. Six read-only tools inspect a project's approved roots and nothing else: traversal, absolute paths, symlink escape, and a path repointed mid-read are all refused.
+Milestone M4 is complete. Validation gate V2 is next.
 
-Projects, conversations, tasks, ordered events, and secret-free configuration manifests persist in SQLite and recover on restart. The task runtime still uses deterministic fake providers, which the interface labels explicitly; there is no real model yet, and no modifying tools. Validation gate V1 passed.
+The differentiating capability is built and runs end to end against fakes: a task can be **stopped, understood, continued, handed to a different worker, and carried out of the application** as a record that stands on its own.
+
+- A checkpoint is *derived* from the durable events rather than kept beside them, so the two cannot disagree after an unclean stop — and a checkpoint can be taken for a task the running process never started, which is what makes startup recovery possible at all.
+- Continuing is always explicit. A step is identified by a worker-declared name plus a fingerprint of the tool and its arguments, and the core refuses a step already in the completed watermark — so *resume without repeating a side effect* does not depend on the worker cooperating. An action whose effects are unsafe or unknown leaves the task `interrupted` for a person to reconcile.
+- A second worker with different capabilities can take a task over from canonical state alone. It receives a handoff bundle and nothing else; the one field that could carry the previous worker's private session is recorded as an omission instead of being passed along.
+- Export is a data-release action. Secrets and worker-private state are excluded unconditionally and are not options; absolute paths and raw tool output are excluded by default. Everything dropped is counted in the manifest and named in a README the bundle carries. Import treats its input as hostile and executes nothing.
+
+Earlier milestones stand behind it: every tool call passes a fail-closed permission boundary and lands in the record with its origin, capability, scope, and decision, refusals included (M3); projects, conversations, tasks, ordered events, and secret-free configuration manifests persist in SQLite and recover on restart (M2).
+
+**The task runtime still uses deterministic fake providers, which the interface labels explicitly.** There is no real model yet and no modifying tools. Context manifests and routing decisions are recorded in their real serialized shape but produced by fakes — deliberately, because those shapes are the most expensive in the system to change late. Validation gate V1 passed.
 
 ```bash
 corepack enable pnpm     # Node 24.x; Node 25 removed Corepack
@@ -31,13 +40,25 @@ pnpm bootstrap           # validates the toolchain, generates contract artifacts
 pnpm check:fast          # format, contracts, lint, types, tests (~5s)
 pnpm check               # the above plus the release build
 pnpm dev                 # desktop shell
-pnpm dev:cli task "Say hello"   # the same task from a terminal
 pnpm dev:cli project open /path/to/project
+pnpm dev:cli task "Say hello"   # the same task from a terminal
+```
+
+Stopping and continuing work, and carrying it elsewhere (`tramontana` is `pnpm dev:cli` in a development checkout):
+
+```bash
+tramontana task inspect  <TASK>                          # state, checkpoint, replay safety
+tramontana task resume   <TASK> --checkpoint-id <CP>     # the same worker continues
+tramontana task handoff  <TASK> --checkpoint-id <CP> --to fake.receiving
+tramontana task discard  <TASK>                          # keeps history, undoes nothing
+tramontana bundle export  ./out --project-id <PROJECT>
+tramontana bundle inspect ./out                          # validates, writes nothing
+tramontana bundle import  ./out                          # into a clean profile
 ```
 
 Prerequisites, root commands, and known gaps: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-Work is sequenced so the differentiating capability — stop a task, inspect it, resume it safely, hand it to another worker, and export the record — is built and proven in M4 against fakes, before model adapters and workers exist. Validation gates `V1`–`V6` sit between stages; each answers one question with evidence before the next stage begins.
+Work is sequenced so the differentiating capability is proven against fakes *before* model adapters and workers exist — if the thesis is wrong, that is cheaper to learn now. Validation gates `V1`–`V6` sit between stages; each answers one question with evidence before the next stage begins. Each closed milestone leaves an evidence note in [docs/evidence/](docs/evidence/), including the findings that were wrong along the way.
 
 Implementation agents should start in this order:
 
@@ -67,15 +88,20 @@ Product and architecture references:
 apps/desktop/       Tauri application and React user interface
 apps/cli/           Headless development and recovery adapter
 crates/core/        Provider-neutral Rust domain and application services
+crates/persistence/ SQLite implementation of the local operational plane
+crates/platform/    Paths, clock, identifiers, profile lease, bundle files
+crates/adapters-tools/  Read-only filesystem and Git tools
 packages/shared/    Generated schemas and TypeScript client types
 xtask/              Repository build tooling; not shipped
 scripts/            Repository checks that are not tests
+tests/fixtures/     Cross-language contract fixtures, generated by xtask
 docs/decisions/     Architecture decision records
+docs/evidence/      What each milestone proved, and what it did not
 .tramontana/        Portable Markdown customization examples
 docs/               Product, architecture, security, and delivery contracts
 ```
 
-Crates for persistence, platform capabilities, and each adapter family are created when their first code lands, not in advance.
+Crates for each adapter family are created when their first code lands, not in advance.
 
 Implementation agents must read `AGENTS.md` and the milestone entry in `docs/BUILD_ORDER.md` before making changes. Architecture changes require corresponding documentation and, where specified, a decision record in the same change.
 
