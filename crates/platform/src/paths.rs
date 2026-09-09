@@ -91,6 +91,34 @@ pub fn canonicalize_root(path: &Path) -> Result<CanonicalRoot, PathError> {
     Ok(CanonicalRoot(resolved))
 }
 
+/// The spelling the filesystem stores for `name` inside `parent`.
+///
+/// Only folds when the component **as given** actually resolves. That single
+/// condition separates the two filesystems:
+///
+/// - case-insensitive: `PROJECT` resolves, so the directory entry is found and
+///   its stored spelling (`project`) is used;
+/// - case-sensitive: `PROJECT` does not resolve, so it is left alone rather
+///   than being silently rewritten into a different directory that does.
+///
+/// Without the existence check this quietly redirected a path the caller never
+/// asked for — which CI caught on Linux, where `PROJECT` and `project` are two
+/// directories rather than two spellings of one.
+fn stored_spelling(parent: &Path, name: &std::ffi::OsStr) -> std::ffi::OsString {
+    if !parent.join(name).exists() {
+        return name.to_os_string();
+    }
+    std::fs::read_dir(parent)
+        .ok()
+        .and_then(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name())
+                .find(|entry| entry == name || entry.eq_ignore_ascii_case(name))
+        })
+        .unwrap_or_else(|| name.to_os_string())
+}
+
 /// Rewrite each component to the casing the filesystem stores for it.
 ///
 /// A no-op on a case-sensitive filesystem, where the requested casing is
@@ -107,16 +135,7 @@ fn with_stored_case(path: &Path) -> PathBuf {
     for component in path.components() {
         match component {
             Component::Normal(name) => {
-                let stored = std::fs::read_dir(&rebuilt)
-                    .ok()
-                    .and_then(|entries| {
-                        entries
-                            .flatten()
-                            .map(|entry| entry.file_name())
-                            .find(|entry| entry.eq_ignore_ascii_case(name) || entry == name)
-                    })
-                    .unwrap_or_else(|| name.to_os_string());
-                rebuilt.push(stored);
+                rebuilt.push(stored_spelling(&rebuilt, name));
             }
             other => rebuilt.push(other.as_os_str()),
         }

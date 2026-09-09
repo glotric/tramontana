@@ -8,11 +8,17 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
-# The Tauri CLI expects a library target so the desktop entry point stays a
-# thin wrapper and mobile targets remain possible later.
+# A library target so the desktop entry point stays a thin wrapper around
+# `run()`.
+#
+# Deliberately `rlib` only. The `staticlib` and `cdylib` types Tauri scaffolds
+# are for mobile, which Phase 1 excludes (`ROADMAP.md`). On Windows they also
+# make the unit-test executable fail to load with STATUS_ENTRYPOINT_NOT_FOUND,
+# because the harness inherits the dynamic library's imports. If mobile ever
+# comes into scope, they come back with it.
 [lib]
 name = "tramontana_desktop_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
