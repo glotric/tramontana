@@ -113,12 +113,16 @@ pub enum EventPayload {
         configuration: super::EffectiveConfiguration,
     },
     /// A worker was selected for this task.
+    ///
+    /// Carries the whole descriptor rather than a name, because a checkpoint
+    /// is derived from this stream and a handoff needs the capability facts
+    /// (`CORE_CONTRACTS.md` §5.1, `PROJECT_FORMAT.md` §4). Recording only an
+    /// identifier would mean a resumed task had to ask a provider what it once
+    /// was, which is exactly the dependency a portable record must not have.
     #[serde(rename_all = "camelCase")]
     WorkerSelected {
-        /// Namespaced worker identifier.
-        agent_id: String,
-        /// Human-readable worker name.
-        display_name: String,
+        /// Capability snapshot taken at selection.
+        descriptor: super::AgentDescriptor,
     },
     /// A model request began.
     #[serde(rename_all = "camelCase")]
@@ -201,6 +205,25 @@ pub enum EventPayload {
         side_effect: super::SideEffect,
         /// Whether output was cut short by a limit.
         truncated: bool,
+    },
+    /// A checkpoint was written.
+    ///
+    /// The checkpoint itself lives in its own repository; this event records
+    /// that one exists at this point in the stream, and enough of it to be
+    /// read without a second lookup.
+    #[serde(rename_all = "camelCase")]
+    CheckpointSaved {
+        /// The checkpoint.
+        checkpoint_id: super::CheckpointId,
+        /// The durable sequence it was taken at.
+        event_sequence: u64,
+        /// How many steps it records as already done.
+        completed_step_count: u64,
+        /// What was in flight, when anything was.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        pending_action: Option<super::PendingAction>,
+        /// Whether the task can be picked up again from here.
+        resume: super::ResumeEligibility,
     },
     /// The task completed successfully.
     #[serde(rename_all = "camelCase")]

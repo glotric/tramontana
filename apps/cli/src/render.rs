@@ -40,11 +40,8 @@ pub(crate) fn event_line(event: &EventEnvelope) -> String {
         } => {
             format!("{previous:?} -> {current:?} ({reason_code})")
         }
-        EventPayload::WorkerSelected {
-            display_name,
-            agent_id,
-        } => {
-            format!("{display_name} [{agent_id}]")
+        EventPayload::WorkerSelected { descriptor } => {
+            format!("{} [{}]", descriptor.display_name, descriptor.agent_id)
         }
         EventPayload::ModelStarted { model_id, .. } => format!("model {model_id}"),
         EventPayload::ConfigurationResolved { configuration } => {

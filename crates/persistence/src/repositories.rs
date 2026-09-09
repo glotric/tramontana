@@ -1,13 +1,13 @@
 use async_trait::async_trait;
 use sqlx::Row;
 use tramontana_core::contracts::{
-    ConfigurationDiagnostic, ConfigurationKind, ConfigurationSource, ConversationId,
+    CheckpointId, ConfigurationDiagnostic, ConfigurationKind, ConfigurationSource, ConversationId,
     ConversationRecord, DiagnosticSeverity, EffectiveConfiguration, EventEnvelope, ProjectId,
-    ProjectRecord, TaskEventKind, TaskId, TaskRecord, TaskState, Timestamp,
+    ProjectRecord, TaskCheckpoint, TaskEventKind, TaskId, TaskRecord, TaskState, Timestamp,
 };
 use tramontana_core::ports::{
-    ConfigurationRepository, ConversationRepository, ProjectRepository, RepositoryError,
-    TaskRepository,
+    CheckpointRepository, ConfigurationRepository, ConversationRepository, ProjectRepository,
+    RepositoryError, TaskRepository,
 };
 
 use crate::Database;
@@ -890,5 +890,107 @@ impl SqliteTaskRepository {
             .get("current")
             .and_then(serde_json::Value::as_str)
             .and_then(parse_scalar))
+    }
+}
+
+/// Durable task checkpoints.
+#[derive(Debug, Clone)]
+pub struct SqliteCheckpointRepository {
+    database: Database,
+}
+
+impl SqliteCheckpointRepository {
+    /// Wrap an open, migrated database.
+    #[must_use]
+    pub fn new(database: Database) -> Self {
+        Self { database }
+    }
+
+    /// Rebuild a checkpoint from its stored document.
+    ///
+    /// The indexed columns exist to query by; the document is the record. A
+    /// row whose document no longer parses is reported as storage failure
+    /// rather than silently skipped, because a checkpoint that cannot be read
+    /// is exactly the situation the user needs told about.
+    fn decode(row: &sqlx::sqlite::SqliteRow) -> Result<TaskCheckpoint, RepositoryError> {
+        let document: String = row.get("checkpoint");
+        serde_json::from_str(&document).map_err(|error| {
+            RepositoryError::Unavailable(format!("stored checkpoint could not be read: {error}"))
+        })
+    }
+}
+
+#[async_trait]
+impl CheckpointRepository for SqliteCheckpointRepository {
+    async fn save(&self, checkpoint: &TaskCheckpoint) -> Result<(), RepositoryError> {
+        let document = serde_json::to_string(checkpoint).map_err(|error| {
+            RepositoryError::Unavailable(format!("checkpoint could not be serialized: {error}"))
+        })?;
+
+        sqlx::query(
+            "INSERT INTO task_checkpoint (
+                 checkpoint_id, task_id, event_sequence, created_at, task_state,
+                 configuration_manifest_hash, checkpoint
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(checkpoint.checkpoint_id.as_str())
+        .bind(checkpoint.task_id.as_str())
+        .bind(i64::try_from(checkpoint.event_sequence).unwrap_or(i64::MAX))
+        .bind(checkpoint.created_at.as_str())
+        .bind(scalar(&checkpoint.task_state))
+        .bind(checkpoint.configuration_manifest_hash.as_deref())
+        .bind(&document)
+        .execute(self.database.pool())
+        .await
+        .map_err(|error| {
+            conflict_or_unavailable(
+                &error,
+                "checkpoint",
+                format!("{}@{}", checkpoint.task_id, checkpoint.event_sequence),
+            )
+        })?;
+
+        Ok(())
+    }
+
+    async fn get(&self, checkpoint_id: &CheckpointId) -> Result<TaskCheckpoint, RepositoryError> {
+        let row = sqlx::query("SELECT checkpoint FROM task_checkpoint WHERE checkpoint_id = ?")
+            .bind(checkpoint_id.as_str())
+            .fetch_optional(self.database.pool())
+            .await
+            .map_err(|error| unavailable(&error))?
+            .ok_or_else(|| not_found("checkpoint", checkpoint_id))?;
+
+        Self::decode(&row)
+    }
+
+    async fn latest(&self, task_id: &TaskId) -> Result<Option<TaskCheckpoint>, RepositoryError> {
+        let row = sqlx::query(
+            "SELECT checkpoint FROM task_checkpoint
+             WHERE task_id = ?
+             ORDER BY event_sequence DESC
+             LIMIT 1",
+        )
+        .bind(task_id.as_str())
+        .fetch_optional(self.database.pool())
+        .await
+        .map_err(|error| unavailable(&error))?;
+
+        row.as_ref().map(Self::decode).transpose()
+    }
+
+    async fn list(&self, task_id: &TaskId) -> Result<Vec<TaskCheckpoint>, RepositoryError> {
+        sqlx::query(
+            "SELECT checkpoint FROM task_checkpoint
+             WHERE task_id = ?
+             ORDER BY event_sequence ASC",
+        )
+        .bind(task_id.as_str())
+        .fetch_all(self.database.pool())
+        .await
+        .map_err(|error| unavailable(&error))?
+        .iter()
+        .map(Self::decode)
+        .collect()
     }
 }

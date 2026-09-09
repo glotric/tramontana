@@ -17,6 +17,6 @@ mod repositories;
 pub use database::{Database, DatabaseError};
 pub use event_store::SqliteEventStore;
 pub use repositories::{
-    SqliteConfigurationRepository, SqliteConversationRepository, SqliteProjectRepository,
-    SqliteTaskRepository,
+    SqliteCheckpointRepository, SqliteConfigurationRepository, SqliteConversationRepository,
+    SqliteProjectRepository, SqliteTaskRepository,
 };

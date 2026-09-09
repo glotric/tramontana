@@ -14,6 +14,7 @@
 //!   as unsupported rather than failing the parse;
 //! - secrets are never serialized — only an opaque [`SecretRef`].
 
+mod checkpoint;
 mod configuration;
 mod descriptor;
 mod error;
@@ -26,6 +27,10 @@ mod records;
 mod task;
 mod time;
 
+pub use checkpoint::{
+    CheckpointWorker, PendingAction, PendingActionKind, ReplaySafety, ResumeEligibility,
+    ResumeMode, TaskCheckpoint,
+};
 pub(crate) use configuration::hex as configuration_hex;
 pub use configuration::{
     ConfigurationDiagnostic, ConfigurationKind, ConfigurationSource, DiagnosticSeverity,

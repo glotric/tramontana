@@ -74,12 +74,12 @@ impl TaskDriver {
             }
         }
 
+        let descriptor = self.providers.worker.describe();
         if let Err(error) = self
             .record(EventDraft::user(
                 TaskEventKind::WorkerSelected,
                 EventPayload::WorkerSelected {
-                    agent_id: self.providers.worker.describe().agent_id,
-                    display_name: self.providers.worker.describe().display_name,
+                    descriptor: descriptor.clone(),
                 },
             ))
             .await
@@ -111,7 +111,7 @@ impl TaskDriver {
                 permissions: Arc::clone(&self.providers.permissions),
                 scope: self.scope.clone(),
                 origin: PermissionOrigin::Worker {
-                    agent_id: self.providers.worker.describe().agent_id,
+                    agent_id: descriptor.agent_id.clone(),
                 },
                 clock: Arc::clone(&self.clock),
             },

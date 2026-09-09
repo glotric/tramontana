@@ -87,9 +87,28 @@ export interface CapabilityScope {
 }
 
 /**
+ * A saved checkpoint of a task.
+ */
+export type CheckpointId = string;
+
+/**
  * How well a worker can be stopped and resumed.
  */
 export type CheckpointSupport = "none" | "sameWorker" | "portable";
+
+/**
+ * The worker a checkpoint was taken against.
+ */
+export interface CheckpointWorker {
+  descriptor: AgentDescriptor;
+  /**
+   * Opaque continuation reference, when the worker offered one.
+   *
+   * Adapter data, never the record: a handoff to a different worker ignores
+   * it entirely (`PROJECT_FORMAT.md` §4).
+   */
+  sessionStateRef?: string;
+}
 
 /**
  * Something noticed while loading a source.
@@ -490,14 +509,7 @@ export interface EventEnvelope {
         kind: "configurationResolved";
       }
     | {
-        /**
-         * Namespaced worker identifier.
-         */
-        agentId: string;
-        /**
-         * Human-readable worker name.
-         */
-        displayName: string;
+        descriptor: AgentDescriptor;
         kind: "workerSelected";
       }
     | {
@@ -618,6 +630,26 @@ export interface EventEnvelope {
         truncated: boolean;
       }
     | {
+        /**
+         * The checkpoint.
+         */
+        checkpointId: string;
+        /**
+         * How many steps it records as already done.
+         */
+        completedStepCount: number;
+        /**
+         * The durable sequence it was taken at.
+         */
+        eventSequence: number;
+        kind: "checkpointSaved";
+        /**
+         * What was in flight, when anything was.
+         */
+        pendingAction?: PendingAction | null;
+        resume: ResumeEligibility;
+      }
+    | {
         kind: "taskCompleted";
         /**
          * Secret-free summary of the outcome.
@@ -724,14 +756,7 @@ export type EventPayload =
       kind: "configurationResolved";
     }
   | {
-      /**
-       * Namespaced worker identifier.
-       */
-      agentId: string;
-      /**
-       * Human-readable worker name.
-       */
-      displayName: string;
+      descriptor: AgentDescriptor;
       kind: "workerSelected";
     }
   | {
@@ -850,6 +875,26 @@ export type EventPayload =
        * Whether output was cut short by a limit.
        */
       truncated: boolean;
+    }
+  | {
+      /**
+       * The checkpoint.
+       */
+      checkpointId: string;
+      /**
+       * How many steps it records as already done.
+       */
+      completedStepCount: number;
+      /**
+       * The durable sequence it was taken at.
+       */
+      eventSequence: number;
+      kind: "checkpointSaved";
+      /**
+       * What was in flight, when anything was.
+       */
+      pendingAction?: PendingAction | null;
+      resume: ResumeEligibility;
     }
   | {
       kind: "taskCompleted";
@@ -1084,6 +1129,33 @@ export interface NormalizedMessage {
 }
 
 /**
+ * The one action that had started and not finished.
+ */
+export interface PendingAction {
+  /**
+   * Short, secret-free description for a person deciding what to do.
+   */
+  displaySummary: string;
+  /**
+   * What kind of action it was.
+   */
+  kind: "model" | "tool" | "approval" | "worker";
+  /**
+   * The invocation, request, or approval it refers to.
+   */
+  referenceId: string;
+  /**
+   * Whether repeating it is safe.
+   */
+  replaySafety: "safe" | "unsafe" | "unknown";
+}
+
+/**
+ * What kind of work was in flight when the task stopped.
+ */
+export type PendingActionKind = "model" | "tool" | "approval" | "worker";
+
+/**
  * Who asked for a capability.
  *
  * An audit record that cannot say *who* asked is not an audit record. A
@@ -1139,6 +1211,38 @@ export interface ProjectRecord {
    */
   schemaVersion: number;
 }
+
+/**
+ * Whether repeating an action is safe.
+ *
+ * This is a statement about *effects*, not about whether the action would
+ * succeed. Reading a file twice is safe; writing one twice may not be, and a
+ * tool whose effects are not known is treated as though they are not.
+ */
+export type ReplaySafety = "safe" | "unsafe" | "unknown";
+
+/**
+ * Whether, and how, this checkpoint can be resumed.
+ */
+export interface ResumeEligibility {
+  /**
+   * Whether resuming is offered at all.
+   */
+  eligible: boolean;
+  /**
+   * How, when it is.
+   */
+  mode?: ResumeMode | null;
+  /**
+   * Stable reason, present whenever the answer needs explaining.
+   */
+  reasonCode?: string;
+}
+
+/**
+ * How a task may be picked up again.
+ */
+export type ResumeMode = "sameWorker" | "canonicalHandoff";
 
 /**
  * How much damage a tool invocation could do if the model asked for it wrongly.
@@ -1203,6 +1307,84 @@ export interface StreamFrame {
    * The text produced.
    */
   text: string;
+}
+
+/**
+ * A point a task can be understood from and continued at.
+ *
+ * Two fields deviate from the shape written in `CORE_CONTRACTS.md` §11, and
+ * the document has been updated to match: `worker`, `contextManifestId`, and
+ * `configurationManifestHash` are optional here. A task interrupted while
+ * `preparing` has not selected a worker or prepared a context, and a
+ * projectless task never has a configuration manifest
+ * (`CORE_CONTRACTS.md` §5.2). Requiring them would mean either inventing
+ * values or refusing to checkpoint exactly the tasks a checkpoint is most
+ * needed for.
+ */
+export interface TaskCheckpoint {
+  /**
+   * Stable identifier.
+   */
+  checkpointId: string;
+  /**
+   * Steps already done, which resume must not repeat.
+   *
+   * The watermark, not a log: a step named here has a durable completion
+   * event behind it.
+   */
+  completedStepIds: string[];
+  /**
+   * The effective configuration in force, for a project task.
+   */
+  configurationManifestHash?: string;
+  /**
+   * The context bundle prepared for this task, when one was.
+   */
+  contextManifestId?: string;
+  /**
+   * When it was written.
+   */
+  createdAt: string;
+  /**
+   * The durable sequence this checkpoint was taken at.
+   *
+   * Everything at or below this sequence is accounted for by the fields
+   * here; anything above it happened afterwards.
+   */
+  eventSequence: number;
+  /**
+   * The action that had started and not finished, when there was one.
+   */
+  pendingAction?: PendingAction | null;
+  resume: ResumeEligibility;
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  /**
+   * The task this describes.
+   */
+  taskId: string;
+  /**
+   * The task's state at that sequence.
+   */
+  taskState:
+    | "queued"
+    | "preparing"
+    | "routing"
+    | "startingWorker"
+    | "running"
+    | "awaitingApproval"
+    | "checkpointing"
+    | "cancelling"
+    | "interrupted"
+    | "completed"
+    | "failed"
+    | "cancelled";
+  /**
+   * The worker, when one had been selected.
+   */
+  worker?: CheckpointWorker | null;
 }
 
 /**

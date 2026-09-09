@@ -3,12 +3,12 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use crate::contracts::{
-    ConversationId, ConversationRecord, EffectiveConfiguration, EventPayload, ProjectId,
-    ProjectRecord, TaskId, TaskRecord, TaskState, Timestamp,
+    CheckpointId, ConversationId, ConversationRecord, EffectiveConfiguration, EventPayload,
+    ProjectId, ProjectRecord, TaskCheckpoint, TaskId, TaskRecord, TaskState, Timestamp,
 };
 use crate::ports::{
-    ConfigurationRepository, ConversationRepository, EventStore, ProjectRepository,
-    RepositoryError, TaskRepository,
+    CheckpointRepository, ConfigurationRepository, ConversationRepository, EventStore,
+    ProjectRepository, RepositoryError, TaskRepository,
 };
 
 /// Lock a map, mapping a poisoned lock to a normalized error.
@@ -381,5 +381,70 @@ impl ConfigurationRepository for InMemoryConfigurationRepository {
                     .then_with(|| a.manifest_hash.cmp(&b.manifest_hash))
             })
             .cloned())
+    }
+}
+
+/// Checkpoints held in memory.
+#[derive(Debug, Default)]
+pub struct InMemoryCheckpointRepository {
+    checkpoints: Mutex<Vec<TaskCheckpoint>>,
+}
+
+impl InMemoryCheckpointRepository {
+    /// An empty repository.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl CheckpointRepository for InMemoryCheckpointRepository {
+    async fn save(&self, checkpoint: &TaskCheckpoint) -> Result<(), RepositoryError> {
+        let mut checkpoints = lock(&self.checkpoints)?;
+        let taken = checkpoints.iter().any(|existing| {
+            existing.task_id == checkpoint.task_id
+                && existing.event_sequence == checkpoint.event_sequence
+        });
+        if taken {
+            // One point in a stream has one checkpoint. Two would disagree
+            // about what was pending there, and nothing could say which was
+            // right.
+            return Err(RepositoryError::Conflict {
+                kind: "checkpoint",
+                id: format!("{}@{}", checkpoint.task_id, checkpoint.event_sequence),
+            });
+        }
+        checkpoints.push(checkpoint.clone());
+        Ok(())
+    }
+
+    async fn get(&self, checkpoint_id: &CheckpointId) -> Result<TaskCheckpoint, RepositoryError> {
+        lock(&self.checkpoints)?
+            .iter()
+            .find(|checkpoint| checkpoint.checkpoint_id == *checkpoint_id)
+            .cloned()
+            .ok_or_else(|| RepositoryError::NotFound {
+                kind: "checkpoint",
+                id: checkpoint_id.to_string(),
+            })
+    }
+
+    async fn latest(&self, task_id: &TaskId) -> Result<Option<TaskCheckpoint>, RepositoryError> {
+        Ok(lock(&self.checkpoints)?
+            .iter()
+            .filter(|checkpoint| checkpoint.task_id == *task_id)
+            .max_by_key(|checkpoint| checkpoint.event_sequence)
+            .cloned())
+    }
+
+    async fn list(&self, task_id: &TaskId) -> Result<Vec<TaskCheckpoint>, RepositoryError> {
+        let mut found: Vec<TaskCheckpoint> = lock(&self.checkpoints)?
+            .iter()
+            .filter(|checkpoint| checkpoint.task_id == *task_id)
+            .cloned()
+            .collect();
+        found.sort_by_key(|checkpoint| checkpoint.event_sequence);
+        Ok(found)
     }
 }

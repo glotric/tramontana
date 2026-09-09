@@ -31,7 +31,7 @@ function describePayload(payload: EventPayload): string {
     case "taskStateChanged":
       return `${payload.previous} → ${payload.current} (${payload.reasonCode})`;
     case "workerSelected":
-      return `${payload.displayName} [${payload.agentId}]`;
+      return `${payload.descriptor.displayName} [${payload.descriptor.agentId}]`;
     case "modelStarted":
       return `model ${payload.modelId}`;
     case "configurationResolved":

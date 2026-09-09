@@ -9,17 +9,20 @@
 //! TypeScript. `pnpm contracts:check` runs the same pipeline into a temporary
 //! directory and fails when the committed artifacts are stale.
 
+mod fixtures;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings};
 use tramontana_core::contracts::{
-    AgentDescriptor, ConfigurationDiagnostic, ConfigurationKind, ConfigurationSource,
-    ConversationRecord, DataClass, DiagnosticSeverity, EffectiveConfiguration, ErrorCode,
-    ErrorEnvelope, EventEnvelope, EventPayload, ExecutionLocation, ModelDescriptor,
-    NormalizedMessage, ProjectRecord, RiskClass, RoutingMode, SecretRef, SecretStore, SideEffect,
-    StreamFrame, TaskEventKind, TaskRecord, TaskSnapshot, TaskState, TaskUpdate, ToolDescriptor,
-    Visibility,
+    AgentDescriptor, CheckpointWorker, ConfigurationDiagnostic, ConfigurationKind,
+    ConfigurationSource, ConversationRecord, DataClass, DiagnosticSeverity, EffectiveConfiguration,
+    ErrorCode, ErrorEnvelope, EventEnvelope, EventPayload, ExecutionLocation, ModelDescriptor,
+    NormalizedMessage, PendingAction, PendingActionKind, ProjectRecord, ReplaySafety,
+    ResumeEligibility, ResumeMode, RiskClass, RoutingMode, SecretRef, SecretStore, SideEffect,
+    StreamFrame, TaskCheckpoint, TaskEventKind, TaskRecord, TaskSnapshot, TaskState, TaskUpdate,
+    ToolDescriptor, Visibility,
 };
 
 /// Filename of the single bundled contract schema.
@@ -41,11 +44,19 @@ fn main() -> Result<()> {
             println!("{}", written.display());
             Ok(())
         }
-        "help" | "-h" | "--help" => {
-            println!("usage: cargo run -p xtask -- emit-schema [OUT_DIR]");
+        "emit-fixtures" => {
+            let dir =
+                out_dir.unwrap_or_else(|| workspace_root().join("tests/fixtures/contracts/v1"));
+            for written in fixtures::emit_fixtures(&dir)? {
+                println!("{}", written.display());
+            }
             Ok(())
         }
-        other => bail!("unknown xtask `{other}`; try `emit-schema`"),
+        "help" | "-h" | "--help" => {
+            println!("usage: cargo run -p xtask -- <emit-schema|emit-fixtures> [OUT_DIR]");
+            Ok(())
+        }
+        other => bail!("unknown xtask `{other}`; try `emit-schema` or `emit-fixtures`"),
     }
 }
 
@@ -99,6 +110,13 @@ fn emit_schema(dir: &Path) -> Result<PathBuf> {
     register::<ProjectRecord>(&mut generator);
     register::<ConversationRecord>(&mut generator);
     register::<TaskRecord>(&mut generator);
+    register::<PendingActionKind>(&mut generator);
+    register::<ReplaySafety>(&mut generator);
+    register::<PendingAction>(&mut generator);
+    register::<ResumeMode>(&mut generator);
+    register::<ResumeEligibility>(&mut generator);
+    register::<CheckpointWorker>(&mut generator);
+    register::<TaskCheckpoint>(&mut generator);
     register::<ConfigurationKind>(&mut generator);
     register::<DiagnosticSeverity>(&mut generator);
     register::<ConfigurationDiagnostic>(&mut generator);
@@ -227,6 +245,13 @@ mod tests {
             "ProjectRecord",
             "ConversationRecord",
             "TaskRecord",
+            "PendingActionKind",
+            "ReplaySafety",
+            "PendingAction",
+            "ResumeMode",
+            "ResumeEligibility",
+            "CheckpointWorker",
+            "TaskCheckpoint",
             "ConfigurationKind",
             "DiagnosticSeverity",
             "ConfigurationDiagnostic",

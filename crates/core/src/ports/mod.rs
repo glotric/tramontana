@@ -26,8 +26,8 @@ pub use permission::{
     reason,
 };
 pub use repository::{
-    ConfigurationRepository, ConversationRepository, ProjectRepository, RepositoryError,
-    TaskRepository,
+    CheckpointRepository, ConfigurationRepository, ConversationRepository, ProjectRepository,
+    RepositoryError, TaskRepository,
 };
 pub use tool::{ToolInvocation, ToolOutcome, ToolProvider};
 pub use worker::{AgentProvider, WorkerHost, WorkerOutcome, WorkerRequest};

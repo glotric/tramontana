@@ -28,8 +28,8 @@ pub use ids::SequentialIdSource;
 pub use model::{FakeModelProvider, FakeModelScript};
 pub use permission::{InMemoryApprovalStore, ScriptedApprover};
 pub use repositories::{
-    InMemoryConfigurationRepository, InMemoryConversationRepository, InMemoryProjectRepository,
-    InMemoryTaskRepository,
+    InMemoryCheckpointRepository, InMemoryConfigurationRepository, InMemoryConversationRepository,
+    InMemoryProjectRepository, InMemoryTaskRepository,
 };
 pub use tool::{FAKE_TOOL_ID, FakeToolProvider};
 pub use tool_plane::assemble_tool_plane;

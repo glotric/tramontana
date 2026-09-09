@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 
 use crate::contracts::{
-    ConversationId, ConversationRecord, EffectiveConfiguration, EventEnvelope, ProjectId,
-    ProjectRecord, TaskId, TaskRecord, TaskState, Timestamp,
+    CheckpointId, ConversationId, ConversationRecord, EffectiveConfiguration, EventEnvelope,
+    ProjectId, ProjectRecord, TaskCheckpoint, TaskId, TaskRecord, TaskState, Timestamp,
 };
 
 /// Why a repository call failed.
@@ -203,4 +203,43 @@ pub trait ConfigurationRepository: Send + Sync {
         &self,
         project_id: &ProjectId,
     ) -> Result<Option<EffectiveConfiguration>, RepositoryError>;
+}
+
+/// Durable task checkpoints.
+///
+/// A checkpoint is derived from the event stream and stored whole, because it
+/// must remain readable after the code that produced it has changed. Storing
+/// the fields separately and reassembling them would make every future
+/// contract change a migration of history (`PROJECT_FORMAT.md` §4).
+#[async_trait]
+pub trait CheckpointRepository: Send + Sync {
+    /// Store a checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Conflict`] when a checkpoint already exists for this
+    /// task at this sequence, and [`RepositoryError::Unavailable`] when
+    /// storage failed.
+    async fn save(&self, checkpoint: &TaskCheckpoint) -> Result<(), RepositoryError>;
+
+    /// Read one checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::NotFound`] when it does not exist.
+    async fn get(&self, checkpoint_id: &CheckpointId) -> Result<TaskCheckpoint, RepositoryError>;
+
+    /// The checkpoint at the highest sequence for a task, if it has one.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn latest(&self, task_id: &TaskId) -> Result<Option<TaskCheckpoint>, RepositoryError>;
+
+    /// Every checkpoint for a task, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn list(&self, task_id: &TaskId) -> Result<Vec<TaskCheckpoint>, RepositoryError>;
 }

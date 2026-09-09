@@ -12,10 +12,11 @@
 use std::sync::Arc;
 
 use crate::contracts::{
-    CorrelationId, EventDraft, EventEnvelope, EventId, EventPayload, TaskEventKind, TaskId,
-    Timestamp,
+    CheckpointId, CorrelationId, EventDraft, EventEnvelope, EventId, EventPayload, PendingAction,
+    PendingActionKind, ReplaySafety, ResumeEligibility, TaskCheckpoint, TaskEventKind, TaskId,
+    TaskState, Timestamp,
 };
-use crate::ports::{EventStore, EventStoreError};
+use crate::ports::{CheckpointRepository, EventStore, EventStoreError, RepositoryError};
 
 /// Build an event for `task_id` at `sequence`.
 #[must_use]
@@ -194,4 +195,123 @@ where
         .await
         .unwrap();
     assert_eq!(store.last_sequence(&task).await.unwrap(), 2);
+}
+
+/// The tasks [`checkpoint_repository_contract`] writes checkpoints for.
+///
+/// A durable store may require a checkpoint to belong to a real task, so a
+/// harness for one needs to know which task rows to create first. Exported so
+/// that requirement does not become a duplicated literal in every harness.
+pub const CHECKPOINT_CONTRACT_TASKS: [&str; 2] = ["task-1", "task-2"];
+
+/// Build a checkpoint for `task_id` at `sequence`.
+#[must_use]
+pub fn checkpoint_at(task_id: &TaskId, sequence: u64) -> TaskCheckpoint {
+    let mut checkpoint = TaskCheckpoint::new(
+        CheckpointId::new(format!("checkpoint-{task_id}-{sequence}")),
+        task_id.clone(),
+        sequence,
+        Timestamp::new("2026-01-01T00:00:00.000Z"),
+        TaskState::Interrupted,
+        ResumeEligibility::same_worker("checkpoint.derived"),
+    );
+    checkpoint.completed_step_ids = vec![format!("invocation-{sequence}")];
+    checkpoint.pending_action = Some(PendingAction {
+        kind: PendingActionKind::Tool,
+        reference_id: format!("invocation-{}", sequence + 1),
+        replay_safety: ReplaySafety::Unknown,
+        display_summary: "a tool was in flight".to_owned(),
+    });
+    checkpoint
+}
+
+/// Assert that `build` produces a repository obeying the checkpoint contract.
+///
+/// `build` must return a *fresh, empty* repository each time.
+///
+/// # Panics
+///
+/// Panics with the failing expectation, which is how a test reports.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "this is a test suite; a panic is the failure report"
+)]
+pub async fn checkpoint_repository_contract<F, Fut>(build: F)
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Arc<dyn CheckpointRepository>>,
+{
+    let [task, other] = CHECKPOINT_CONTRACT_TASKS.map(TaskId::new);
+
+    // A task with no checkpoints has no latest one, which is not an error.
+    let repository = build().await;
+    assert_eq!(repository.latest(&task).await.unwrap(), None);
+    assert!(repository.list(&task).await.unwrap().is_empty());
+
+    // A saved checkpoint round-trips whole, pending action included.
+    let repository = build().await;
+    let saved = checkpoint_at(&task, 4);
+    repository.save(&saved).await.unwrap();
+    let read = repository.get(&saved.checkpoint_id).await.unwrap();
+    assert_eq!(read, saved, "a checkpoint must survive storage unchanged");
+
+    // The latest is the highest sequence, not the most recently written.
+    let repository = build().await;
+    for sequence in [9, 2, 6] {
+        repository
+            .save(&checkpoint_at(&task, sequence))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        repository
+            .latest(&task)
+            .await
+            .unwrap()
+            .unwrap()
+            .event_sequence,
+        9
+    );
+    let sequences: Vec<u64> = repository
+        .list(&task)
+        .await
+        .unwrap()
+        .iter()
+        .map(|checkpoint| checkpoint.event_sequence)
+        .collect();
+    assert_eq!(sequences, vec![2, 6, 9], "list is oldest first");
+
+    // Checkpoints do not leak between tasks.
+    let repository = build().await;
+    repository.save(&checkpoint_at(&task, 1)).await.unwrap();
+    repository.save(&checkpoint_at(&other, 5)).await.unwrap();
+    assert_eq!(repository.list(&task).await.unwrap().len(), 1);
+    assert_eq!(
+        repository
+            .latest(&other)
+            .await
+            .unwrap()
+            .unwrap()
+            .event_sequence,
+        5
+    );
+
+    // One point in a stream has one checkpoint.
+    let repository = build().await;
+    repository.save(&checkpoint_at(&task, 3)).await.unwrap();
+    let mut duplicate = checkpoint_at(&task, 3);
+    duplicate.checkpoint_id = CheckpointId::new("checkpoint-duplicate");
+    match repository.save(&duplicate).await {
+        Err(RepositoryError::Conflict { kind, .. }) => assert_eq!(kind, "checkpoint"),
+        other => panic!("a second checkpoint at one sequence must conflict, got {other:?}"),
+    }
+
+    // An unknown identifier is not found rather than empty.
+    let repository = build().await;
+    match repository.get(&CheckpointId::new("absent")).await {
+        Err(RepositoryError::NotFound { kind, .. }) => assert_eq!(kind, "checkpoint"),
+        other => panic!("expected NotFound, got {other:?}"),
+    }
 }

@@ -103,6 +103,10 @@
       ],
       "type": "object"
     },
+    "CheckpointId": {
+      "description": "A saved checkpoint of a task.",
+      "type": "string"
+    },
     "CheckpointSupport": {
       "description": "How well a worker can be stopped and resumed.",
       "oneOf": [
@@ -122,6 +126,23 @@
           "type": "string"
         }
       ]
+    },
+    "CheckpointWorker": {
+      "description": "The worker a checkpoint was taken against.",
+      "properties": {
+        "descriptor": {
+          "$ref": "#/$defs/AgentDescriptor",
+          "description": "Capability facts, snapshotted when the worker was selected."
+        },
+        "sessionStateRef": {
+          "description": "Opaque continuation reference, when the worker offered one.\n\nAdapter data, never the record: a handoff to a different worker ignores\nit entirely (`PROJECT_FORMAT.md` §4).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "descriptor"
+      ],
+      "type": "object"
     },
     "ConfigurationDiagnostic": {
       "description": "Something noticed while loading a source.\n\n`CONFIGURATION.md` §5: an invalid or duplicate definition disables the\naffected item and shows a validation error. It never crashes startup, and a\nbroken file in one project must not make the application unusable.",
@@ -734,15 +755,11 @@
           "type": "object"
         },
         {
-          "description": "A worker was selected for this task.",
+          "description": "A worker was selected for this task.\n\nCarries the whole descriptor rather than a name, because a checkpoint\nis derived from this stream and a handoff needs the capability facts\n(`CORE_CONTRACTS.md` §5.1, `PROJECT_FORMAT.md` §4). Recording only an\nidentifier would mean a resumed task had to ask a provider what it once\nwas, which is exactly the dependency a portable record must not have.",
           "properties": {
-            "agentId": {
-              "description": "Namespaced worker identifier.",
-              "type": "string"
-            },
-            "displayName": {
-              "description": "Human-readable worker name.",
-              "type": "string"
+            "descriptor": {
+              "$ref": "#/$defs/AgentDescriptor",
+              "description": "Capability snapshot taken at selection."
             },
             "kind": {
               "const": "workerSelected",
@@ -751,8 +768,7 @@
           },
           "required": [
             "kind",
-            "agentId",
-            "displayName"
+            "descriptor"
           ],
           "type": "object"
         },
@@ -960,6 +976,54 @@
             "displaySummary",
             "sideEffect",
             "truncated"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A checkpoint was written.\n\nThe checkpoint itself lives in its own repository; this event records\nthat one exists at this point in the stream, and enough of it to be\nread without a second lookup.",
+          "properties": {
+            "checkpointId": {
+              "$ref": "#/$defs/CheckpointId",
+              "description": "The checkpoint."
+            },
+            "completedStepCount": {
+              "description": "How many steps it records as already done.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "eventSequence": {
+              "description": "The durable sequence it was taken at.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "checkpointSaved",
+              "type": "string"
+            },
+            "pendingAction": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PendingAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What was in flight, when anything was."
+            },
+            "resume": {
+              "$ref": "#/$defs/ResumeEligibility",
+              "description": "Whether the task can be picked up again from here."
+            }
+          },
+          "required": [
+            "kind",
+            "checkpointId",
+            "eventSequence",
+            "completedStepCount",
+            "resume"
           ],
           "type": "object"
         },
@@ -1490,6 +1554,59 @@
       ],
       "type": "object"
     },
+    "PendingAction": {
+      "description": "The one action that had started and not finished.",
+      "properties": {
+        "displaySummary": {
+          "description": "Short, secret-free description for a person deciding what to do.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PendingActionKind",
+          "description": "What kind of action it was."
+        },
+        "referenceId": {
+          "description": "The invocation, request, or approval it refers to.",
+          "type": "string"
+        },
+        "replaySafety": {
+          "$ref": "#/$defs/ReplaySafety",
+          "description": "Whether repeating it is safe."
+        }
+      },
+      "required": [
+        "kind",
+        "referenceId",
+        "replaySafety",
+        "displaySummary"
+      ],
+      "type": "object"
+    },
+    "PendingActionKind": {
+      "description": "What kind of work was in flight when the task stopped.",
+      "oneOf": [
+        {
+          "const": "model",
+          "description": "A model request had started and not returned.",
+          "type": "string"
+        },
+        {
+          "const": "tool",
+          "description": "A tool invocation had started and not reported an outcome.",
+          "type": "string"
+        },
+        {
+          "const": "approval",
+          "description": "A question had been put to the user and not answered.",
+          "type": "string"
+        },
+        {
+          "const": "worker",
+          "description": "A worker session had started and not stopped.",
+          "type": "string"
+        }
+      ]
+    },
     "PermissionOrigin": {
       "description": "Who asked for a capability.\n\nAn audit record that cannot say *who* asked is not an audit record. A\nbuilt-in tool invoked by the user and the same tool invoked by an external\nworker are different events, even when the arguments match.",
       "oneOf": [
@@ -1585,6 +1702,69 @@
         "createdAt"
       ],
       "type": "object"
+    },
+    "ReplaySafety": {
+      "description": "Whether repeating an action is safe.\n\nThis is a statement about *effects*, not about whether the action would\nsucceed. Reading a file twice is safe; writing one twice may not be, and a\ntool whose effects are not known is treated as though they are not.",
+      "oneOf": [
+        {
+          "const": "safe",
+          "description": "Repeating it changes nothing outside Tramontana.",
+          "type": "string"
+        },
+        {
+          "const": "unsafe",
+          "description": "Repeating it could duplicate an effect.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Not determinable from the record. Treated as [`ReplaySafety::Unsafe`].",
+          "type": "string"
+        }
+      ]
+    },
+    "ResumeEligibility": {
+      "description": "Whether, and how, this checkpoint can be resumed.",
+      "properties": {
+        "eligible": {
+          "description": "Whether resuming is offered at all.",
+          "type": "boolean"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResumeMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How, when it is."
+        },
+        "reasonCode": {
+          "description": "Stable reason, present whenever the answer needs explaining.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "eligible"
+      ],
+      "type": "object"
+    },
+    "ResumeMode": {
+      "description": "How a task may be picked up again.",
+      "oneOf": [
+        {
+          "const": "sameWorker",
+          "description": "The worker that was running it continues.",
+          "type": "string"
+        },
+        {
+          "const": "canonicalHandoff",
+          "description": "A different worker continues from canonical Tramontana state.",
+          "type": "string"
+        }
+      ]
     },
     "RiskClass": {
       "description": "How much damage a tool invocation could do if the model asked for it wrongly.",
@@ -1701,6 +1881,91 @@
         "streamId",
         "offset",
         "text"
+      ],
+      "type": "object"
+    },
+    "TaskCheckpoint": {
+      "description": "A point a task can be understood from and continued at.\n\nTwo fields deviate from the shape written in `CORE_CONTRACTS.md` §11, and\nthe document has been updated to match: `worker`, `contextManifestId`, and\n`configurationManifestHash` are optional here. A task interrupted while\n`preparing` has not selected a worker or prepared a context, and a\nprojectless task never has a configuration manifest\n(`CORE_CONTRACTS.md` §5.2). Requiring them would mean either inventing\nvalues or refusing to checkpoint exactly the tasks a checkpoint is most\nneeded for.",
+      "properties": {
+        "checkpointId": {
+          "$ref": "#/$defs/CheckpointId",
+          "description": "Stable identifier."
+        },
+        "completedStepIds": {
+          "description": "Steps already done, which resume must not repeat.\n\nThe watermark, not a log: a step named here has a durable completion\nevent behind it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "configurationManifestHash": {
+          "description": "The effective configuration in force, for a project task.",
+          "type": "string"
+        },
+        "contextManifestId": {
+          "description": "The context bundle prepared for this task, when one was.",
+          "type": "string"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it was written."
+        },
+        "eventSequence": {
+          "description": "The durable sequence this checkpoint was taken at.\n\nEverything at or below this sequence is accounted for by the fields\nhere; anything above it happened afterwards.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pendingAction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PendingAction"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The action that had started and not finished, when there was one."
+        },
+        "resume": {
+          "$ref": "#/$defs/ResumeEligibility",
+          "description": "Whether and how this can be picked up again."
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "taskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "The task this describes."
+        },
+        "taskState": {
+          "$ref": "#/$defs/TaskState",
+          "description": "The task's state at that sequence."
+        },
+        "worker": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CheckpointWorker"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The worker, when one had been selected."
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "checkpointId",
+        "taskId",
+        "eventSequence",
+        "createdAt",
+        "taskState",
+        "completedStepIds",
+        "resume"
       ],
       "type": "object"
     },
