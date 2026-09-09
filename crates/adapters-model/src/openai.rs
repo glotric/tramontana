@@ -22,8 +22,9 @@ use futures_util::StreamExt as _;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tramontana_core::contracts::{
-    CorrelationId, ErrorCode, ErrorEnvelope, Health, ModelCapability, ModelDescriptor, ModelEvent,
-    ModelLocation, ModelRequest, ProviderId, SecretRef, StopReason, Usage,
+    AuthorizedModelRequest, CorrelationId, ErrorCode, ErrorEnvelope, Health, ModelCapability,
+    ModelDescriptor, ModelEvent, ModelLocation, ModelRequest, ProviderId, SecretRef, StopReason,
+    Usage,
 };
 use tramontana_core::ports::{ModelProvider, SecretResolver};
 
@@ -251,15 +252,19 @@ impl ModelProvider for OpenAiCompatibleProvider {
 
     async fn stream(
         &self,
-        request: ModelRequest,
+        authorized: AuthorizedModelRequest,
         cancel: CancellationToken,
     ) -> Result<mpsc::Receiver<ModelEvent>, ErrorEnvelope> {
+        // The adapter reads the payload and never re-derives it. What may be
+        // sent was decided in the core; an adapter that could widen the
+        // request would make the disclosure a description of something else.
+        let request = authorized.request();
         let mut builder = self
             .client
             .post(self.completions_url())
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
-            .json(&self.body(&request));
+            .json(&self.body(request));
 
         // Resolved here and moved into the header. It is never stored on the
         // provider, never in the URL, and never in a process argument.

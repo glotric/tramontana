@@ -11,6 +11,7 @@
 //! feature or into a separate crate so they cannot ship in a release binary.
 
 pub mod contract_suites;
+pub mod release;
 
 mod clock;
 mod event_store;
@@ -34,5 +35,5 @@ pub use repositories::{
     InMemoryProjectRepository, InMemoryTaskRepository,
 };
 pub use tool::{FAKE_TOOL_ID, FakeToolProvider};
-pub use tool_plane::assemble_tool_plane;
+pub use tool_plane::{AssembledPlane, assemble_tool_plane};
 pub use worker::{FAKE_AGENT_ID, FakeWorker};

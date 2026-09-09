@@ -419,7 +419,10 @@ where
     ]))
     .await;
     let mut stream = provider
-        .stream(model_request("request-1"), CancellationToken::new())
+        .stream(
+            crate::testing::release::locally_authorized(model_request("request-1")),
+            CancellationToken::new(),
+        )
         .await
         .expect("a scripted success must start");
     let events = drain(&mut stream).await;
@@ -477,7 +480,10 @@ where
     // refusal to start. Both are legitimate; producing neither is not.
     let provider = build(ProviderScenario::Fails).await;
     match provider
-        .stream(model_request("request-2"), CancellationToken::new())
+        .stream(
+            crate::testing::release::locally_authorized(model_request("request-2")),
+            CancellationToken::new(),
+        )
         .await
     {
         Ok(mut stream) => {
@@ -502,7 +508,10 @@ where
     let provider = build(ProviderScenario::Slow).await;
     let cancel = CancellationToken::new();
     let mut stream = provider
-        .stream(model_request("request-3"), cancel.clone())
+        .stream(
+            crate::testing::release::locally_authorized(model_request("request-3")),
+            cancel.clone(),
+        )
         .await
         .expect("a slow stream must start");
     cancel.cancel();
@@ -521,7 +530,13 @@ where
     let provider = build(ProviderScenario::Slow).await;
     let cancel = CancellationToken::new();
     cancel.cancel();
-    if let Ok(mut stream) = provider.stream(model_request("request-4"), cancel).await {
+    if let Ok(mut stream) = provider
+        .stream(
+            crate::testing::release::locally_authorized(model_request("request-4")),
+            cancel,
+        )
+        .await
+    {
         let events = tokio::time::timeout(std::time::Duration::from_secs(10), drain(&mut stream))
             .await
             .expect("a pre-cancelled stream must converge, not hang");

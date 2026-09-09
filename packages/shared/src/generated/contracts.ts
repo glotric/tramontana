@@ -55,6 +55,11 @@ export interface AgentDescriptor {
 }
 
 /**
+ * One approval request and its decision.
+ */
+export type ApprovalId = string;
+
+/**
  * One file in a bundle, with what a reader needs to trust it.
  */
 export interface BundleEntry {
@@ -303,6 +308,120 @@ export interface ContextManifest {
 }
 
 /**
+ * Everything one request releases to one destination.
+ *
+ * Built by `services::release`, never by hand: the totals and categories are
+ * derived from the payload, so a plan cannot describe a request other than
+ * the one it accompanies.
+ */
+export interface ContextReleasePlan {
+  authorization?: ReleaseAuthorization;
+  /**
+   * The assembled context this payload was drawn from.
+   */
+  contextManifestId: string;
+  /**
+   * When the plan was made.
+   */
+  createdAt: string;
+  /**
+   * Data classes actually carried, strongest first.
+   */
+  dataClasses: DataClass[];
+  /**
+   * The routing decision that chose the destination.
+   */
+  decisionId: string;
+  destination: RoutedModel;
+  /**
+   * Sources assembled for this task that this request did not carry.
+   */
+  exclusions: ReleaseExclusion[];
+  /**
+   * Where that model runs.
+   */
+  location:
+    | {
+        /**
+         * Human-readable name for the interface.
+         */
+        displayName: string;
+        kind: "local";
+        /**
+         * Stable identifier for the compute target.
+         */
+        targetId: string;
+      }
+    | {
+        kind: "cloud";
+        /**
+         * Stable provider identifier.
+         */
+        providerId: string;
+        /**
+         * Provider region, when the provider exposes one.
+         */
+        region?: string;
+      };
+  /**
+   * The messages carried, in payload order.
+   */
+  messageIds: MessageId[];
+  /**
+   * Why the destination was chosen, in the router's deterministic order.
+   */
+  reasonCodes: string[];
+  /**
+   * Stable codes for redactions applied before release.
+   */
+  redactions: string[];
+  /**
+   * Stable identifier for this release.
+   */
+  releaseId: string;
+  /**
+   * What was carried, by category and data class.
+   */
+  released: ReleasedCategory[];
+  /**
+   * The request it accompanies.
+   */
+  requestId: string;
+  /**
+   * Whether this release leaves the device.
+   *
+   * Derived from `location`, like `RoutingDecision::requires_disclosure`
+   * and for the same reason: whether data left the device is a fact about
+   * where it went, not a judgement a caller should be able to get wrong.
+   */
+  requiresDisclosure: boolean;
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  /**
+   * The task it belongs to.
+   */
+  taskId: string;
+  /**
+   * Tools the model is allowed to call, by name.
+   *
+   * Offering a tool to a cloud model discloses that the tool exists and
+   * what it takes, which is part of the release and not an implementation
+   * detail (`SECURITY_AND_PERMISSIONS.md` §8).
+   */
+  toolsOffered: string[];
+  /**
+   * Total bytes carried.
+   */
+  totalBytes: number;
+  /**
+   * Approximate total token cost, when one was estimated.
+   */
+  totalTokenEstimate?: number;
+}
+
+/**
  * One thing that was considered for a context bundle.
  */
 export interface ContextSource {
@@ -543,6 +662,7 @@ export interface EventEnvelope {
     | "configurationResolved"
     | "contextPrepared"
     | "routingDecided"
+    | "contextReleased"
     | "workerSelected"
     | "workerStarted"
     | "modelStarted"
@@ -636,6 +756,10 @@ export interface EventEnvelope {
     | {
         kind: "contextPrepared";
         manifest: ContextManifest;
+      }
+    | {
+        kind: "contextReleased";
+        plan: ContextReleasePlan;
       }
     | {
         decision: RoutingDecision;
@@ -911,6 +1035,10 @@ export type EventPayload =
   | {
       kind: "contextPrepared";
       manifest: ContextManifest;
+    }
+  | {
+      kind: "contextReleased";
+      plan: ContextReleasePlan;
     }
   | {
       decision: RoutingDecision;
@@ -1728,6 +1856,69 @@ export interface ProjectRecord {
 }
 
 /**
+ * On whose authority a release proceeded.
+ */
+export interface ReleaseAuthorization {
+  /**
+   * The approval that permitted it, when a user was asked.
+   */
+  approvalId?: string;
+  /**
+   * The routing mode in force, which is the standing policy that applied.
+   */
+  mode: "localOnly" | "automatic" | "cloudPreferred";
+  /**
+   * Stable reason, from [`reason`].
+   */
+  reasonCode: string;
+}
+
+/**
+ * A source that was assembled and did not go.
+ */
+export interface ReleaseExclusion {
+  /**
+   * What kind of source it is.
+   */
+  category: "conversation" | "selectedFile" | "instruction" | "skill" | "repositoryMetadata" | "toolResult";
+  /**
+   * Stable reason it did not go.
+   */
+  reasonCode: string;
+  /**
+   * Which source.
+   */
+  sourceId: string;
+}
+
+/**
+ * One category of content actually carried by a request.
+ *
+ * Summarized by category and data class rather than listed source by source:
+ * the disclosure has to be readable before a person decides, and
+ * `PHASE_1_ACCEPTANCE_CRITERIA.md` §12 asks for categories, classes, and a
+ * size estimate — not a file listing.
+ */
+export interface ReleasedCategory {
+  /**
+   * How many bytes of them were carried.
+   */
+  byteCount: number;
+  /**
+   * What kind of source it is.
+   */
+  category: "conversation" | "selectedFile" | "instruction" | "skill" | "repositoryMetadata" | "toolResult";
+  /**
+   * How sensitive the content is.
+   */
+  dataClass: "public" | "project" | "sensitive" | "secret";
+  /**
+   * How many sources of this kind were carried.
+   */
+  sourceCount: number;
+}
+
+/**
  * Whether repeating an action is safe.
  *
  * This is a statement about *effects*, not about whether the action would
@@ -2054,6 +2245,7 @@ export type TaskEventKind =
   | "configurationResolved"
   | "contextPrepared"
   | "routingDecided"
+  | "contextReleased"
   | "workerSelected"
   | "workerStarted"
   | "modelStarted"

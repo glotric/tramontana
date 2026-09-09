@@ -319,7 +319,7 @@ impl ModelProvider for CloudSink {
 
     async fn stream(
         &self,
-        request: ModelRequest,
+        request: AuthorizedModelRequest,
         _cancel: CancellationToken,
     ) -> Result<mpsc::Receiver<ModelEvent>, ErrorEnvelope> {
         // Recorded rather than panicking: a panic inside a spawned task would
@@ -327,7 +327,7 @@ impl ModelProvider for CloudSink {
         self.reached.fetch_add(1, Ordering::SeqCst);
 
         let (sender, receiver) = mpsc::channel(4);
-        let stream_id = request.request_id;
+        let stream_id = request.request().request_id.clone();
         tokio::spawn(async move {
             let _ = sender
                 .send(ModelEvent::TextDelta {
@@ -351,7 +351,7 @@ async fn under_local_only_a_task_never_reaches_a_cloud_endpoint() {
     let events: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
     let ids = Arc::new(SequentialIdSource::new());
     let sink = Arc::new(CloudSink::default());
-    let (tools, permissions) = assemble_tool_plane(
+    let (tools, permissions, releases) = assemble_tool_plane(
         vec![Arc::new(FakeToolProvider::new())],
         Arc::new(InMemoryApprovalStore::new()),
         Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce)),
@@ -372,6 +372,7 @@ async fn under_local_only_a_task_never_reaches_a_cloud_endpoint() {
             model: sink.clone(),
             tools,
             permissions,
+            releases,
             worker: Arc::new(FakeWorker::new()),
         },
         Arc::new(FakeClock::new()),
@@ -439,7 +440,7 @@ async fn a_task_with_no_eligible_model_fails_with_the_reason() {
     // A refusal is as much a decision as a choice, and the user has to be told.
     let events: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
     let ids = Arc::new(SequentialIdSource::new());
-    let (tools, permissions) = assemble_tool_plane(
+    let (tools, permissions, releases) = assemble_tool_plane(
         vec![Arc::new(FakeToolProvider::new())],
         Arc::new(InMemoryApprovalStore::new()),
         Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce)),
@@ -461,7 +462,7 @@ async fn a_task_with_no_eligible_model_fails_with_the_reason() {
         }
         async fn stream(
             &self,
-            _request: ModelRequest,
+            _request: AuthorizedModelRequest,
             _cancel: CancellationToken,
         ) -> Result<mpsc::Receiver<ModelEvent>, ErrorEnvelope> {
             panic!("a task with no eligible model must never reach a provider");
@@ -481,6 +482,7 @@ async fn a_task_with_no_eligible_model_fails_with_the_reason() {
             model: Arc::new(NoModels),
             tools,
             permissions,
+            releases,
             worker: Arc::new(FakeWorker::new()),
         },
         Arc::new(FakeClock::new()),

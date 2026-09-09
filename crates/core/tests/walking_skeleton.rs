@@ -30,7 +30,7 @@ use tramontana_core::testing::{
 
 /// Assemble a service over an event store the test can also inspect.
 fn service_with_store() -> (Arc<TaskService>, Arc<InMemoryEventStore>) {
-    let (registry, permissions) = assemble_tool_plane(
+    let (registry, permissions, releases) = assemble_tool_plane(
         vec![Arc::new(FakeToolProvider::new()) as Arc<dyn ToolProvider>],
         Arc::new(InMemoryApprovalStore::new()) as Arc<dyn ApprovalStore>,
         Arc::new(ScriptedApprover::unavailable()) as Arc<dyn Approver>,
@@ -53,6 +53,7 @@ fn service_with_store() -> (Arc<TaskService>, Arc<InMemoryEventStore>) {
             model: Arc::new(FakeModelProvider::streaming(["Hello", ", ", "world"])),
             tools: registry,
             permissions,
+            releases,
             worker: Arc::new(FakeWorker::new()),
         },
         Arc::new(FakeClock::new()),

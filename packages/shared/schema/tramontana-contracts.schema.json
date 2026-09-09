@@ -57,6 +57,10 @@
       ],
       "type": "object"
     },
+    "ApprovalId": {
+      "description": "One approval request and its decision.",
+      "type": "string"
+    },
     "BundleEntry": {
       "description": "One file in a bundle, with what a reader needs to trust it.",
       "properties": {
@@ -422,6 +426,139 @@
         "sources",
         "totalBytes",
         "redactions",
+        "createdAt"
+      ],
+      "type": "object"
+    },
+    "ContextReleasePlan": {
+      "description": "Everything one request releases to one destination.\n\nBuilt by `services::release`, never by hand: the totals and categories are\nderived from the payload, so a plan cannot describe a request other than\nthe one it accompanies.",
+      "properties": {
+        "authorization": {
+          "$ref": "#/$defs/ReleaseAuthorization",
+          "description": "On whose authority it proceeded. Absent while the plan is a proposal."
+        },
+        "contextManifestId": {
+          "description": "The assembled context this payload was drawn from.",
+          "type": "string"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the plan was made."
+        },
+        "dataClasses": {
+          "description": "Data classes actually carried, strongest first.",
+          "items": {
+            "$ref": "#/$defs/DataClass"
+          },
+          "type": "array"
+        },
+        "decisionId": {
+          "description": "The routing decision that chose the destination.",
+          "type": "string"
+        },
+        "destination": {
+          "$ref": "#/$defs/RoutedModel",
+          "description": "The model it is going to."
+        },
+        "exclusions": {
+          "description": "Sources assembled for this task that this request did not carry.",
+          "items": {
+            "$ref": "#/$defs/ReleaseExclusion"
+          },
+          "type": "array"
+        },
+        "location": {
+          "$ref": "#/$defs/ExecutionLocation",
+          "description": "Where that model runs."
+        },
+        "messageIds": {
+          "description": "The messages carried, in payload order.",
+          "items": {
+            "$ref": "#/$defs/MessageId"
+          },
+          "type": "array"
+        },
+        "reasonCodes": {
+          "description": "Why the destination was chosen, in the router's deterministic order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "redactions": {
+          "description": "Stable codes for redactions applied before release.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "releaseId": {
+          "description": "Stable identifier for this release.",
+          "type": "string"
+        },
+        "released": {
+          "description": "What was carried, by category and data class.",
+          "items": {
+            "$ref": "#/$defs/ReleasedCategory"
+          },
+          "type": "array"
+        },
+        "requestId": {
+          "description": "The request it accompanies.",
+          "type": "string"
+        },
+        "requiresDisclosure": {
+          "description": "Whether this release leaves the device.\n\nDerived from `location`, like `RoutingDecision::requires_disclosure`\nand for the same reason: whether data left the device is a fact about\nwhere it went, not a judgement a caller should be able to get wrong.",
+          "type": "boolean"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "taskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "The task it belongs to."
+        },
+        "toolsOffered": {
+          "description": "Tools the model is allowed to call, by name.\n\nOffering a tool to a cloud model discloses that the tool exists and\nwhat it takes, which is part of the release and not an implementation\ndetail (`SECURITY_AND_PERMISSIONS.md` §8).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "totalBytes": {
+          "description": "Total bytes carried.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "totalTokenEstimate": {
+          "description": "Approximate total token cost, when one was estimated.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "releaseId",
+        "taskId",
+        "requestId",
+        "decisionId",
+        "contextManifestId",
+        "destination",
+        "location",
+        "requiresDisclosure",
+        "reasonCodes",
+        "messageIds",
+        "released",
+        "dataClasses",
+        "totalBytes",
+        "redactions",
+        "exclusions",
+        "toolsOffered",
         "createdAt"
       ],
       "type": "object"
@@ -951,6 +1088,24 @@
           "required": [
             "kind",
             "manifest"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A payload was released to a destination, on a recorded authority.\n\nSeparate from `contextPrepared` because assembling is not sending. One\nassembly can produce several releases — a fallback that crosses to a\ndifferent destination is a second one — and each has its own\ndisclosure and its own approval (`SECURITY_AND_PERMISSIONS.md` §8).",
+          "properties": {
+            "kind": {
+              "const": "contextReleased",
+              "type": "string"
+            },
+            "plan": {
+              "$ref": "#/$defs/ContextReleasePlan",
+              "description": "What went, where, and on whose authority.\n\nBoxed because it is by far the largest payload, and every event in\nthe system is moved by value: without the indirection each of the\ntwenty-odd other variants would carry its footprint."
+            }
+          },
+          "required": [
+            "kind",
+            "plan"
           ],
           "type": "object"
         },
@@ -2430,6 +2585,83 @@
       ],
       "type": "object"
     },
+    "ReleaseAuthorization": {
+      "description": "On whose authority a release proceeded.",
+      "properties": {
+        "approvalId": {
+          "$ref": "#/$defs/ApprovalId",
+          "description": "The approval that permitted it, when a user was asked."
+        },
+        "mode": {
+          "$ref": "#/$defs/RoutingMode",
+          "description": "The routing mode in force, which is the standing policy that applied."
+        },
+        "reasonCode": {
+          "description": "Stable reason, from [`reason`].",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reasonCode",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "ReleaseExclusion": {
+      "description": "A source that was assembled and did not go.",
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/ContextCategory",
+          "description": "What kind of source it is."
+        },
+        "reasonCode": {
+          "description": "Stable reason it did not go.",
+          "type": "string"
+        },
+        "sourceId": {
+          "description": "Which source.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sourceId",
+        "category",
+        "reasonCode"
+      ],
+      "type": "object"
+    },
+    "ReleasedCategory": {
+      "description": "One category of content actually carried by a request.\n\nSummarized by category and data class rather than listed source by source:\nthe disclosure has to be readable before a person decides, and\n`PHASE_1_ACCEPTANCE_CRITERIA.md` §12 asks for categories, classes, and a\nsize estimate — not a file listing.",
+      "properties": {
+        "byteCount": {
+          "description": "How many bytes of them were carried.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "category": {
+          "$ref": "#/$defs/ContextCategory",
+          "description": "What kind of source it is."
+        },
+        "dataClass": {
+          "$ref": "#/$defs/DataClass",
+          "description": "How sensitive the content is."
+        },
+        "sourceCount": {
+          "description": "How many sources of this kind were carried.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "category",
+        "dataClass",
+        "sourceCount",
+        "byteCount"
+      ],
+      "type": "object"
+    },
     "ReplaySafety": {
       "description": "Whether repeating an action is safe.\n\nThis is a statement about *effects*, not about whether the action would\nsucceed. Reading a file twice is safe; writing one twice may not be, and a\ntool whose effects are not known is treated as though they are not.",
       "oneOf": [
@@ -2868,6 +3100,11 @@
         {
           "const": "routingDecided",
           "description": "A model and location were chosen.",
+          "type": "string"
+        },
+        {
+          "const": "contextReleased",
+          "description": "A payload was released to a destination.",
           "type": "string"
         },
         {

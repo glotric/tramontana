@@ -27,6 +27,7 @@ mod model;
 mod permission;
 mod primitives;
 mod records;
+mod release;
 mod routing;
 mod task;
 mod time;
@@ -63,8 +64,8 @@ pub use ids::{
 };
 pub use message::{MessagePart, MessageRole, MessageStatus, NormalizedMessage};
 pub use model::{
-    ModelEvent, ModelLimits, ModelRequest, NormalizedToolDefinition, ResponseFormat, StopReason,
-    Usage,
+    AuthorizedModelRequest, ModelEvent, ModelLimits, ModelRequest, NormalizedToolDefinition,
+    ResponseFormat, StopReason, Usage,
 };
 pub use permission::{
     ApprovalDecision, ApprovalDecisionKind, ApprovalDetail, ApprovalRequest, AuthorizedToolRequest,
@@ -76,6 +77,10 @@ pub use primitives::{
     Visibility,
 };
 pub use records::{ConversationRecord, ProjectRecord, TaskRecord};
+pub use release::{
+    ContextReleasePlan, ReleaseAuthorization, ReleaseExclusion, ReleasedCategory,
+    reason as release_reason,
+};
 pub use routing::{RoutedModel, RoutingDecision, RoutingFallback, reason as routing_reason};
 pub use task::{InvalidTransition, TaskSnapshot, TaskState};
 pub use time::Timestamp;

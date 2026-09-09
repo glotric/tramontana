@@ -85,6 +85,9 @@ pub struct Providers {
     pub tools: Arc<ToolRegistry>,
     /// What decides whether a tool may run.
     pub permissions: Arc<PermissionManager>,
+    /// What decides whether a payload may reach a destination, and records
+    /// what it disclosed.
+    pub releases: Arc<crate::services::ReleaseManager>,
     /// The worker.
     pub worker: Arc<dyn AgentProvider>,
 }

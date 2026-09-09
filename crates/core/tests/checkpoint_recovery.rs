@@ -140,7 +140,7 @@ impl Harness {
             ..CounterTool::default()
         });
         let worker = Arc::new(TwoStepWorker::default());
-        let (tools, permissions) = assemble_tool_plane(
+        let (tools, permissions, releases) = assemble_tool_plane(
             vec![tool.clone()],
             Arc::new(InMemoryApprovalStore::new()),
             Arc::new(ScriptedApprover::unavailable()),
@@ -151,6 +151,7 @@ impl Harness {
             model: Arc::new(FakeModelProvider::streaming(["answer"])),
             tools,
             permissions,
+            releases,
             worker: worker.clone(),
         };
         Self {

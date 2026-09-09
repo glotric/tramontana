@@ -67,6 +67,33 @@ pub(crate) fn event_line(event: &EventEnvelope) -> String {
                 ""
             }
         ),
+        EventPayload::ContextReleased { plan } => {
+            let classes: Vec<String> = plan
+                .data_classes
+                .iter()
+                .map(|class| format!("{class:?}").to_lowercase())
+                .collect();
+            format!(
+                "{} byte(s) of {} context to {} ({}){}{} — {}",
+                plan.total_bytes,
+                classes.join(", "),
+                plan.destination.model_id,
+                plan.destination.provider_id,
+                if plan.requires_disclosure {
+                    " — LEFT THE DEVICE"
+                } else {
+                    ""
+                },
+                if plan.exclusions.is_empty() {
+                    String::new()
+                } else {
+                    format!(", {} withheld", plan.exclusions.len())
+                },
+                plan.authorization
+                    .as_ref()
+                    .map_or("proposed", |authority| authority.reason_code.as_str()),
+            )
+        }
         EventPayload::CheckpointSaved {
             checkpoint_id,
             completed_step_count,

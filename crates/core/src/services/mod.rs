@@ -16,6 +16,7 @@ mod journal;
 mod permission_manager;
 mod preparation;
 mod projection;
+mod release;
 mod routing;
 mod runtime;
 mod task_export;
@@ -35,6 +36,7 @@ pub use journal::{JournalPorts, TaskJournal};
 pub use permission_manager::PermissionManager;
 pub use preparation::assemble_context;
 pub use projection::TaskProjectionWriter;
+pub use release::{RELEASE_CAPABILITY, ReleaseContext, ReleaseError, ReleaseManager};
 pub use routing::{
     AvailabilitySnapshot, NoEligibleRoute, RoutingInput, route, route_after_failure,
 };

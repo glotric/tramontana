@@ -62,7 +62,7 @@ impl AppState {
         // assembles the identical set, so the two adapters cannot drift into
         // offering different tools under different policy.
         let approvals = Arc::new(InMemoryApprovalStore::new());
-        let (registry, permissions) = assemble_tool_plane(
+        let (registry, permissions, releases) = assemble_tool_plane(
             vec![
                 Arc::new(FilesystemTools::new()) as Arc<dyn ToolProvider>,
                 Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
@@ -95,6 +95,7 @@ impl AppState {
                 )),
                 tools: Arc::clone(&registry),
                 permissions: Arc::clone(&permissions),
+                releases: Arc::clone(&releases),
                 // Points the reference worker at a genuine read-only tool, so the
                 // skeleton exercises the real permission and containment path
                 // rather than a fake that cannot be refused.

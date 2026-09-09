@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::contracts::{
-    AgentDescriptor, CheckpointSupport, ErrorEnvelope, EventDraft, EventPayload, IntegrationMode,
-    ModelControl, NetworkControl, TaskEventKind, ToolControl,
+    AgentDescriptor, CheckpointSupport, ErrorEnvelope, IntegrationMode, ModelControl,
+    NetworkControl, ToolControl,
 };
 use crate::ports::{AgentProvider, WorkerHost, WorkerOutcome, WorkerRequest};
 use crate::testing::tool::FAKE_TOOL_ID;
@@ -101,15 +101,11 @@ impl AgentProvider for FakeWorker {
             return Ok(WorkerOutcome::Cancelled);
         }
 
-        host.emit(EventDraft::user(
-            TaskEventKind::ModelStarted,
-            EventPayload::ModelStarted {
-                stream_id: format!("stream-{}", request.task_id),
-                model_id: "fake.deterministic".to_owned(),
-            },
-        ))
-        .await?;
-
+        // No `modelStarted` here. A worker announcing that a model started is
+        // announcing something it does not yet know: the request has not been
+        // released, and it may be refused. The host emits it after the release
+        // decision, naming the model the router actually chose rather than one
+        // the worker hardcoded.
         let answer = host.call_model(&request.goal, &cancel).await?;
         if cancel.is_cancelled() {
             return Ok(WorkerOutcome::Cancelled);

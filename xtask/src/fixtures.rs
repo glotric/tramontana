@@ -76,7 +76,7 @@ pub(crate) fn emit_fixtures(dir: &std::path::Path) -> Result<Vec<std::path::Path
 /// rather than after it.
 fn service(chunk_delay_ms: u64) -> Result<Arc<TaskService>> {
     let ids = Arc::new(SequentialIdSource::new());
-    let (registry, permissions) = assemble_tool_plane(
+    let (registry, permissions, releases) = assemble_tool_plane(
         vec![Arc::new(FakeToolProvider::new()) as Arc<dyn ToolProvider>],
         Arc::new(InMemoryApprovalStore::new()) as Arc<dyn ApprovalStore>,
         Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce)) as Arc<dyn Approver>,
@@ -104,6 +104,7 @@ fn service(chunk_delay_ms: u64) -> Result<Arc<TaskService>> {
             )),
             tools: registry,
             permissions,
+            releases,
             worker: Arc::new(FakeWorker::new()),
         },
         Arc::new(FakeClock::new()),

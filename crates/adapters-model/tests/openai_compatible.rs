@@ -22,6 +22,7 @@ use tramontana_core::ports::{ModelProvider, SecretResolver};
 use tramontana_core::testing::contract_suites::{
     ProviderScenario, model_provider_contract, model_request,
 };
+use tramontana_core::testing::release::locally_authorized;
 
 /// The one place a test's secret value exists.
 #[derive(Debug)]
@@ -46,7 +47,7 @@ fn provider(endpoint: &FakeEndpoint, auth: ProviderAuth) -> OpenAiCompatibleProv
 
 async fn drain(provider: &OpenAiCompatibleProvider, cancel: CancellationToken) -> Vec<ModelEvent> {
     let mut stream = provider
-        .stream(model_request("request-1"), cancel)
+        .stream(locally_authorized(model_request("request-1")), cancel)
         .await
         .unwrap();
     let mut events = Vec::new();
@@ -313,7 +314,7 @@ async fn a_deadline_ends_a_silent_endpoint_rather_than_hanging() {
     let mut request = model_request("request-1");
     request.limits.deadline_ms = 150;
     let mut stream = provider
-        .stream(request, CancellationToken::new())
+        .stream(locally_authorized(request), CancellationToken::new())
         .await
         .unwrap();
 

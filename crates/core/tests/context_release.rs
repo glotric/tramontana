@@ -1,0 +1,553 @@
+//! What is disclosed is what is sent, and nothing leaves without a decision.
+//!
+//! `SECURITY_AND_PERMISSIONS.md` §8 and `BUILD_ORDER.md` §14 item 5. Three
+//! properties are the point of the whole boundary:
+//!
+//! - a cloud endpoint cannot be reached without an approval;
+//! - the disclosed source categories and bytes are the transmitted ones
+//!   (`TESTING_STRATEGY.md` §5);
+//! - the disclosure describes the payload without becoming a copy of it.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests assert on known-good values; a panic is the failure report"
+)]
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
+use async_trait::async_trait;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use tramontana_core::contracts::*;
+use tramontana_core::ports::*;
+use tramontana_core::services::*;
+use tramontana_core::testing::*;
+
+const GOAL: &str = "Say hello";
+
+fn at() -> Timestamp {
+    Timestamp::new("2026-01-01T00:00:00.000Z")
+}
+
+/// A manifest holding the goal plus one instruction source.
+fn manifest(instruction_included: bool) -> ContextManifest {
+    let instruction = if instruction_included {
+        ContextSource::included(
+            "AGENTS.md",
+            ContextCategory::Instruction,
+            DataClass::Project,
+            "be careful",
+        )
+    } else {
+        ContextSource::excluded(
+            "AGENTS.md",
+            ContextCategory::Instruction,
+            DataClass::Project,
+            "be careful",
+            "context.notActive",
+        )
+    };
+    ContextManifest::new(
+        "context-1",
+        TaskId::new("task-1"),
+        DestinationClass::Local,
+        vec![
+            ContextSource::included(
+                "conversation.goal",
+                ContextCategory::Conversation,
+                DataClass::Project,
+                GOAL,
+            ),
+            instruction,
+        ],
+        at(),
+    )
+}
+
+fn decision(location: ExecutionLocation) -> RoutingDecision {
+    RoutingDecision::new(
+        "decision-1",
+        RoutingMode::CloudPreferred,
+        RoutedModel {
+            provider_id: "openai".to_owned(),
+            model_id: "gpt-oss".to_owned(),
+        },
+        location,
+        "availability-1",
+        vec![routing_reason::CLOUD_PREFERRED.to_owned()],
+        "context-1",
+    )
+}
+
+fn cloud() -> ExecutionLocation {
+    ExecutionLocation::Cloud {
+        provider_id: "openai".to_owned(),
+        region: None,
+    }
+}
+
+fn on_device() -> ExecutionLocation {
+    ExecutionLocation::Local {
+        target_id: "this-device".to_owned(),
+        display_name: "This device".to_owned(),
+    }
+}
+
+/// A request carrying `texts` as separate user messages.
+fn request(texts: &[&str]) -> ModelRequest {
+    ModelRequest::new(
+        "request-1",
+        TaskId::new("task-1"),
+        texts
+            .iter()
+            .enumerate()
+            .map(|(index, text)| {
+                NormalizedMessage::text(
+                    MessageId::new(format!("message-{index}")),
+                    None,
+                    MessageRole::User,
+                    at(),
+                    *text,
+                )
+            })
+            .collect(),
+        "context-1",
+    )
+}
+
+fn scope() -> CapabilityScope {
+    CapabilityScope::project(ProjectId::new("project-1"), vec!["/work".to_owned()])
+}
+
+fn manager(approver: Arc<dyn Approver>) -> ReleaseManager {
+    ReleaseManager::new(
+        Arc::new(InMemoryApprovalStore::new()),
+        Some(approver),
+        Arc::new(SequentialIdSource::new()),
+    )
+}
+
+#[tokio::test]
+async fn a_local_destination_is_released_without_asking_anyone() {
+    // A prompt that fires when nothing is at stake is how people are trained
+    // to dismiss prompts. Nothing left the device, so nothing is asked.
+    let approver = Arc::new(ScriptedApprover::always(ApprovalDecisionKind::Deny));
+    let manifest = manifest(false);
+    let decision = decision(on_device());
+
+    let authorized = manager(approver.clone())
+        .authorize(
+            "release-1",
+            request(&[GOAL]),
+            &ReleaseContext {
+                manifest: &manifest,
+                decision: &decision,
+                mode: RoutingMode::Automatic,
+                scope: &scope(),
+            },
+            at(),
+        )
+        .await
+        .expect("a local release was refused");
+
+    assert!(
+        approver.asked().is_empty(),
+        "a local release asked the user"
+    );
+    assert!(!authorized.plan().requires_disclosure);
+    assert_eq!(
+        authorized
+            .plan()
+            .authorization
+            .as_ref()
+            .unwrap()
+            .reason_code,
+        release_reason::LOCAL_DESTINATION
+    );
+}
+
+#[tokio::test]
+async fn a_cloud_destination_asks_and_a_refusal_stops_it() {
+    let approver = Arc::new(ScriptedApprover::always(ApprovalDecisionKind::Deny));
+    let manifest = manifest(false);
+    let decision = decision(cloud());
+
+    let error = manager(approver.clone())
+        .authorize(
+            "release-1",
+            request(&[GOAL]),
+            &ReleaseContext {
+                manifest: &manifest,
+                decision: &decision,
+                mode: RoutingMode::CloudPreferred,
+                scope: &scope(),
+            },
+            at(),
+        )
+        .await
+        .expect_err("a refused release produced an authorization");
+
+    assert_eq!(
+        error,
+        ReleaseError::Denied {
+            reason_code: release_reason::USER_DENIED
+        }
+    );
+
+    // The question that was put names the destination and the release, and
+    // offers no standing grant: the standing policy for cloud use is the
+    // routing mode, not a second grant that would answer it again.
+    let asked = approver.asked();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].capability.as_str(), RELEASE_CAPABILITY);
+    assert!(asked[0].requested_scope.releases_data);
+    assert_eq!(asked[0].risk_class, RiskClass::Dangerous);
+    assert_eq!(asked[0].side_effect, SideEffect::External);
+    assert!(
+        !asked[0]
+            .eligible_decisions
+            .contains(&ApprovalDecisionKind::AllowProject),
+        "a cloud release offered a standing project grant"
+    );
+}
+
+#[tokio::test]
+async fn a_cloud_destination_with_nobody_to_ask_fails_closed() {
+    // Not a refusal: there was no user. It still does not go.
+    let manifest = manifest(false);
+    let decision = decision(cloud());
+    let manager = ReleaseManager::new(
+        Arc::new(InMemoryApprovalStore::new()),
+        None,
+        Arc::new(SequentialIdSource::new()),
+    );
+
+    let error = manager
+        .authorize(
+            "release-1",
+            request(&[GOAL]),
+            &ReleaseContext {
+                manifest: &manifest,
+                decision: &decision,
+                mode: RoutingMode::CloudPreferred,
+                scope: &scope(),
+            },
+            at(),
+        )
+        .await
+        .expect_err("a headless run released to the cloud");
+
+    assert_eq!(
+        error,
+        ReleaseError::Denied {
+            reason_code: release_reason::NO_APPROVER
+        }
+    );
+}
+
+#[test]
+fn the_disclosed_categories_and_bytes_are_the_transmitted_ones() {
+    // `TESTING_STRATEGY.md` §5. The manifest offers two sources; the payload
+    // carries one. A plan derived from the manifest would disclose both.
+    let manifest = manifest(true);
+    let decision = decision(cloud());
+    let plan = manager(Arc::new(ScriptedApprover::always(
+        ApprovalDecisionKind::AllowOnce,
+    )))
+    .plan(
+        "release-1",
+        &request(&[GOAL]),
+        &ReleaseContext {
+            manifest: &manifest,
+            decision: &decision,
+            mode: RoutingMode::CloudPreferred,
+            scope: &scope(),
+        },
+        at(),
+    )
+    .unwrap();
+
+    assert_eq!(plan.released.len(), 1, "{:?}", plan.released);
+    assert_eq!(plan.released[0].category, ContextCategory::Conversation);
+    assert_eq!(plan.released[0].byte_count, GOAL.len() as u64);
+    assert_eq!(plan.total_bytes, GOAL.len() as u64);
+    assert!(
+        plan.total_bytes < manifest.total_bytes,
+        "the plan disclosed everything the manifest gathered, not what was sent"
+    );
+
+    // And the source that was gathered and not sent is named, not dropped:
+    // "did my instructions reach the model?" has to be answerable.
+    assert_eq!(plan.exclusions.len(), 1);
+    assert_eq!(plan.exclusions[0].source_id, "AGENTS.md");
+    assert_eq!(
+        plan.exclusions[0].reason_code,
+        release_reason::NOT_TRANSMITTED
+    );
+}
+
+#[test]
+fn a_payload_the_assembled_context_never_accounted_for_is_refused() {
+    // The dangerous direction. A request that has grown a source since the
+    // context was assembled would otherwise be disclosed as the smaller thing.
+    let manifest = manifest(false);
+    let decision = decision(cloud());
+    let error = manager(Arc::new(ScriptedApprover::always(
+        ApprovalDecisionKind::AllowOnce,
+    )))
+    .plan(
+        "release-1",
+        &request(&[GOAL, "and here is the private key from my notes"]),
+        &ReleaseContext {
+            manifest: &manifest,
+            decision: &decision,
+            mode: RoutingMode::CloudPreferred,
+            scope: &scope(),
+        },
+        at(),
+    )
+    .expect_err("undisclosed content was planned for release");
+
+    let ReleaseError::UndisclosedContent { content_hash } = error else {
+        panic!("wrong refusal: {error:?}");
+    };
+    assert_eq!(
+        content_hash,
+        tramontana_core::contracts::content_hash("and here is the private key from my notes")
+    );
+}
+
+#[test]
+fn a_source_the_manifest_withheld_cannot_be_released_by_a_payload() {
+    // Withholding has to mean something. A payload that carries an excluded
+    // source is not a smaller disclosure — it is an undisclosed one.
+    let manifest = manifest(false);
+    let decision = decision(cloud());
+    let error = manager(Arc::new(ScriptedApprover::always(
+        ApprovalDecisionKind::AllowOnce,
+    )))
+    .plan(
+        "release-1",
+        &request(&[GOAL, "be careful"]),
+        &ReleaseContext {
+            manifest: &manifest,
+            decision: &decision,
+            mode: RoutingMode::CloudPreferred,
+            scope: &scope(),
+        },
+        at(),
+    )
+    .expect_err("a withheld source was released");
+
+    assert!(matches!(error, ReleaseError::UndisclosedContent { .. }));
+}
+
+#[test]
+fn a_plan_describes_the_payload_without_copying_it() {
+    let manifest = manifest(true);
+    let decision = decision(cloud());
+    let plan = manager(Arc::new(ScriptedApprover::always(
+        ApprovalDecisionKind::AllowOnce,
+    )))
+    .plan(
+        "release-1",
+        &request(&[GOAL]),
+        &ReleaseContext {
+            manifest: &manifest,
+            decision: &decision,
+            mode: RoutingMode::CloudPreferred,
+            scope: &scope(),
+        },
+        at(),
+    )
+    .unwrap();
+
+    let rendered = serde_json::to_string(&plan).unwrap();
+    assert!(
+        !rendered.contains(GOAL),
+        "the disclosure copied the content it was disclosing"
+    );
+    assert!(!rendered.contains("be careful"), "{rendered}");
+    assert!(!plan.summary().contains(GOAL), "{}", plan.summary());
+}
+
+/// A cloud provider that records every time it is reached.
+#[derive(Debug, Default)]
+struct CloudEndpoint {
+    reached: AtomicUsize,
+}
+
+#[async_trait]
+impl ModelProvider for CloudEndpoint {
+    fn id(&self) -> ProviderId {
+        ProviderId::new("openai")
+    }
+
+    async fn list_models(&self) -> Vec<ModelDescriptor> {
+        vec![ModelDescriptor {
+            provider_id: "openai".to_owned(),
+            model_id: "gpt-oss".to_owned(),
+            display_name: "gpt-oss".to_owned(),
+            location: ModelLocation::Cloud,
+            capabilities: vec![ModelCapability::Text, ModelCapability::Streaming],
+            context_limit: None,
+            health: Health::Available,
+            health_reason_code: None,
+        }]
+    }
+
+    async fn stream(
+        &self,
+        request: AuthorizedModelRequest,
+        _cancel: CancellationToken,
+    ) -> Result<mpsc::Receiver<ModelEvent>, ErrorEnvelope> {
+        self.reached.fetch_add(1, Ordering::SeqCst);
+        let (sender, receiver) = mpsc::channel(4);
+        let stream_id = request.request().request_id.clone();
+        tokio::spawn(async move {
+            let _ = sender
+                .send(ModelEvent::TextDelta {
+                    stream_id,
+                    offset: 0,
+                    text: "answer".into(),
+                })
+                .await;
+            let _ = sender
+                .send(ModelEvent::Completed {
+                    stop_reason: StopReason::Stop,
+                })
+                .await;
+        });
+        Ok(receiver)
+    }
+}
+
+/// Run one task to a terminal state against `answer`, and return its events.
+async fn run_to_completion(
+    endpoint: Arc<CloudEndpoint>,
+    answer: ApprovalDecisionKind,
+) -> Vec<EventEnvelope> {
+    let events: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
+    let ids = Arc::new(SequentialIdSource::new());
+    let (tools, permissions, releases) = assemble_tool_plane(
+        vec![Arc::new(FakeToolProvider::new())],
+        Arc::new(InMemoryApprovalStore::new()),
+        Arc::new(ScriptedApprover::always(answer)),
+        ids.clone(),
+    )
+    .unwrap();
+
+    let service = TaskService::new(
+        Repositories {
+            projects: Arc::new(InMemoryProjectRepository::new()),
+            conversations: Arc::new(InMemoryConversationRepository::new()),
+            tasks: Arc::new(InMemoryTaskRepository::with_events(events.clone())),
+            events,
+            configuration: Arc::new(InMemoryConfigurationRepository::new()),
+            checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
+        },
+        Providers {
+            model: endpoint,
+            tools,
+            permissions,
+            releases,
+            worker: Arc::new(FakeWorker::new()),
+        },
+        Arc::new(FakeClock::new()),
+        ids,
+    )
+    .with_routing_mode(RoutingMode::CloudPreferred);
+
+    let task_id = service
+        .start_task(StartTaskRequest {
+            conversation_id: None,
+            goal: GOAL.to_owned(),
+        })
+        .await
+        .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if service
+                .get_task(&task_id)
+                .await
+                .unwrap()
+                .state
+                .is_terminal()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the task never settled");
+
+    service.replay_task_events(&task_id, 0).await.unwrap()
+}
+
+#[tokio::test]
+async fn a_refused_release_never_reaches_the_endpoint() {
+    let endpoint = Arc::new(CloudEndpoint::default());
+    let events = run_to_completion(endpoint.clone(), ApprovalDecisionKind::Deny).await;
+
+    assert_eq!(
+        endpoint.reached.load(Ordering::SeqCst),
+        0,
+        "a refused release still reached the cloud endpoint"
+    );
+    // And nothing in the record claims a model ran.
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.kind == TaskEventKind::ModelStarted),
+        "a refused release left a modelStarted event behind"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.kind == TaskEventKind::TaskFailed),
+        "a refused release did not fail the task"
+    );
+}
+
+#[tokio::test]
+async fn an_approved_release_is_recorded_before_the_model_starts() {
+    let endpoint = Arc::new(CloudEndpoint::default());
+    let events = run_to_completion(endpoint.clone(), ApprovalDecisionKind::AllowOnce).await;
+
+    assert_eq!(endpoint.reached.load(Ordering::SeqCst), 1);
+
+    let released = events
+        .iter()
+        .position(|event| event.kind == TaskEventKind::ContextReleased)
+        .expect("no release was recorded");
+    let started = events
+        .iter()
+        .position(|event| event.kind == TaskEventKind::ModelStarted)
+        .expect("no model start was recorded");
+    assert!(
+        released < started,
+        "the record says a model started before anyone decided what it could see"
+    );
+
+    let EventPayload::ContextReleased { plan } = &events[released].payload else {
+        panic!("wrong payload");
+    };
+    assert!(plan.requires_disclosure);
+    assert_eq!(
+        plan.authorization.as_ref().unwrap().reason_code,
+        release_reason::APPROVED_ONCE
+    );
+    assert!(plan.authorization.as_ref().unwrap().approval_id.is_some());
+    assert_eq!(plan.destination.model_id, "gpt-oss");
+    assert_eq!(plan.total_bytes, GOAL.len() as u64);
+
+    // The durable record of a release does not carry what was released.
+    let rendered = serde_json::to_string(&events[released]).unwrap();
+    assert!(!rendered.contains(GOAL), "{rendered}");
+}

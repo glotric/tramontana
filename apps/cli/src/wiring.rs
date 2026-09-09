@@ -66,7 +66,7 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
 
     // Read-only tools, behind the permission boundary. The registry says a
     // tool exists; only the permission manager says it may run.
-    let (registry, permissions) = assemble_tool_plane(
+    let (registry, permissions, releases) = assemble_tool_plane(
         vec![
             Arc::new(FilesystemTools::new()) as Arc<dyn ToolProvider>,
             Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
@@ -105,6 +105,7 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
             )),
             tools: Arc::clone(&registry),
             permissions: Arc::clone(&permissions),
+            releases: Arc::clone(&releases),
             // Points the reference worker at a genuine read-only tool, so the
             // skeleton exercises the real permission and containment path
             // rather than a fake that cannot be refused.

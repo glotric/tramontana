@@ -21,7 +21,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{DataClass, ErrorEnvelope, NormalizedMessage, SCHEMA_VERSION, TaskId};
+use super::{
+    ContextReleasePlan, DataClass, ErrorEnvelope, NormalizedMessage, SCHEMA_VERSION, TaskId,
+};
 
 /// A tool as a model is told about it.
 ///
@@ -240,6 +242,51 @@ impl ModelEvent {
     #[must_use]
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Completed { .. } | Self::Failed { .. })
+    }
+}
+
+/// A model request that has passed the release boundary.
+///
+/// **Only `services::release` can build one.** The fields are private and the
+/// sole constructor is `pub(crate)`, so a provider adapter that accepts this
+/// type cannot be called without a release decision having been made — the
+/// same construction that makes [`AuthorizedToolRequest`] the only way to
+/// reach a tool (`crate::contracts::AuthorizedToolRequest`).
+///
+/// It carries the plan *and* the request together rather than a digest of the
+/// request. A digest could be checked and then the payload swapped; owning
+/// both means the disclosure describes the bytes that are handed over, because
+/// there is only one copy of them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthorizedModelRequest {
+    request: ModelRequest,
+    plan: ContextReleasePlan,
+}
+
+impl AuthorizedModelRequest {
+    /// Bind a request to the release that authorized it. Reachable only from
+    /// within the core.
+    #[must_use]
+    pub(crate) fn new(request: ModelRequest, plan: ContextReleasePlan) -> Self {
+        Self { request, plan }
+    }
+
+    /// The request to send.
+    #[must_use]
+    pub fn request(&self) -> &ModelRequest {
+        &self.request
+    }
+
+    /// What this release discloses, and on whose authority.
+    #[must_use]
+    pub fn plan(&self) -> &ContextReleasePlan {
+        &self.plan
+    }
+
+    /// The request, for a provider that needs to own it.
+    #[must_use]
+    pub fn into_request(self) -> ModelRequest {
+        self.request
     }
 }
 

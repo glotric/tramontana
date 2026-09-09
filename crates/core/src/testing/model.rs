@@ -3,8 +3,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::contracts::{
-    CorrelationId, ErrorCode, ErrorEnvelope, Health, ModelCapability, ModelDescriptor, ModelEvent,
-    ModelLocation, ModelRequest, ProviderId, StopReason,
+    AuthorizedModelRequest, CorrelationId, ErrorCode, ErrorEnvelope, Health, ModelCapability,
+    ModelDescriptor, ModelEvent, ModelLocation, ProviderId, StopReason,
 };
 use crate::ports::ModelProvider;
 
@@ -98,13 +98,13 @@ impl ModelProvider for FakeModelProvider {
 
     async fn stream(
         &self,
-        request: ModelRequest,
+        request: AuthorizedModelRequest,
         cancel: CancellationToken,
     ) -> Result<mpsc::Receiver<ModelEvent>, ErrorEnvelope> {
         // The stream is identified by the request that opened it, so a
         // subscriber can tie a delta back to the `modelStarted` event without
         // the provider inventing a second identifier.
-        let stream_id = request.request_id.clone();
+        let stream_id = request.request().request_id.clone();
         let script = self.script.clone();
         let chunk_delay = self.chunk_delay;
         // Bounded so a slow consumer applies backpressure rather than letting
