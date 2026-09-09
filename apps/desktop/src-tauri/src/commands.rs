@@ -12,9 +12,10 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tramontana_core::config::ConfigurationSelection;
 use tramontana_core::contracts::{
-    ApprovalDecisionKind, ApprovalId, ConversationId, ConversationRecord, CorrelationId,
-    EffectiveConfiguration, ErrorCode, ErrorEnvelope, EventEnvelope, ProjectGrant, ProjectId,
-    ProjectRecord, SCHEMA_VERSION, TaskId, TaskRecord, TaskSnapshot, TaskUpdate,
+    ApprovalDecisionKind, ApprovalId, CheckpointId, ConversationId, ConversationRecord,
+    CorrelationId, EffectiveConfiguration, ErrorCode, ErrorEnvelope, EventEnvelope, ProjectGrant,
+    ProjectId, ProjectRecord, SCHEMA_VERSION, TaskCheckpoint, TaskId, TaskRecord, TaskSnapshot,
+    TaskUpdate,
 };
 use tramontana_core::services::StartTaskRequest;
 use tramontana_platform::{CanonicalRoot, canonicalize_root, discover};
@@ -370,6 +371,68 @@ pub(crate) async fn get_task(
     state: State<'_, AppState>,
 ) -> Result<TaskSnapshot, ErrorEnvelope> {
     state.service.get_task(&task_id).await
+}
+
+/// Stop this task and write an inspectable checkpoint.
+///
+/// # Errors
+///
+/// [`ErrorCode::NotFound`] when the task is unknown, or [`ErrorCode::Conflict`]
+/// when the worker has not stopped.
+#[tauri::command]
+pub(crate) async fn create_checkpoint(
+    task_id: TaskId,
+    state: State<'_, AppState>,
+) -> Result<TaskCheckpoint, ErrorEnvelope> {
+    state.service.create_checkpoint(&task_id).await
+}
+
+/// Read the latest checkpoint without changing anything.
+///
+/// Inspection is separate from resuming on purpose: the interface shows what
+/// was pending and how safe it is to repeat, and the person decides.
+///
+/// # Errors
+///
+/// [`ErrorCode::NotFound`] when the task is unknown.
+#[tauri::command]
+pub(crate) async fn latest_checkpoint(
+    task_id: TaskId,
+    state: State<'_, AppState>,
+) -> Result<Option<TaskCheckpoint>, ErrorEnvelope> {
+    state.service.latest_checkpoint(&task_id).await
+}
+
+/// Resume the exact checkpoint the user inspected.
+///
+/// The identifier is required rather than implied: resuming "the latest"
+/// would let the interface act on a checkpoint the person never saw.
+///
+/// # Errors
+///
+/// [`ErrorCode::Conflict`] when the checkpoint is stale, the task is not
+/// interrupted, or the worker or configuration has changed, and
+/// [`ErrorCode::InterruptedUnsafe`] when the pending action cannot be repeated.
+#[tauri::command]
+pub(crate) async fn resume_task(
+    task_id: TaskId,
+    checkpoint_id: CheckpointId,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    state.service.resume_task(&task_id, &checkpoint_id).await
+}
+
+/// Discard interrupted work without deleting history or undoing any effect.
+///
+/// # Errors
+///
+/// [`ErrorCode::Conflict`] when the task is not interrupted.
+#[tauri::command]
+pub(crate) async fn discard_checkpoint(
+    task_id: TaskId,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    state.service.discard_checkpoint(&task_id).await
 }
 
 /// Build an invalid-request error for a boundary rejection.

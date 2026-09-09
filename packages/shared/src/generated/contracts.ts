@@ -55,6 +55,24 @@ export interface AgentDescriptor {
 }
 
 /**
+ * One file in a bundle, with what a reader needs to trust it.
+ */
+export interface BundleEntry {
+  /**
+   * Size in bytes, checked against the contents before the checksum.
+   */
+  byteCount: number;
+  /**
+   * Bundle-relative path. Validated on import before it is used.
+   */
+  path: string;
+  /**
+   * Lowercase hex SHA-256 of the contents.
+   */
+  sha256: string;
+}
+
+/**
  * Who requested a cancellation.
  */
 export type CancellationOrigin = "user" | "system";
@@ -71,7 +89,7 @@ export interface CapabilityScope {
    * The project this is limited to. Absent means a projectless task, which
    * has no filesystem access at all.
    */
-  projectId?: ProjectId | null;
+  projectId?: string;
   /**
    * Whether the operation sends project-derived data off the device.
    *
@@ -248,20 +266,20 @@ export interface ConversationRecord {
   /**
    * When it was archived, if it has been.
    */
-  archivedAt?: Timestamp | null;
+  archivedAt?: string;
   /**
    * Stable identifier.
    */
   conversationId: string;
   /**
-   * An instant, serialized as a UTC RFC 3339 string.
+   * When it was created.
    */
   createdAt: string;
   /**
    * Project this belongs to. Absent means projectless, which carries no
    * implicit filesystem access (`PHASE_1_ACCEPTANCE_CRITERIA.md` §8).
    */
-  projectId?: ProjectId | null;
+  projectId?: string;
   /**
    * Contract schema version.
    */
@@ -410,7 +428,7 @@ export interface EventEnvelope {
   /**
    * Conversation, when the task has one.
    */
-  conversationId?: ConversationId | null;
+  conversationId?: string;
   /**
    * Shared by everything caused by one originating request.
    */
@@ -469,7 +487,7 @@ export interface EventEnvelope {
         /**
          * Conversation this task belongs to, when it has one.
          */
-        conversationId?: ConversationId | null;
+        conversationId?: string;
         /**
          * One-line, secret-free summary of what was asked for.
          */
@@ -577,7 +595,7 @@ export interface EventEnvelope {
         /**
          * How the authorization was obtained, when it was allowed.
          */
-        grantKind?: GrantKind | null;
+        grantKind?: "implicitSafeDefault" | "once" | "project";
         /**
          * The invocation the decision covers.
          */
@@ -666,10 +684,7 @@ export interface EventEnvelope {
          */
         eventSequence: number;
         kind: "checkpointSaved";
-        /**
-         * What was in flight, when anything was.
-         */
-        pendingAction?: PendingAction | null;
+        pendingAction?: PendingAction;
         resume: ResumeEligibility;
       }
     | {
@@ -702,7 +717,7 @@ export interface EventEnvelope {
    */
   sequence: number;
   /**
-   * A unit of work with its own event stream and exactly one terminal state.
+   * Task this event belongs to.
    */
   taskId: string;
   /**
@@ -739,7 +754,7 @@ export type EventPayload =
       /**
        * Conversation this task belongs to, when it has one.
        */
-      conversationId?: ConversationId | null;
+      conversationId?: string;
       /**
        * One-line, secret-free summary of what was asked for.
        */
@@ -847,7 +862,7 @@ export type EventPayload =
       /**
        * How the authorization was obtained, when it was allowed.
        */
-      grantKind?: GrantKind | null;
+      grantKind?: "implicitSafeDefault" | "once" | "project";
       /**
        * The invocation the decision covers.
        */
@@ -936,10 +951,7 @@ export type EventPayload =
        */
       eventSequence: number;
       kind: "checkpointSaved";
-      /**
-       * What was in flight, when anything was.
-       */
-      pendingAction?: PendingAction | null;
+      pendingAction?: PendingAction;
       resume: ResumeEligibility;
     }
   | {
@@ -995,9 +1007,165 @@ export type ExecutionLocation =
     };
 
 /**
+ * The bundle's table of contents.
+ */
+export interface ExportManifest {
+  /**
+   * Major version of the bundle layout. Refused when unrecognized.
+   */
+  bundleMajorVersion: number;
+  /**
+   * Minor version. A reader may ignore what it does not know.
+   */
+  bundleMinorVersion: number;
+  /**
+   * When the bundle was produced.
+   */
+  createdAt: string;
+  /**
+   * Every file in the bundle.
+   */
+  entries: BundleEntry[];
+  /**
+   * What was left out, and how much.
+   */
+  omissions: Omission[];
+  options: ExportOptions;
+  /**
+   * The project, when the export was scoped to one.
+   */
+  projectId?: string;
+  /**
+   * Version of the records inside the bundle.
+   */
+  schemaVersion: number;
+  /**
+   * Tasks included, in export order.
+   */
+  taskIds: TaskId[];
+}
+
+/**
+ * What an export chose to include.
+ *
+ * Absent means the default, which is to exclude. The flags exist so a bundle
+ * records the decision that produced it rather than leaving a reader to infer
+ * it from what happens to be present.
+ */
+export interface ExportOptions {
+  /**
+   * Keep absolute device paths instead of redacting them.
+   */
+  includeAbsolutePaths: boolean;
+  /**
+   * Include artifact files.
+   */
+  includeArtifacts: boolean;
+  /**
+   * Keep unredacted tool output.
+   */
+  includeRawToolOutput: boolean;
+}
+
+/**
+ * A configuration manifest with the project it belongs to.
+ *
+ * The manifest itself does not name its project — it is stored under one —
+ * so a bundle has to carry the pairing. Without it an imported task would
+ * reference a manifest nothing could resolve, and the record could not say
+ * which instructions were in force when the work happened.
+ */
+export interface ExportedConfiguration {
+  configuration: EffectiveConfiguration;
+  /**
+   * The project this manifest was resolved for.
+   */
+  projectId: string;
+}
+
+/**
  * How long an authorization lasts.
  */
 export type GrantKind = "implicitSafeDefault" | "once" | "project";
+
+/**
+ * Everything a different worker needs to continue a task.
+ *
+ * Assembled from canonical records only. A worker's opaque continuation data
+ * is never read to build this, which is what makes the claim in
+ * `PROJECT_FORMAT.md` §4 — that canonical state is sufficient — testable
+ * rather than aspirational.
+ */
+export interface HandoffBundle {
+  /**
+   * Steps already done, which the receiving worker must not repeat.
+   */
+  completedStepIds: string[];
+  /**
+   * The effective configuration in force, for a project task.
+   */
+  configurationManifestHash?: string;
+  /**
+   * Its conversation, when it has one.
+   */
+  conversationId?: string;
+  /**
+   * When the handoff was assembled.
+   */
+  createdAt: string;
+  /**
+   * The point being handed over.
+   */
+  eventSequence: number;
+  /**
+   * What the user asked for.
+   */
+  goal: string;
+  /**
+   * The task's normalized history.
+   */
+  history: HandoffEntry[];
+  /**
+   * What this handoff does not carry.
+   */
+  omissions: Omission[];
+  pendingAction?: PendingAction;
+  previousWorker?: AgentDescriptor;
+  /**
+   * Its project, when it has one.
+   */
+  projectId?: string;
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  /**
+   * The task being handed over.
+   */
+  taskId: string;
+}
+
+/**
+ * One fact in a handoff, normalized so any worker can read it.
+ */
+export interface HandoffEntry {
+  /**
+   * What kind of fact this is.
+   */
+  kind: string;
+  /**
+   * When it happened.
+   */
+  occurredAt: string;
+  /**
+   * Position in the task's durable stream.
+   */
+  sequence: number;
+  /**
+   * A secret-free description.
+   */
+  summary: string;
+}
 
 /**
  * Whether a provider or worker is usable right now.
@@ -1148,7 +1316,7 @@ export interface NormalizedMessage {
    * Dropping the message because there was no conversation would leave the
    * exported task with tool calls and no answer.
    */
-  conversationId?: ConversationId | null;
+  conversationId?: string;
   /**
    * When it was created.
    */
@@ -1176,8 +1344,32 @@ export interface NormalizedMessage {
   /**
    * Task that produced it, when one did.
    */
-  taskId?: TaskId | null;
+  taskId?: string;
 }
+
+/**
+ * One thing an export left out, and how much of it.
+ */
+export interface Omission {
+  /**
+   * What kind of data.
+   */
+  category: "secret" | "absolutePath" | "rawToolOutput" | "artifact" | "internalEvent" | "workerPrivateState";
+  /**
+   * How many values were affected.
+   */
+  count: number;
+  /**
+   * Why it was left out, in a sentence a person can act on.
+   */
+  reason: string;
+}
+
+/**
+ * What kind of data was left out of an export.
+ */
+export type OmissionCategory =
+  "secret" | "absolutePath" | "rawToolOutput" | "artifact" | "internalEvent" | "workerPrivateState";
 
 /**
  * The one action that had started and not finished.
@@ -1283,7 +1475,7 @@ export interface ResumeEligibility {
   /**
    * How, when it is.
    */
-  mode?: ResumeMode | null;
+  mode?: "sameWorker" | "canonicalHandoff";
   /**
    * Stable reason, present whenever the answer needs explaining.
    */
@@ -1403,10 +1595,7 @@ export interface TaskCheckpoint {
    * here; anything above it happened afterwards.
    */
   eventSequence: number;
-  /**
-   * The action that had started and not finished, when there was one.
-   */
-  pendingAction?: PendingAction | null;
+  pendingAction?: PendingAction;
   resume: ResumeEligibility;
   /**
    * Contract schema version.
@@ -1432,10 +1621,7 @@ export interface TaskCheckpoint {
     | "completed"
     | "failed"
     | "cancelled";
-  /**
-   * The worker, when one had been selected.
-   */
-  worker?: CheckpointWorker | null;
+  worker?: CheckpointWorker;
 }
 
 /**
@@ -1489,7 +1675,7 @@ export interface TaskRecord {
   /**
    * Conversation this belongs to, when it has one.
    */
-  conversationId?: ConversationId | null;
+  conversationId?: string;
   /**
    * When the task was created.
    */
@@ -1505,7 +1691,7 @@ export interface TaskRecord {
   /**
    * Project this belongs to, when it has one.
    */
-  projectId?: ProjectId | null;
+  projectId?: string;
   /**
    * Contract schema version.
    */

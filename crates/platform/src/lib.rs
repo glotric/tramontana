@@ -5,12 +5,14 @@
 //! operating-system behavior, so the domain never has to care which platform
 //! it is running on.
 
+mod bundle;
 mod clock;
 mod discovery;
 mod ids;
 mod paths;
 mod profile;
 
+pub use bundle::{BundleError, MANIFEST_FILE, read_bundle, write_bundle};
 pub use clock::SystemClock;
 pub use discovery::discover;
 pub use ids::UuidIdSource;

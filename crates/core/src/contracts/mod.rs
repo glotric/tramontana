@@ -19,6 +19,7 @@ mod configuration;
 mod descriptor;
 mod error;
 mod event;
+mod export;
 mod ids;
 mod message;
 mod permission;
@@ -44,6 +45,11 @@ pub use error::{ErrorCode, ErrorEnvelope};
 pub use event::{
     CancellationOrigin, EventDraft, EventEnvelope, EventPayload, PermissionOrigin, StreamFrame,
     TaskEventKind, TaskUpdate,
+};
+pub use export::{
+    BUNDLE_MAJOR_VERSION, BUNDLE_MINOR_VERSION, BundleEntry, ExportBundle, ExportManifest,
+    ExportOptions, ExportedConfiguration, HandoffBundle, HandoffEntry, ImportedRecords, Omission,
+    OmissionCategory,
 };
 pub use ids::{
     AgentId, AgentProviderId, ApprovalId, CheckpointId, ConversationId, CorrelationId, EventId,

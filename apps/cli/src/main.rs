@@ -7,6 +7,7 @@
 //! permission, or task behavior lives in this crate.
 
 mod approval;
+mod bundle;
 mod configuration;
 mod conversation;
 mod project;
@@ -36,6 +37,8 @@ enum Command {
     Project(project::ProjectArgs),
     /// Create, list, and inspect durable conversations.
     Conversation(conversation::ConversationArgs),
+    /// Export and import portable bundles.
+    Bundle(bundle::BundleArgs),
     /// Resolve and inspect project-authored configuration.
     Configuration(configuration::ConfigurationArgs),
     /// Run one task against the fake providers and stream its activity.
@@ -75,6 +78,7 @@ async fn execute(command: Command) -> std::process::ExitCode {
     match command {
         Command::Project(args) => project::execute(args).await,
         Command::Conversation(args) => conversation::execute(args).await,
+        Command::Bundle(args) => bundle::execute(args).await,
         Command::Configuration(args) => configuration::execute(args).await,
         Command::Task(args) => run::execute(args).await,
         Command::Info => std::process::ExitCode::SUCCESS,
@@ -134,6 +138,52 @@ mod tests {
             ])
             .is_ok()
         );
+    }
+
+    #[test]
+    fn m4_bundle_and_checkpoint_commands_parse() {
+        assert!(Cli::try_parse_from(["tramontana", "bundle", "export", "./out"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "tramontana",
+                "bundle",
+                "export",
+                "./out",
+                "--task-id",
+                "task-1",
+                "--include-absolute-paths",
+            ])
+            .is_ok()
+        );
+        // A bundle is either a project or a task, never both at once.
+        assert!(
+            Cli::try_parse_from([
+                "tramontana",
+                "bundle",
+                "export",
+                "./out",
+                "--project-id",
+                "project-1",
+                "--task-id",
+                "task-1",
+            ])
+            .is_err()
+        );
+        assert!(Cli::try_parse_from(["tramontana", "bundle", "inspect", "./out"]).is_ok());
+        assert!(Cli::try_parse_from(["tramontana", "bundle", "import", "./out"]).is_ok());
+        assert!(Cli::try_parse_from(["tramontana", "task", "inspect", "task-1"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "tramontana",
+                "task",
+                "resume",
+                "task-1",
+                "--checkpoint-id",
+                "checkpoint-1",
+            ])
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(["tramontana", "task", "handoff", "task-1"]).is_ok());
     }
 
     #[test]

@@ -537,6 +537,62 @@ button:disabled {
   font: 500 9px/1 var(--mono);
 }
 
+/* The checkpoint inspector for an interrupted task.
+
+   Deliberately above the activity stream rather than beside it: an interrupted
+   task has one question outstanding, and it should be the first thing read. */
+.checkpoint {
+  margin: 0 20px;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn, #b8860b);
+  background: var(--surface-raised, transparent);
+}
+
+.checkpoint code {
+  color: var(--ink-faint);
+  font: 500 9px/1 var(--mono);
+}
+
+.checkpoint-facts {
+  display: grid;
+  margin: 10px 0 0;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+}
+
+.checkpoint-facts dt {
+  color: var(--ink-faint);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.checkpoint-facts dd {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* Unsafe and unknown read the same, because they mean the same thing here:
+   the record cannot promise that repeating this is free of consequences. */
+.checkpoint-facts [data-replay-safety="unsafe"],
+.checkpoint-facts [data-replay-safety="unknown"] {
+  color: var(--warn, #b8860b);
+  font-weight: 600;
+}
+
+.checkpoint-actions {
+  display: flex;
+  margin-top: 14px;
+  gap: 8px;
+}
+
+.checkpoint-note {
+  margin: 8px 0 0;
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+
 .activity {
   min-width: 0;
   min-height: 0;

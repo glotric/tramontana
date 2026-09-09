@@ -82,6 +82,8 @@ enum TaskCommand {
     Resume(TaskResumeArgs),
     /// Discard interrupted continuation without deleting history or undoing effects.
     Discard(TaskShowArgs),
+    /// Print what a different worker would need to continue this task.
+    Handoff(TaskShowArgs),
 }
 
 #[derive(Debug, Args)]
@@ -142,6 +144,7 @@ pub(crate) async fn execute(mut args: TaskArgs) -> ExitCode {
         Some(TaskCommand::Checkpoint(args)) => checkpoint_command(args, "checkpoint").await,
         Some(TaskCommand::Inspect(args)) => checkpoint_command(args, "inspect").await,
         Some(TaskCommand::Discard(args)) => checkpoint_command(args, "discard").await,
+        Some(TaskCommand::Handoff(args)) => handoff(args).await,
         Some(TaskCommand::Resume(args)) => resume(args).await,
         None => run(args).await,
     }
@@ -428,5 +431,24 @@ fn emit_event(event: &tramontana_core::contracts::EventEnvelope, json: bool) {
         }
     } else {
         println!("{}", event_line(event));
+    }
+}
+
+/// Show everything a different worker would need to continue this task.
+///
+/// Printed rather than handed to a worker: M4 proves the bundle can be built
+/// from canonical state, and V2 asks a person to read it and judge whether it
+/// is enough. Handing it to a second worker automatically is M10's job.
+async fn handoff(args: TaskShowArgs) -> ExitCode {
+    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
+        Ok(service) => service,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match service.handoff_task(&TaskId::new(args.task_id)).await {
+        Ok(handoff) => render::json(&handoff),
+        Err(error) => render::application_error(&error),
     }
 }

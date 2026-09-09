@@ -57,6 +57,31 @@
       ],
       "type": "object"
     },
+    "BundleEntry": {
+      "description": "One file in a bundle, with what a reader needs to trust it.",
+      "properties": {
+        "byteCount": {
+          "description": "Size in bytes, checked against the contents before the checksum.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "Bundle-relative path. Validated on import before it is used.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Lowercase hex SHA-256 of the contents.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "byteCount"
+      ],
+      "type": "object"
+    },
     "CancellationOrigin": {
       "description": "Who requested a cancellation.",
       "oneOf": [
@@ -76,14 +101,7 @@
       "description": "What an authorization is limited to.\n\n`SECURITY_AND_PERMISSIONS.md` §3.2. A scope binds the project and, for\nfilesystem work, the canonical roots it may touch. Authorizations are\nnon-transferable: a grant naming one project authorizes nothing in another.",
       "properties": {
         "projectId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ProjectId"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/ProjectId",
           "description": "The project this is limited to. Absent means a projectless task, which\nhas no filesystem access at all."
         },
         "releasesData": {
@@ -317,14 +335,7 @@
       "description": "A conversation, optionally scoped to a project.",
       "properties": {
         "archivedAt": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Timestamp"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/Timestamp",
           "description": "When it was archived, if it has been."
         },
         "conversationId": {
@@ -336,14 +347,7 @@
           "description": "When it was created."
         },
         "projectId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ProjectId"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/ProjectId",
           "description": "Project this belongs to. Absent means projectless, which carries no\nimplicit filesystem access (`PHASE_1_ACCEPTANCE_CRITERIA.md` §8)."
         },
         "schemaVersion": {
@@ -608,14 +612,7 @@
           "type": "string"
         },
         "conversationId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ConversationId"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/ConversationId",
           "description": "Conversation, when the task has one."
         },
         "correlationId": {
@@ -706,14 +703,7 @@
           "description": "The task was created.",
           "properties": {
             "conversationId": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ConversationId"
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "$ref": "#/$defs/ConversationId",
               "description": "Conversation this task belongs to, when it has one."
             },
             "goalSummary": {
@@ -889,14 +879,7 @@
               "type": "string"
             },
             "grantKind": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/GrantKind"
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "$ref": "#/$defs/GrantKind",
               "description": "How the authorization was obtained, when it was allowed."
             },
             "invocationId": {
@@ -1040,14 +1023,7 @@
               "type": "string"
             },
             "pendingAction": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/PendingAction"
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "$ref": "#/$defs/PendingAction",
               "description": "What was in flight, when anything was."
             },
             "resume": {
@@ -1183,6 +1159,117 @@
         }
       ]
     },
+    "ExportManifest": {
+      "description": "The bundle's table of contents.",
+      "properties": {
+        "bundleMajorVersion": {
+          "description": "Major version of the bundle layout. Refused when unrecognized.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bundleMinorVersion": {
+          "description": "Minor version. A reader may ignore what it does not know.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the bundle was produced."
+        },
+        "entries": {
+          "description": "Every file in the bundle.",
+          "items": {
+            "$ref": "#/$defs/BundleEntry"
+          },
+          "type": "array"
+        },
+        "omissions": {
+          "description": "What was left out, and how much.",
+          "items": {
+            "$ref": "#/$defs/Omission"
+          },
+          "type": "array"
+        },
+        "options": {
+          "$ref": "#/$defs/ExportOptions",
+          "description": "What the export chose to include."
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId",
+          "description": "The project, when the export was scoped to one."
+        },
+        "schemaVersion": {
+          "description": "Version of the records inside the bundle.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "taskIds": {
+          "description": "Tasks included, in export order.",
+          "items": {
+            "$ref": "#/$defs/TaskId"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "bundleMajorVersion",
+        "bundleMinorVersion",
+        "createdAt",
+        "taskIds",
+        "entries",
+        "omissions",
+        "options"
+      ],
+      "type": "object"
+    },
+    "ExportOptions": {
+      "description": "What an export chose to include.\n\nAbsent means the default, which is to exclude. The flags exist so a bundle\nrecords the decision that produced it rather than leaving a reader to infer\nit from what happens to be present.",
+      "properties": {
+        "includeAbsolutePaths": {
+          "default": false,
+          "description": "Keep absolute device paths instead of redacting them.",
+          "type": "boolean"
+        },
+        "includeArtifacts": {
+          "default": false,
+          "description": "Include artifact files.",
+          "type": "boolean"
+        },
+        "includeRawToolOutput": {
+          "default": false,
+          "description": "Keep unredacted tool output.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "includeAbsolutePaths",
+        "includeRawToolOutput",
+        "includeArtifacts"
+      ],
+      "type": "object"
+    },
+    "ExportedConfiguration": {
+      "description": "A configuration manifest with the project it belongs to.\n\nThe manifest itself does not name its project — it is stored under one —\nso a bundle has to carry the pairing. Without it an imported task would\nreference a manifest nothing could resolve, and the record could not say\nwhich instructions were in force when the work happened.",
+      "properties": {
+        "configuration": {
+          "$ref": "#/$defs/EffectiveConfiguration",
+          "description": "The secret-free manifest. Instruction bodies are not copied."
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId",
+          "description": "The project this manifest was resolved for."
+        }
+      },
+      "required": [
+        "projectId",
+        "configuration"
+      ],
+      "type": "object"
+    },
     "GrantKind": {
       "description": "How long an authorization lasts.",
       "oneOf": [
@@ -1202,6 +1289,117 @@
           "type": "string"
         }
       ]
+    },
+    "HandoffBundle": {
+      "description": "Everything a different worker needs to continue a task.\n\nAssembled from canonical records only. A worker's opaque continuation data\nis never read to build this, which is what makes the claim in\n`PROJECT_FORMAT.md` §4 — that canonical state is sufficient — testable\nrather than aspirational.",
+      "properties": {
+        "completedStepIds": {
+          "description": "Steps already done, which the receiving worker must not repeat.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "configurationManifestHash": {
+          "description": "The effective configuration in force, for a project task.",
+          "type": "string"
+        },
+        "conversationId": {
+          "$ref": "#/$defs/ConversationId",
+          "description": "Its conversation, when it has one."
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the handoff was assembled."
+        },
+        "eventSequence": {
+          "description": "The point being handed over.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "goal": {
+          "description": "What the user asked for.",
+          "type": "string"
+        },
+        "history": {
+          "description": "The task's normalized history.",
+          "items": {
+            "$ref": "#/$defs/HandoffEntry"
+          },
+          "type": "array"
+        },
+        "omissions": {
+          "description": "What this handoff does not carry.",
+          "items": {
+            "$ref": "#/$defs/Omission"
+          },
+          "type": "array"
+        },
+        "pendingAction": {
+          "$ref": "#/$defs/PendingAction",
+          "description": "What was in flight, when anything was."
+        },
+        "previousWorker": {
+          "$ref": "#/$defs/AgentDescriptor",
+          "description": "The worker that had the task, for provenance only.\n\nA receiving worker is told who held it before, not asked to imitate\nthem. Nothing private to that worker is carried."
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId",
+          "description": "Its project, when it has one."
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "taskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "The task being handed over."
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "taskId",
+        "goal",
+        "createdAt",
+        "eventSequence",
+        "history",
+        "completedStepIds",
+        "omissions"
+      ],
+      "type": "object"
+    },
+    "HandoffEntry": {
+      "description": "One fact in a handoff, normalized so any worker can read it.",
+      "properties": {
+        "kind": {
+          "description": "What kind of fact this is.",
+          "type": "string"
+        },
+        "occurredAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it happened."
+        },
+        "sequence": {
+          "description": "Position in the task's durable stream.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "summary": {
+          "description": "A secret-free description.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sequence",
+        "occurredAt",
+        "kind",
+        "summary"
+      ],
+      "type": "object"
     },
     "Health": {
       "description": "Whether a provider or worker is usable right now.",
@@ -1536,14 +1734,7 @@
       "description": "A durable, provider-neutral message.",
       "properties": {
         "conversationId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ConversationId"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/ConversationId",
           "description": "Conversation this message belongs to, when it has one.\n\nOptional because a task can be started outside a conversation, and its\nassistant answer is still the durable record of what the model said.\nDropping the message because there was no conversation would leave the\nexported task with tool calls and no answer."
         },
         "createdAt": {
@@ -1576,14 +1767,7 @@
           "description": "Whether it is finished."
         },
         "taskId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TaskId"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/TaskId",
           "description": "Task that produced it, when one did."
         }
       },
@@ -1596,6 +1780,66 @@
         "parts"
       ],
       "type": "object"
+    },
+    "Omission": {
+      "description": "One thing an export left out, and how much of it.",
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/OmissionCategory",
+          "description": "What kind of data."
+        },
+        "count": {
+          "description": "How many values were affected.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "description": "Why it was left out, in a sentence a person can act on.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "category",
+        "reason",
+        "count"
+      ],
+      "type": "object"
+    },
+    "OmissionCategory": {
+      "description": "What kind of data was left out of an export.",
+      "oneOf": [
+        {
+          "const": "secret",
+          "description": "A secret reference or credential-store value. Never included.",
+          "type": "string"
+        },
+        {
+          "const": "absolutePath",
+          "description": "An absolute device path, which names a machine and often a person.",
+          "type": "string"
+        },
+        {
+          "const": "rawToolOutput",
+          "description": "Unredacted output a tool produced.",
+          "type": "string"
+        },
+        {
+          "const": "artifact",
+          "description": "A file an invocation produced.",
+          "type": "string"
+        },
+        {
+          "const": "internalEvent",
+          "description": "An internal audit marker never shown outside the application.",
+          "type": "string"
+        },
+        {
+          "const": "workerPrivateState",
+          "description": "A worker's private continuation data.",
+          "type": "string"
+        }
+      ]
     },
     "PendingAction": {
       "description": "The one action that had started and not finished.",
@@ -1774,14 +2018,7 @@
           "type": "boolean"
         },
         "mode": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ResumeMode"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/ResumeMode",
           "description": "How, when it is."
         },
         "reasonCode": {
@@ -1960,14 +2197,7 @@
           "type": "integer"
         },
         "pendingAction": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/PendingAction"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/PendingAction",
           "description": "The action that had started and not finished, when there was one."
         },
         "resume": {
@@ -1989,14 +2219,7 @@
           "description": "The task's state at that sequence."
         },
         "worker": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CheckpointWorker"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/CheckpointWorker",
           "description": "The worker, when one had been selected."
         }
       },
@@ -2139,14 +2362,7 @@
           "type": "string"
         },
         "conversationId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ConversationId"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/ConversationId",
           "description": "Conversation this belongs to, when it has one."
         },
         "createdAt": {
@@ -2164,14 +2380,7 @@
           "type": "integer"
         },
         "projectId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ProjectId"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/ProjectId",
           "description": "Project this belongs to, when it has one."
         },
         "schemaVersion": {

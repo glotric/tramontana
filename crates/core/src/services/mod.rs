@@ -10,10 +10,13 @@
 //! state.
 
 mod checkpoint;
+mod export;
+mod handoff;
 mod journal;
 mod permission_manager;
 mod projection;
 mod runtime;
+mod task_export;
 mod task_recovery;
 mod task_service;
 mod tool_registry;
@@ -21,8 +24,14 @@ mod tool_registry;
 pub use checkpoint::{
     DerivedState, ResumePlan, derive_checkpoint, derive_state, reason as checkpoint_reason,
 };
+pub use export::{
+    ExportRequest, ImportError, ImportLimits, REDACTED_OUTPUT, REDACTED_PATH, build_export,
+    imported_project_id, is_safe_relative_path, validate_import,
+};
+pub use handoff::build_handoff;
 pub use journal::{JournalPorts, TaskJournal};
 pub use permission_manager::PermissionManager;
 pub use projection::TaskProjectionWriter;
+pub use task_export::ImportSummary;
 pub use task_service::{Providers, Repositories, StartTaskRequest, TaskService};
 pub use tool_registry::{RegisteredTool, RegistryError, ToolRegistry};
