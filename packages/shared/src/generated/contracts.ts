@@ -182,11 +182,21 @@ export interface ConfigurationSource {
    */
   active: boolean;
   /**
-   * Size in bytes.
+   * Size in bytes of the releasable text.
+   *
+   * Of the redacted text, for the same reason `content_hash` is: the
+   * number answers "how much of this could be sent", which is what a
+   * context manifest and a release plan are counting.
    */
   byteCount: number;
   /**
-   * SHA-256 of the file's bytes, for reproducibility.
+   * SHA-256 of the source's releasable text, for reproducibility.
+   *
+   * Of the *redacted* text, not the bytes on disk. A hash naming content
+   * that may not be released would let a later prompt assembly send the
+   * original and still satisfy every record that describes it
+   * (`SECURITY_AND_PERMISSIONS.md` §7). A file with no credential in it
+   * hashes identically either way.
    */
   contentHash: string;
   /**
@@ -224,6 +234,10 @@ export interface ConfigurationSource {
    * native rule layer.
    */
   priority?: number;
+  /**
+   * Stable codes for credentials removed from this source at ingestion.
+   */
+  redactions?: string[];
   /**
    * Project-relative path. Never absolute: an absolute path names a machine.
    */

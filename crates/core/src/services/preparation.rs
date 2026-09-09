@@ -64,12 +64,12 @@ pub fn assemble_context(
                 // An inactive source was gathered and deliberately not used;
                 // saying so is the difference between a manifest and a list.
                 exclusion_reason: (!source.active).then(|| "context.notActive".to_owned()),
-                // Instruction content is not redacted yet: nothing assembles
-                // it into a payload, so there is nothing to redact it out of.
-                // That changes with prompt assembly in M6, and the hash here
-                // must name the redacted text when it does — recorded in the
-                // M5 evidence note rather than left to be rediscovered.
-                redactions: Vec::new(),
+                // Carried from resolution, where the file was redacted
+                // before it was hashed. The hash below therefore names text
+                // that may be released, and prompt assembly in M6 cannot send
+                // the original and still match the record that describes it —
+                // the release boundary refuses content no source accounts for.
+                redactions: source.redactions.clone(),
             });
         }
     }

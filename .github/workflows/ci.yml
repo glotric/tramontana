@@ -90,7 +90,9 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             libssl-dev \
-            patchelf
+            patchelf \
+            gnome-keyring \
+            dbus-x11
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -113,8 +115,58 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # The credential-store adapter is only meaningfully tested against a real
+      # store, and a runner has no desktop session to provide one. Each
+      # platform gets one here so the contract suite runs against the actual
+      # Keychain, Credential Manager, and Secret Service rather than only
+      # against the in-memory fake.
+      #
+      # `TRAMONTANA_REQUIRE_PLATFORM_SECRETS` turns "no store on this runner"
+      # from a silent skip into a failure. Without it a broken keyring setup
+      # would look exactly like a green run.
+      - name: Provide a credential store (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # A dedicated keychain rather than the runner's login keychain, which
+          # may be locked and is not ours to write to. It is made the default
+          # so `SecItemAdd` with no keychain specified lands in it.
+          security create-keychain -p "" tramontana-ci.keychain
+          security set-keychain-settings tramontana-ci.keychain
+          security unlock-keychain -p "" tramontana-ci.keychain
+          security default-keychain -s tramontana-ci.keychain
+          security list-keychains -d user -s tramontana-ci.keychain login.keychain-db
+
       - name: Test
+        if: runner.os != 'Linux'
+        env:
+          TRAMONTANA_REQUIRE_PLATFORM_SECRETS: "1"
         run: cargo test --workspace
+
+      # Linux needs both halves: a session bus, and a Secret Service provider
+      # on it. `gnome-keyring-daemon` reads the (empty) unlock password from
+      # standard input, and `--replace` keeps a second run from colliding with
+      # a daemon the image already started.
+      - name: Test (with a Secret Service on a session bus)
+        if: runner.os == 'Linux'
+        env:
+          TRAMONTANA_REQUIRE_PLATFORM_SECRETS: "1"
+        run: |
+          dbus-run-session -- bash -c '
+            echo -n "" | gnome-keyring-daemon --unlock --replace --components=secrets &
+            # The daemon owns its bus name asynchronously. Wait for it rather
+            # than sleeping a guessed interval, so a slow runner does not turn
+            # into an intermittent failure.
+            for _ in $(seq 1 50); do
+              if dbus-send --session --dest=org.freedesktop.DBus --print-reply \
+                   /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner \
+                   string:org.freedesktop.secrets 2>/dev/null | grep -q "boolean true"; then
+                echo "Secret Service is on the bus"
+                break
+              fi
+              sleep 0.2
+            done
+            cargo test --workspace
+          '
 
       - name: CLI runs
         run: cargo run --quiet -p tramontana-cli -- info

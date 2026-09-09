@@ -334,7 +334,7 @@ impl SqliteConfigurationRepository {
         let source_rows = sqlx::query(
             "SELECT source_id, relative_path, kind, declared_id, declared_name, scopes,
                     requested_capabilities, priority, selection_order, enabled, active,
-                    precedence, content_hash, byte_count, unknown_keys
+                    precedence, content_hash, byte_count, unknown_keys, redactions
              FROM configuration_source
              WHERE project_id = ? AND manifest_hash = ?
              ORDER BY position",
@@ -353,6 +353,7 @@ impl SqliteConfigurationRepository {
                 .try_get("requested_capabilities")
                 .map_err(|e| unavailable(&e))?;
             let unknown: String = row.try_get("unknown_keys").map_err(|e| unavailable(&e))?;
+            let redactions: String = row.try_get("redactions").map_err(|e| unavailable(&e))?;
             let priority: Option<i64> = row.try_get("priority").map_err(|e| unavailable(&e))?;
             let selection_order: Option<i64> = row
                 .try_get("selection_order")
@@ -382,6 +383,7 @@ impl SqliteConfigurationRepository {
                 precedence: u32::try_from(precedence).unwrap_or(u32::MAX),
                 content_hash: row.try_get("content_hash").map_err(|e| unavailable(&e))?,
                 byte_count: u64::try_from(byte_count).unwrap_or(0),
+                redactions: parse_json(&redactions, "configuration redactions")?,
                 unknown_keys: parse_json(&unknown, "configuration unknown keys")?,
             });
         }
@@ -477,8 +479,8 @@ impl ConfigurationRepository for SqliteConfigurationRepository {
                      project_id, manifest_hash, position, source_id, relative_path, kind,
                      declared_id, declared_name, scopes, requested_capabilities, priority,
                      selection_order, enabled, active, precedence, content_hash, byte_count,
-                     unknown_keys
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     unknown_keys, redactions
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(project_id.as_str())
             .bind(&configuration.manifest_hash)
@@ -501,6 +503,7 @@ impl ConfigurationRepository for SqliteConfigurationRepository {
             .bind(&source.content_hash)
             .bind(i64::try_from(source.byte_count).unwrap_or(i64::MAX))
             .bind(to_json(&source.unknown_keys, "configuration unknown keys")?)
+            .bind(to_json(&source.redactions, "configuration redactions")?)
             .execute(&mut *transaction)
             .await
             .map_err(|error| unavailable(&error))?;

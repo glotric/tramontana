@@ -5,11 +5,13 @@
 //! divergence is a defect in one of them rather than a difference in what was
 //! tested.
 //!
-//! The real store's run needs a credential store to exist. A CI runner has no
-//! desktop session and Linux Secret Service has no provider there, so that run
-//! reports that it was skipped rather than passing silently — a test that
-//! quietly does nothing is worse than one that is absent, because it looks
-//! like coverage.
+//! The real store's run needs a credential store to exist. CI provides one on
+//! all three platforms — Linux starts `gnome-keyring` on a session bus — and
+//! sets `TRAMONTANA_REQUIRE_PLATFORM_SECRETS`, which turns "no store here"
+//! from a skip into a failure. Without that variable the run skips and says
+//! so, because a developer on a machine with a locked keychain should not be
+//! blocked, but a test that quietly does nothing is worse than one that is
+//! absent: it looks like coverage.
 
 #![allow(
     clippy::unwrap_used,
@@ -39,15 +41,28 @@ async fn an_unreachable_store_is_never_read_as_an_empty_one() {
     unavailable_store_contract(&InMemorySecretVault::unavailable()).await;
 }
 
+/// Whether a skipped real-store run is a failure.
+///
+/// CI sets this, because a test that skips silently is worse than one that is
+/// absent: it looks like coverage. Setting it turns "the keyring was not set
+/// up on this runner" from a green run into a red one.
+const REQUIRE: &str = "TRAMONTANA_REQUIRE_PLATFORM_SECRETS";
+
 #[tokio::test]
 async fn the_platform_vault_obeys_the_same_contract() {
     let vault = PlatformSecretVault::under_service(TEST_SERVICE);
     if !vault.is_available() {
-        // Said out loud rather than silently returning. `cargo test -- --nocapture`
-        // shows it, and the M5 evidence note records that CI does not run it.
+        assert!(
+            std::env::var_os(REQUIRE).is_none(),
+            "{REQUIRE} is set, but no platform credential store is reachable. \
+             On Linux this means no Secret Service provider is running on the \
+             session bus; on macOS it usually means no keychain is unlocked."
+        );
+        // Said out loud rather than silently returning, so a developer running
+        // locally without a store can see why this proved nothing.
         println!(
-            "SKIPPED: no platform credential store is reachable here \
-             (expected on CI and on a headless Linux session)"
+            "SKIPPED: no platform credential store is reachable here. \
+             Set {REQUIRE} to make this a failure instead."
         );
         return;
     }
