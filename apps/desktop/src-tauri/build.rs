@@ -1,5 +1,21 @@
 fn main() {
-    tauri_build::build();
+    // `WindowsAttributes::new_without_app_manifest` suppresses the manifest
+    // `tauri-build` would compile into `resource.lib`, because
+    // `embed_common_controls_manifest` below embeds an equivalent one across
+    // more targets. A binary holds a single manifest resource, so the two
+    // together are a `CVT1100: duplicate resource` link failure rather than a
+    // merge. Everything else `tauri-build` puts in the resource file — icon,
+    // version strings — is untouched.
+    let attributes = tauri_build::Attributes::new()
+        .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+
+    // Mirrors what `tauri_build::build()` does with the error, which keeps the
+    // build script free of the panicking calls the workspace lints forbid.
+    if let Err(error) = tauri_build::try_build(attributes) {
+        println!("{error:#}");
+        std::process::exit(1);
+    }
+
     embed_common_controls_manifest();
 }
 
@@ -17,9 +33,7 @@ fn main() {
 ///
 /// This uses the unscoped `rustc-link-arg` because `rustc-link-arg-tests` does
 /// not reach a library's own unit-test executable — only `tests/` integration
-/// targets (verified against cargo 1.96, which is the pinned toolchain). The
-/// app binary consequently receives two identical `dependentAssembly` entries,
-/// which the linker merges.
+/// targets (verified against cargo 1.96, which is the pinned toolchain).
 fn embed_common_controls_manifest() {
     let targets_msvc = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
         && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
