@@ -11,12 +11,17 @@
 
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::contracts::{
     CheckpointId, CorrelationId, EventDraft, EventEnvelope, EventId, EventPayload, PendingAction,
     PendingActionKind, ReplaySafety, ResumeEligibility, TaskCheckpoint, TaskEventKind, TaskId,
     TaskState, Timestamp,
 };
-use crate::ports::{CheckpointRepository, EventStore, EventStoreError, RepositoryError};
+use crate::contracts::{ModelEvent, ModelRequest, StopReason};
+use crate::ports::{
+    CheckpointRepository, EventStore, EventStoreError, ModelProvider, RepositoryError,
+};
 
 /// Build an event for `task_id` at `sequence`.
 #[must_use]
@@ -313,5 +318,217 @@ where
     match repository.get(&CheckpointId::new("absent")).await {
         Err(RepositoryError::NotFound { kind, .. }) => assert_eq!(kind, "checkpoint"),
         other => panic!("expected NotFound, got {other:?}"),
+    }
+}
+
+/// What a provider should be configured to do for one contract case.
+///
+/// The suite has to drive an adapter that talks to a real endpoint as well as
+/// an in-process fake, so it asks for a *behavior* rather than constructing a
+/// provider itself. A harness translates each scenario into whatever its
+/// implementation needs — a script for a fake, a stubbed response for an HTTP
+/// adapter.
+///
+/// Deliberately *not* `#[non_exhaustive]`: adding a case should break every
+/// harness until it says what its implementation does, because a scenario
+/// silently unhandled is a provider silently untested.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderScenario {
+    /// Stream these chunks in order, then finish normally.
+    Streams(Vec<String>),
+    /// Fail without producing any content.
+    Fails,
+    /// Produce content slowly enough that a cancellation lands mid-stream.
+    Slow,
+}
+
+/// The request the suite sends. Providers must not depend on its content.
+#[must_use]
+pub fn model_request(request_id: &str) -> ModelRequest {
+    use crate::contracts::{MessageId, MessageRole, NormalizedMessage, TaskId, Timestamp};
+
+    ModelRequest::new(
+        request_id,
+        TaskId::new("task-1"),
+        vec![NormalizedMessage::text(
+            MessageId::new("message-1"),
+            None,
+            MessageRole::User,
+            Timestamp::new("2026-01-01T00:00:00.000Z"),
+            "Say hello",
+        )],
+        "context-1",
+    )
+}
+
+/// Drain a stream, returning everything it produced.
+async fn drain(receiver: &mut tokio::sync::mpsc::Receiver<ModelEvent>) -> Vec<ModelEvent> {
+    let mut events = Vec::new();
+    while let Some(event) = receiver.recv().await {
+        events.push(event);
+    }
+    events
+}
+
+/// Assert that `build` produces a provider obeying the `ModelProvider` contract.
+///
+/// `CORE_CONTRACTS.md` §8. The property that matters most is the last one:
+/// **exactly one terminal event ends a stream**, including when cancellation
+/// arrives while the underlying request is still in flight. A provider that
+/// drops its stream on cancel, or emits both a `completed` and a `failed`,
+/// leaves the core unable to say what happened — and the core commits the
+/// coalesced answer on that signal.
+///
+/// # Panics
+///
+/// Panics with the failing expectation, which is how a test reports.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "this is a test suite; a panic is the failure report"
+)]
+pub async fn model_provider_contract<F, Fut>(build: F)
+where
+    F: Fn(ProviderScenario) -> Fut,
+    Fut: Future<Output = Arc<dyn ModelProvider>>,
+{
+    // A provider reports models under its own identity, so a routing decision
+    // naming a provider can be resolved back to one.
+    let provider = build(ProviderScenario::Streams(vec!["hi".into()])).await;
+    let models = provider.list_models().await;
+    assert!(
+        !models.is_empty(),
+        "a provider must offer at least one model"
+    );
+    for model in &models {
+        assert_eq!(
+            model.provider_id,
+            provider.id().to_string(),
+            "a model claims a provider other than the one offering it"
+        );
+        assert!(!model.model_id.is_empty());
+    }
+
+    // A successful stream: content, then exactly one terminal event, then the
+    // receiver closes.
+    let provider = build(ProviderScenario::Streams(vec![
+        "Hello".into(),
+        ", ".into(),
+        "world".into(),
+    ]))
+    .await;
+    let mut stream = provider
+        .stream(model_request("request-1"), CancellationToken::new())
+        .await
+        .expect("a scripted success must start");
+    let events = drain(&mut stream).await;
+
+    let terminal: Vec<&ModelEvent> = events.iter().filter(|event| event.is_terminal()).collect();
+    assert_eq!(
+        terminal.len(),
+        1,
+        "a stream must end with exactly one terminal event, got {events:?}"
+    );
+    assert!(
+        events.last().is_some_and(ModelEvent::is_terminal),
+        "the terminal event must be last"
+    );
+    assert!(
+        matches!(
+            terminal[0],
+            ModelEvent::Completed {
+                stop_reason: StopReason::Stop
+            }
+        ),
+        "a scripted success must complete with `stop`, got {:?}",
+        terminal[0]
+    );
+
+    let text: String = events
+        .iter()
+        .filter_map(|event| match event {
+            ModelEvent::TextDelta { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        text, "Hello, world",
+        "the content did not survive streaming"
+    );
+
+    // Every delta names the stream it belongs to, and offsets never go
+    // backwards — a subscriber orders on them.
+    let mut previous: Option<u64> = None;
+    for event in &events {
+        if let ModelEvent::TextDelta {
+            stream_id, offset, ..
+        } = event
+        {
+            assert_eq!(stream_id, "request-1", "a delta named a different stream");
+            if let Some(previous) = previous {
+                assert!(*offset > previous, "offsets went backwards: {events:?}");
+            }
+            previous = Some(*offset);
+        }
+    }
+
+    // A failure is a normalized envelope, either as a terminal event or as a
+    // refusal to start. Both are legitimate; producing neither is not.
+    let provider = build(ProviderScenario::Fails).await;
+    match provider
+        .stream(model_request("request-2"), CancellationToken::new())
+        .await
+    {
+        Ok(mut stream) => {
+            let events = drain(&mut stream).await;
+            let terminal: Vec<&ModelEvent> =
+                events.iter().filter(|event| event.is_terminal()).collect();
+            assert_eq!(terminal.len(), 1, "a failing stream must still end once");
+            assert!(
+                matches!(terminal[0], ModelEvent::Failed { .. }),
+                "a scripted failure ended as {:?}",
+                terminal[0]
+            );
+        }
+        Err(error) => assert!(
+            !error.message.is_empty(),
+            "a refusal must say something a person can act on"
+        ),
+    }
+
+    // Cancellation mid-stream converges to exactly one terminal event rather
+    // than the stream simply stopping.
+    let provider = build(ProviderScenario::Slow).await;
+    let cancel = CancellationToken::new();
+    let mut stream = provider
+        .stream(model_request("request-3"), cancel.clone())
+        .await
+        .expect("a slow stream must start");
+    cancel.cancel();
+
+    let events = tokio::time::timeout(std::time::Duration::from_secs(10), drain(&mut stream))
+        .await
+        .expect("a cancelled stream must converge, not hang");
+    let terminal: Vec<&ModelEvent> = events.iter().filter(|event| event.is_terminal()).collect();
+    assert_eq!(
+        terminal.len(),
+        1,
+        "a cancelled stream must end with exactly one terminal event, got {events:?}"
+    );
+
+    // Cancelled before anything was requested: still one terminal event.
+    let provider = build(ProviderScenario::Slow).await;
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    if let Ok(mut stream) = provider.stream(model_request("request-4"), cancel).await {
+        let events = tokio::time::timeout(std::time::Duration::from_secs(10), drain(&mut stream))
+            .await
+            .expect("a pre-cancelled stream must converge, not hang");
+        assert_eq!(
+            events.iter().filter(|event| event.is_terminal()).count(),
+            1,
+            "a pre-cancelled stream must still end exactly once, got {events:?}"
+        );
     }
 }

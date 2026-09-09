@@ -23,6 +23,7 @@ mod event;
 mod export;
 mod ids;
 mod message;
+mod model;
 mod permission;
 mod primitives;
 mod records;
@@ -61,6 +62,10 @@ pub use ids::{
     InvocationId, MessageId, ModelId, ProjectId, ProviderId, TaskId, WorkerSessionId,
 };
 pub use message::{MessagePart, MessageRole, MessageStatus, NormalizedMessage};
+pub use model::{
+    ModelEvent, ModelLimits, ModelRequest, NormalizedToolDefinition, ResponseFormat, StopReason,
+    Usage,
+};
 pub use permission::{
     ApprovalDecision, ApprovalDecisionKind, ApprovalDetail, ApprovalRequest, AuthorizedToolRequest,
     Capability, CapabilityScope, GrantKind, ProjectGrant,

@@ -1407,9 +1407,144 @@ export interface ModelDescriptor {
 }
 
 /**
+ * One item from a model stream.
+ *
+ * Exactly one [`ModelEvent::Completed`] or [`ModelEvent::Failed`] ends a
+ * stream, even when cancellation arrives while the underlying request is
+ * still in flight (`CORE_CONTRACTS.md` §8). The shared provider contract
+ * suite checks that for every adapter.
+ */
+export type ModelEvent =
+  | {
+      kind: "textDelta";
+      /**
+       * Position within this stream.
+       */
+      offset: number;
+      /**
+       * The stream this belongs to.
+       */
+      streamId: string;
+      /**
+       * The text produced.
+       */
+      text: string;
+    }
+  | {
+      /**
+       * Identifies the call being assembled across deltas.
+       */
+      callId: string;
+      /**
+       * The fragment.
+       */
+      delta: string;
+      kind: "toolCallDelta";
+      /**
+       * Position within this stream.
+       */
+      offset: number;
+      /**
+       * The stream this belongs to.
+       */
+      streamId: string;
+    }
+  | {
+      kind: "usage";
+      usage: Usage;
+    }
+  | {
+      kind: "completed";
+      /**
+       * Why it ended.
+       */
+      stopReason: "stop" | "length" | "toolCall" | "cancelled";
+    }
+  | {
+      error: ErrorEnvelope;
+      kind: "failed";
+    };
+
+/**
+ * Bounds on one request.
+ *
+ * `deadlineMs` is required rather than optional: a request with no deadline
+ * is one that can hang a task forever, and every provider has to honour the
+ * same bound for cancellation to mean the same thing everywhere.
+ */
+export interface ModelLimits {
+  /**
+   * How long the whole request may take.
+   */
+  deadlineMs: number;
+  /**
+   * Cap on generated tokens, when one applies.
+   */
+  maxOutputTokens?: number;
+}
+
+/**
  * Whether a model runs on this device.
  */
 export type ModelLocation = "local" | "cloud";
+
+/**
+ * A normalized request for inference.
+ */
+export interface ModelRequest {
+  /**
+   * The context release this request was built from.
+   */
+  contextManifestId: string;
+  /**
+   * How sensitive the content is, for routing and disclosure.
+   */
+  dataClasses?: DataClass[];
+  limits: ModelLimits;
+  /**
+   * The conversation so far, already normalized and redacted.
+   */
+  messages: NormalizedMessage[];
+  /**
+   * Correlates this request with its `modelStarted` event and its stream.
+   */
+  requestId: string;
+  /**
+   * Capabilities a model must have to serve this request.
+   *
+   * The router matches these; a provider that cannot meet them is not a
+   * fallback, it is ineligible.
+   */
+  requiredCapabilities?: string[];
+  /**
+   * What shape of answer was asked for.
+   */
+  responseFormat?:
+    | {
+        kind: "text";
+      }
+    | {
+        kind: "jsonSchema";
+        /**
+         * The schema the answer must satisfy.
+         */
+        schema: {
+          [k: string]: unknown;
+        };
+      };
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  /**
+   * The task on whose behalf it is made.
+   */
+  taskId: string;
+  /**
+   * Tools the model may call, as the model sees them.
+   */
+  tools?: NormalizedToolDefinition[];
+}
 
 /**
  * What a worker can do on the network.
@@ -1457,6 +1592,31 @@ export interface NormalizedMessage {
    * Task that produced it, when one did.
    */
   taskId?: string;
+}
+
+/**
+ * A tool as a model is told about it.
+ *
+ * Deliberately not [`ToolDescriptor`](super::ToolDescriptor): that type
+ * carries the risk class, capability, and cancellation facts Tramontana uses
+ * to *govern* a call. A model needs the name, the purpose, and the argument
+ * shape, and nothing else.
+ */
+export interface NormalizedToolDefinition {
+  /**
+   * What it does, in the words the model sees.
+   */
+  description: string;
+  /**
+   * JSON Schema for the arguments.
+   */
+  inputSchema: {
+    [k: string]: unknown;
+  };
+  /**
+   * Namespaced tool identifier, as the model should call it.
+   */
+  name: string;
 }
 
 /**
@@ -1575,6 +1735,23 @@ export interface ProjectRecord {
  * tool whose effects are not known is treated as though they are not.
  */
 export type ReplaySafety = "safe" | "unsafe" | "unknown";
+
+/**
+ * What shape of answer was asked for.
+ */
+export type ResponseFormat =
+  | {
+      kind: "text";
+    }
+  | {
+      kind: "jsonSchema";
+      /**
+       * The schema the answer must satisfy.
+       */
+      schema: {
+        [k: string]: unknown;
+      };
+    };
 
 /**
  * Whether, and how, this checkpoint can be resumed.
@@ -1762,6 +1939,11 @@ export type SecretStore = "platform";
  * What an invocation actually changed, recorded alongside its result.
  */
 export type SideEffect = "none" | "localReversible" | "localIrreversible" | "external";
+
+/**
+ * Why a model stream ended.
+ */
+export type StopReason = "stop" | "length" | "toolCall" | "cancelled";
 
 /**
  * One frame of an in-flight model stream.
@@ -2082,6 +2264,27 @@ export interface ToolDescriptor {
    * Namespaced identifier, such as `builtin.fs.read` or `mcp.github.search`.
    */
   toolId: string;
+}
+
+/**
+ * Token counts for one request.
+ */
+export interface Usage {
+  /**
+   * Whether these are counted or approximated.
+   *
+   * Recorded rather than hidden: a cost shown to a user as exact when it was
+   * estimated is a number they will make decisions on.
+   */
+  estimated: boolean;
+  /**
+   * Tokens consumed by the request.
+   */
+  inputTokens?: number;
+  /**
+   * Tokens produced.
+   */
+  outputTokens?: number;
 }
 
 /**

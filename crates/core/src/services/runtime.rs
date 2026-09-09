@@ -4,15 +4,13 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::contracts::{
-    AuthorizedToolRequest, CancellationOrigin, CapabilityScope, EffectiveConfiguration, ErrorCode,
-    ErrorEnvelope, EventDraft, EventPayload, HandoffBundle, InvocationId, MessageId, MessageRole,
-    MessageStatus, NormalizedMessage, PermissionOrigin, ReplaySafety, RiskClass, SideEffect,
-    StreamFrame, TaskCheckpoint, TaskEventKind, TaskState,
+    AuthorizedToolRequest, CancellationOrigin, CapabilityScope, DataClass, EffectiveConfiguration,
+    ErrorCode, ErrorEnvelope, EventDraft, EventPayload, HandoffBundle, InvocationId, MessageId,
+    MessageRole, MessageStatus, ModelEvent, ModelRequest, NormalizedMessage, PermissionOrigin,
+    ReplaySafety, RiskClass, SideEffect, StopReason, StreamFrame, TaskCheckpoint, TaskEventKind,
+    TaskState,
 };
-use crate::ports::{
-    AgentProvider, ModelEvent, ModelProvider, ModelRequest, StopReason, WorkerHost, WorkerOutcome,
-    WorkerRequest,
-};
+use crate::ports::{AgentProvider, ModelProvider, WorkerHost, WorkerOutcome, WorkerRequest};
 use crate::ports::{Clock, PermissionQuery};
 use crate::services::PermissionManager;
 use crate::services::ToolRegistry;
@@ -216,6 +214,7 @@ impl TaskDriver {
         let host = BrokeredHost {
             journal: self.journal.clone(),
             model: Arc::clone(&self.providers.model),
+            context_manifest_id: context_manifest_id.clone(),
             tools: ToolBroker {
                 registry: Arc::clone(&self.providers.tools),
                 permissions: Arc::clone(&self.providers.permissions),
@@ -421,6 +420,8 @@ struct BrokeredHost {
     journal: TaskJournal,
     model: Arc<dyn ModelProvider>,
     tools: ToolBroker,
+    /// The context release this task's model requests were built from.
+    context_manifest_id: Option<String>,
 }
 
 /// Everything needed to turn a worker's tool request into an audited action.
@@ -483,10 +484,30 @@ impl WorkerHost for BrokeredHost {
         prompt: &str,
         cancel: &CancellationToken,
     ) -> Result<String, ErrorEnvelope> {
-        let request = ModelRequest {
-            request_id: format!("request-{}", self.journal.task_id()),
-            prompt: prompt.to_owned(),
-        };
+        // One identifier for the request, the stream, and the frames it
+        // publishes, so a delta can be tied back to the `modelStarted` event
+        // without anyone inventing a second name for the same thing.
+        let stream_id = format!("stream-{}", self.journal.task_id());
+        let mut request = ModelRequest::new(
+            stream_id.clone(),
+            self.journal.task_id().clone(),
+            vec![NormalizedMessage::text(
+                MessageId::new(self.journal.next_id("message")),
+                self.journal.conversation_id().cloned(),
+                MessageRole::User,
+                self.journal.now(),
+                prompt,
+            )],
+            // The release this request was built from. Absent only if
+            // preparation recorded nothing, which the driver does not allow.
+            self.context_manifest_id
+                .clone()
+                .unwrap_or_else(|| "context.unavailable".to_owned()),
+        );
+        // What is being sent, for routing and disclosure. Everything a task
+        // carries today is derived from an opened project.
+        request.data_classes = vec![DataClass::Project];
+
         let mut stream = self.model.stream(request, cancel.clone()).await?;
 
         // Deltas are coalesced here and committed once. Persisting every token
@@ -499,12 +520,16 @@ impl WorkerHost for BrokeredHost {
             match event {
                 ModelEvent::TextDelta { text, .. } => {
                     self.journal.publish_frame(StreamFrame {
-                        stream_id: format!("stream-{}", self.journal.task_id()),
+                        stream_id: stream_id.clone(),
                         offset: answer.len() as u64,
                         text: text.clone(),
                     });
                     answer.push_str(&text);
                 }
+                // A tool call assembled by the model, and what the request
+                // cost, are M6's to act on. Ignored rather than treated as
+                // text, which would put JSON fragments in the answer.
+                ModelEvent::ToolCallDelta { .. } | ModelEvent::Usage { .. } => {}
                 ModelEvent::Completed {
                     stop_reason: reason,
                 } => {

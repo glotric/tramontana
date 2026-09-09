@@ -20,7 +20,7 @@ mod worker;
 pub use clock::Clock;
 pub use event_store::{EventStore, EventStoreError};
 pub use ids::IdSource;
-pub use model::{ModelEvent, ModelProvider, ModelRequest, StopReason};
+pub use model::ModelProvider;
 pub use permission::{
     ApprovalStore, Approver, PermissionError, PermissionOutcome, PermissionPolicy, PermissionQuery,
     reason,

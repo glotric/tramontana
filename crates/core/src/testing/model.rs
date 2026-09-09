@@ -3,10 +3,10 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::contracts::{
-    CorrelationId, ErrorCode, ErrorEnvelope, Health, ModelCapability, ModelDescriptor,
-    ModelLocation, ProviderId,
+    CorrelationId, ErrorCode, ErrorEnvelope, Health, ModelCapability, ModelDescriptor, ModelEvent,
+    ModelLocation, ModelRequest, ProviderId, StopReason,
 };
-use crate::ports::{ModelEvent, ModelProvider, ModelRequest, StopReason};
+use crate::ports::ModelProvider;
 
 /// What a fake model should do when asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,9 +98,13 @@ impl ModelProvider for FakeModelProvider {
 
     async fn stream(
         &self,
-        _request: ModelRequest,
+        request: ModelRequest,
         cancel: CancellationToken,
     ) -> Result<mpsc::Receiver<ModelEvent>, ErrorEnvelope> {
+        // The stream is identified by the request that opened it, so a
+        // subscriber can tie a delta back to the `modelStarted` event without
+        // the provider inventing a second identifier.
+        let stream_id = request.request_id.clone();
         let script = self.script.clone();
         let chunk_delay = self.chunk_delay;
         // Bounded so a slow consumer applies backpressure rather than letting
@@ -138,6 +142,7 @@ impl ModelProvider for FakeModelProvider {
                             return;
                         }
                         let event = ModelEvent::TextDelta {
+                            stream_id: stream_id.clone(),
                             offset: offset as u64,
                             text,
                         };

@@ -1895,6 +1895,151 @@
       ],
       "type": "object"
     },
+    "ModelEvent": {
+      "description": "One item from a model stream.\n\nExactly one [`ModelEvent::Completed`] or [`ModelEvent::Failed`] ends a\nstream, even when cancellation arrives while the underlying request is\nstill in flight (`CORE_CONTRACTS.md` §8). The shared provider contract\nsuite checks that for every adapter.",
+      "oneOf": [
+        {
+          "description": "Incremental text.",
+          "properties": {
+            "kind": {
+              "const": "textDelta",
+              "type": "string"
+            },
+            "offset": {
+              "description": "Position within this stream.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "streamId": {
+              "description": "The stream this belongs to.",
+              "type": "string"
+            },
+            "text": {
+              "description": "The text produced.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "streamId",
+            "offset",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Incremental arguments for a tool call the model is assembling.",
+          "properties": {
+            "callId": {
+              "description": "Identifies the call being assembled across deltas.",
+              "type": "string"
+            },
+            "delta": {
+              "description": "The fragment.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "toolCallDelta",
+              "type": "string"
+            },
+            "offset": {
+              "description": "Position within this stream.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "streamId": {
+              "description": "The stream this belongs to.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "streamId",
+            "offset",
+            "callId",
+            "delta"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "What the request cost.",
+          "properties": {
+            "kind": {
+              "const": "usage",
+              "type": "string"
+            },
+            "usage": {
+              "$ref": "#/$defs/Usage",
+              "description": "The counts."
+            }
+          },
+          "required": [
+            "kind",
+            "usage"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The stream ended normally.",
+          "properties": {
+            "kind": {
+              "const": "completed",
+              "type": "string"
+            },
+            "stopReason": {
+              "$ref": "#/$defs/StopReason",
+              "description": "Why it ended."
+            }
+          },
+          "required": [
+            "kind",
+            "stopReason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The stream ended in failure.",
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/ErrorEnvelope",
+              "description": "Normalized, already-redacted error."
+            },
+            "kind": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "error"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ModelLimits": {
+      "description": "Bounds on one request.\n\n`deadlineMs` is required rather than optional: a request with no deadline\nis one that can hang a task forever, and every provider has to honour the\nsame bound for cancellation to mean the same thing everywhere.",
+      "properties": {
+        "deadlineMs": {
+          "description": "How long the whole request may take.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxOutputTokens": {
+          "description": "Cap on generated tokens, when one applies.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "deadlineMs"
+      ],
+      "type": "object"
+    },
     "ModelLocation": {
       "description": "Whether a model runs on this device.",
       "oneOf": [
@@ -1909,6 +2054,74 @@
           "type": "string"
         }
       ]
+    },
+    "ModelRequest": {
+      "description": "A normalized request for inference.",
+      "properties": {
+        "contextManifestId": {
+          "description": "The context release this request was built from.",
+          "type": "string"
+        },
+        "dataClasses": {
+          "description": "How sensitive the content is, for routing and disclosure.",
+          "items": {
+            "$ref": "#/$defs/DataClass"
+          },
+          "type": "array"
+        },
+        "limits": {
+          "$ref": "#/$defs/ModelLimits",
+          "description": "Bounds on the request."
+        },
+        "messages": {
+          "description": "The conversation so far, already normalized and redacted.",
+          "items": {
+            "$ref": "#/$defs/NormalizedMessage"
+          },
+          "type": "array"
+        },
+        "requestId": {
+          "description": "Correlates this request with its `modelStarted` event and its stream.",
+          "type": "string"
+        },
+        "requiredCapabilities": {
+          "description": "Capabilities a model must have to serve this request.\n\nThe router matches these; a provider that cannot meet them is not a\nfallback, it is ineligible.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "responseFormat": {
+          "$ref": "#/$defs/ResponseFormat",
+          "description": "What shape of answer was asked for."
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "taskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "The task on whose behalf it is made."
+        },
+        "tools": {
+          "description": "Tools the model may call, as the model sees them.",
+          "items": {
+            "$ref": "#/$defs/NormalizedToolDefinition"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "requestId",
+        "taskId",
+        "messages",
+        "contextManifestId",
+        "limits"
+      ],
+      "type": "object"
     },
     "NetworkControl": {
       "description": "What a worker can do on the network.",
@@ -1983,6 +2196,28 @@
         "createdAt",
         "status",
         "parts"
+      ],
+      "type": "object"
+    },
+    "NormalizedToolDefinition": {
+      "description": "A tool as a model is told about it.\n\nDeliberately not [`ToolDescriptor`](super::ToolDescriptor): that type\ncarries the risk class, capability, and cancellation facts Tramontana uses\nto *govern* a call. A model needs the name, the purpose, and the argument\nshape, and nothing else.",
+      "properties": {
+        "description": {
+          "description": "What it does, in the words the model sees.",
+          "type": "string"
+        },
+        "inputSchema": {
+          "description": "JSON Schema for the arguments."
+        },
+        "name": {
+          "description": "Namespaced tool identifier, as the model should call it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "inputSchema"
       ],
       "type": "object"
     },
@@ -2212,6 +2447,41 @@
           "const": "unknown",
           "description": "Not determinable from the record. Treated as [`ReplaySafety::Unsafe`].",
           "type": "string"
+        }
+      ]
+    },
+    "ResponseFormat": {
+      "description": "What shape of answer was asked for.",
+      "oneOf": [
+        {
+          "description": "Prose.",
+          "properties": {
+            "kind": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A document matching a schema.",
+          "properties": {
+            "kind": {
+              "const": "jsonSchema",
+              "type": "string"
+            },
+            "schema": {
+              "description": "The schema the answer must satisfy."
+            }
+          },
+          "required": [
+            "kind",
+            "schema"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -2447,6 +2717,31 @@
         {
           "const": "external",
           "description": "Something outside this device changed.",
+          "type": "string"
+        }
+      ]
+    },
+    "StopReason": {
+      "description": "Why a model stream ended.",
+      "oneOf": [
+        {
+          "const": "stop",
+          "description": "The model finished normally.",
+          "type": "string"
+        },
+        {
+          "const": "length",
+          "description": "An output limit was reached.",
+          "type": "string"
+        },
+        {
+          "const": "toolCall",
+          "description": "The model asked to call a tool.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "The request was cancelled.",
           "type": "string"
         }
       ]
@@ -2936,6 +3231,31 @@
         "sideEffect",
         "capability",
         "supportsCancellation"
+      ],
+      "type": "object"
+    },
+    "Usage": {
+      "description": "Token counts for one request.",
+      "properties": {
+        "estimated": {
+          "description": "Whether these are counted or approximated.\n\nRecorded rather than hidden: a cost shown to a user as exact when it was\nestimated is a number they will make decisions on.",
+          "type": "boolean"
+        },
+        "inputTokens": {
+          "description": "Tokens consumed by the request.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outputTokens": {
+          "description": "Tokens produced.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "estimated"
       ],
       "type": "object"
     },
