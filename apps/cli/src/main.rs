@@ -6,6 +6,7 @@
 //! arguments into an application call and renders the result; no routing,
 //! permission, or task behavior lives in this crate.
 
+mod approval;
 mod configuration;
 mod conversation;
 mod project;

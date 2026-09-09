@@ -4470,6 +4470,7 @@ dependencies = [
 name = "tramontana-cli"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "clap",
  "serde",
  "serde_json",
@@ -4501,6 +4502,7 @@ dependencies = [
 name = "tramontana-desktop"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "serde",
  "serde_json",
  "tauri",

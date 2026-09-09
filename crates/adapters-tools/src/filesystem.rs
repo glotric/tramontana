@@ -6,6 +6,7 @@ use tramontana_core::contracts::{
 };
 use tramontana_core::ports::{ToolOutcome, ToolProvider};
 
+use crate::identity::FileIdentity;
 use crate::limits::{ReadLimits, looks_binary};
 use crate::scope::{primary_root, relative_to_grant, resolve_within_grant};
 
@@ -219,13 +220,7 @@ impl FilesystemTools {
             return Err(invalid(request, "path is not a file"));
         }
 
-        let bytes = std::fs::read(&path).map_err(|error| {
-            ErrorEnvelope::new(
-                ErrorCode::NotFound,
-                format!("could not read file: {}", error.kind()),
-                correlation,
-            )
-        })?;
+        let bytes = read_verifying_identity(request, &path)?;
         let relative = relative_to_grant(request, &path);
 
         // Binary content is described, never returned. Handing it back as text
@@ -377,4 +372,85 @@ fn walk(
             return;
         }
     }
+}
+
+/// Read a file, refusing if the path was repointed while we were opening it.
+///
+/// Containment is checked against a *path*, but the read happens through a
+/// *handle*, and the two are resolved at different instants. Between them, a
+/// component of the path can be replaced with a symlink pointing anywhere —
+/// the time-of-check/time-of-use race `SECURITY_AND_PERMISSIONS.md` §5
+/// requires be re-checked.
+///
+/// Closing it needs three facts to agree:
+///
+/// 1. the handle we hold has some identity, fixed the moment it opened;
+/// 2. the path still resolves inside a granted root *now*;
+/// 3. the path still names the same object the handle holds.
+///
+/// A swap before the open makes (2) fail, because the path now resolves
+/// outside. A swap after the open makes (3) fail, because the handle kept the
+/// original identity. Either way the read is refused rather than returning
+/// content from somewhere nobody approved.
+///
+/// # Errors
+///
+/// [`ErrorCode::NotFound`] when the file cannot be opened, and
+/// [`ErrorCode::PermissionDenied`] when the checks disagree.
+fn read_verifying_identity(
+    request: &AuthorizedToolRequest,
+    path: &std::path::Path,
+) -> Result<Vec<u8>, ErrorEnvelope> {
+    use std::io::Read as _;
+
+    let correlation = CorrelationId::new(request.invocation_id().as_str());
+    let denied = |message: &str| {
+        ErrorEnvelope::new(
+            ErrorCode::PermissionDenied,
+            message.to_owned(),
+            correlation.clone(),
+        )
+    };
+
+    let mut handle = std::fs::File::open(path).map_err(|error| {
+        ErrorEnvelope::new(
+            ErrorCode::NotFound,
+            format!("could not read file: {}", error.kind()),
+            correlation.clone(),
+        )
+    })?;
+
+    let Some(held) = FileIdentity::of_handle(&handle) else {
+        // No identity means no way to prove the file did not change. Refusing
+        // is the fail-closed answer; proceeding would be a guess.
+        return Err(denied("cannot verify the file's identity on this platform"));
+    };
+
+    // Re-check containment against the path as it resolves *now*, not as it
+    // resolved when the argument was validated.
+    resolve_within_grant(request, &request_path(request)?)?;
+
+    let Some(current) = FileIdentity::of_path(path) else {
+        return Err(denied("the file disappeared while it was being opened"));
+    };
+    if current != held {
+        return Err(denied(
+            "the path changed to a different file while it was being opened",
+        ));
+    }
+
+    let mut bytes = Vec::new();
+    handle.read_to_end(&mut bytes).map_err(|error| {
+        ErrorEnvelope::new(
+            ErrorCode::ToolFailed,
+            format!("could not read file: {}", error.kind()),
+            correlation,
+        )
+    })?;
+    Ok(bytes)
+}
+
+/// The `path` argument as the caller supplied it.
+fn request_path(request: &AuthorizedToolRequest) -> Result<String, ErrorEnvelope> {
+    argument(request, "path").map(str::to_owned)
 }

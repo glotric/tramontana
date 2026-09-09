@@ -20,9 +20,9 @@ Phase 1 has no enterprise server dependency. The default architecture is persona
 
 ## Status
 
-Milestone M2 is complete. Projects, conversations, tasks, ordered events, and secret-free effective-configuration manifests now persist in SQLite and recover on restart. The CLI and desktop shell are peer adapters over the same application services and can deliberately open the same profile; the desktop provides a native project-folder picker, recent work, event replay, and configuration inspection.
+Milestone M3 is complete. Every tool call now passes a fail-closed permission boundary and lands in the durable record with its origin, capability, scope, and decision — refusals included. Six read-only tools inspect a project's approved roots and nothing else: traversal, absolute paths, symlink escape, and a path repointed mid-read are all refused.
 
-The task runtime still uses deterministic fake providers, which the interface labels explicitly. There is no real model or permission boundary yet; those arrive in later milestones. Validation gate V1 passed with one recorded exception: CI has never run, so nothing is verified on Windows or Linux.
+Projects, conversations, tasks, ordered events, and secret-free configuration manifests persist in SQLite and recover on restart. The task runtime still uses deterministic fake providers, which the interface labels explicitly; there is no real model yet, and no modifying tools. Validation gate V1 passed.
 
 ```bash
 corepack enable pnpm     # Node 24.x; Node 25 removed Corepack

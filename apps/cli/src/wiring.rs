@@ -12,8 +12,10 @@ use tramontana_core::ports::EventStore;
 use tramontana_core::ports::{ApprovalStore, Approver, ToolProvider};
 use tramontana_core::services::{Providers, Repositories, TaskService};
 use tramontana_core::testing::{
-    FakeModelProvider, FakeWorker, InMemoryApprovalStore, ScriptedApprover, assemble_tool_plane,
+    FakeModelProvider, FakeWorker, InMemoryApprovalStore, assemble_tool_plane,
 };
+
+use crate::approval::TerminalApprover;
 use tramontana_persistence::{
     Database, SqliteConfigurationRepository, SqliteConversationRepository, SqliteEventStore,
     SqliteProjectRepository, SqliteTaskRepository,
@@ -69,10 +71,11 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
             Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
         ],
         Arc::new(InMemoryApprovalStore::new()) as Arc<dyn ApprovalStore>,
-        // M3 ships no interactive approver yet, so anything needing one is
-        // refused. Every tool registered above is a read inside an approved
-        // project, which policy permits without asking.
-        Arc::new(ScriptedApprover::unavailable()) as Arc<dyn Approver>,
+        // Prompts on a terminal, and refuses when there is no terminal to
+        // prompt on. Every tool registered above is a read inside an approved
+        // project, which policy permits without asking, so this is exercised
+        // only once modifying tools arrive in M7.
+        Arc::new(TerminalApprover::new()) as Arc<dyn Approver>,
         Arc::new(UuidIdSource::new()),
     )
     .map_err(|error| format!("could not register tools: {error}"))?;

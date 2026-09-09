@@ -14,6 +14,7 @@
 
 mod filesystem;
 mod git;
+mod identity;
 mod limits;
 mod scope;
 

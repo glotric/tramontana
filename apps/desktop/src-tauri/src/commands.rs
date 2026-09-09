@@ -12,12 +12,14 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tramontana_core::config::ConfigurationSelection;
 use tramontana_core::contracts::{
-    ConversationId, ConversationRecord, CorrelationId, EffectiveConfiguration, ErrorCode,
-    ErrorEnvelope, EventEnvelope, ProjectId, ProjectRecord, SCHEMA_VERSION, TaskId, TaskRecord,
-    TaskSnapshot, TaskUpdate,
+    ApprovalDecisionKind, ApprovalId, ConversationId, ConversationRecord, CorrelationId,
+    EffectiveConfiguration, ErrorCode, ErrorEnvelope, EventEnvelope, ProjectGrant, ProjectId,
+    ProjectRecord, SCHEMA_VERSION, TaskId, TaskRecord, TaskSnapshot, TaskUpdate,
 };
 use tramontana_core::services::StartTaskRequest;
 use tramontana_platform::{CanonicalRoot, canonicalize_root, discover};
+
+use tramontana_core::ports::ApprovalStore;
 
 use crate::state::AppState;
 
@@ -403,5 +405,83 @@ mod tests {
         let error = invalid("a task needs a goal");
         assert_eq!(error.code, ErrorCode::InvalidRequest);
         assert!(!error.retryable, "retrying an invalid payload cannot help");
+    }
+}
+
+/// Deliver a decision from an approval card.
+///
+/// # Errors
+///
+/// [`ErrorCode::NotFound`] when no question is waiting — which happens when a
+/// card is answered twice, or after it has already timed out.
+#[tauri::command]
+pub(crate) fn resolve_approval(
+    approval_id: ApprovalId,
+    decision: ApprovalDecisionKind,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    if state.approver.resolve(&approval_id, decision) {
+        return Ok(());
+    }
+    Err(ErrorEnvelope::new(
+        ErrorCode::NotFound,
+        "that approval is no longer waiting for an answer",
+        CorrelationId::new("ipc"),
+    ))
+}
+
+/// Every live grant for a project, so the user can see what they have allowed.
+///
+/// # Errors
+///
+/// A persistence error when the grant store is unavailable.
+#[tauri::command]
+pub(crate) async fn list_project_grants(
+    project_id: ProjectId,
+    state: State<'_, AppState>,
+) -> Result<Vec<ProjectGrant>, ErrorEnvelope> {
+    state
+        .approvals
+        .list_grants(&project_id)
+        .await
+        .map_err(|error| {
+            ErrorEnvelope::new(
+                ErrorCode::PersistenceError,
+                error.to_string(),
+                CorrelationId::new("ipc"),
+            )
+        })
+}
+
+/// Revoke a grant. The next invocation it would have covered is refused.
+///
+/// # Errors
+///
+/// [`ErrorCode::NotFound`] when no such grant exists.
+#[tauri::command]
+pub(crate) async fn revoke_project_grant(
+    grant_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    let removed = state
+        .approvals
+        .revoke_grant(&grant_id)
+        .await
+        .map_err(|error| {
+            ErrorEnvelope::new(
+                ErrorCode::PersistenceError,
+                error.to_string(),
+                CorrelationId::new("ipc"),
+            )
+        })?;
+
+    if removed {
+        Ok(())
+    } else {
+        Err(ErrorEnvelope::new(
+            ErrorCode::NotFound,
+            "no such grant",
+            CorrelationId::new("ipc"),
+        ))
     }
 }

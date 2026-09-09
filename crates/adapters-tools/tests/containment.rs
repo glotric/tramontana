@@ -309,3 +309,55 @@ async fn a_listing_is_scoped_and_sorted() {
         .collect();
     assert_eq!(names, vec!["README.md", "src"]);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_path_repointed_after_validation_is_refused() {
+    // The time-of-check/time-of-use race. The argument is validated against a
+    // path, but the bytes come from a handle, and the two are resolved at
+    // different instants. Here the file is replaced with a symlink pointing
+    // outside the project *after* it would have been validated — the read must
+    // refuse rather than return the attacker's file.
+    let (temp, root) = project();
+    let outside = temp.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("secret.txt"), "CREDENTIALS").unwrap();
+
+    let target = root.join("swappable.txt");
+    std::fs::write(&target, "harmless").unwrap();
+
+    // Perform the swap before invoking, which is the state an attacker who
+    // won the race would leave behind.
+    std::fs::remove_file(&target).unwrap();
+    std::os::unix::fs::symlink(outside.join("secret.txt"), &target).unwrap();
+
+    let request = authorize(
+        "builtin.fs.read",
+        &[&root],
+        serde_json::json!({ "path": "swappable.txt" }),
+    )
+    .await;
+    let error = FilesystemTools::new()
+        .invoke(request, CancellationToken::new())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::PermissionDenied);
+}
+
+#[tokio::test]
+async fn an_ordinary_read_still_succeeds_with_the_identity_check() {
+    // The race check must not break the common case.
+    let (_temp, root) = project();
+    let request = authorize(
+        "builtin.fs.read",
+        &[&root],
+        serde_json::json!({ "path": "README.md" }),
+    )
+    .await;
+    let outcome = FilesystemTools::new()
+        .invoke(request, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(outcome.content["text"].as_str().unwrap().contains("Demo"));
+}

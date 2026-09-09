@@ -17,6 +17,7 @@ tramontana-core = { workspace = true }
 tramontana-adapters-tools = { workspace = true }
 tramontana-persistence = { workspace = true }
 tramontana-platform = { workspace = true }
+async-trait = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -24,6 +24,7 @@ tramontana-persistence = { workspace = true }
 tramontana-platform = { workspace = true }
 tauri = { version = "2.11.5", features = [] }
 tauri-plugin-dialog = { workspace = true }
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
