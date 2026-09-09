@@ -11,12 +11,13 @@ repository.workspace = true
 [dependencies]
 tramontana-core = { workspace = true }
 async-trait = { workspace = true }
-# HTTP and TLS: see `docs/decisions/0007-http-client-and-tls.md`.
+# HTTP without TLS, deliberately: see `docs/decisions/0007-http-client-and-tls.md`.
+# The endpoints this milestone targets are on loopback. Adding a TLS stack for
+# a capability nothing uses yet cost a C crypto library on the build path and a
+# transitive advisory; the decision moves to the milestone that needs it.
 reqwest = { version = "0.13.4", default-features = false, features = [
-  "rustls",
   "json",
   "stream",
-  "http2",
 ] }
 futures-util = "0.3"
 serde = { workspace = true }

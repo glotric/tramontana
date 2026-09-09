@@ -341,6 +341,23 @@ async fn an_endpoint_that_is_not_a_url_is_refused_at_construction() {
 }
 
 #[tokio::test]
+async fn an_https_endpoint_is_refused_as_unsupported_rather_than_failing_later() {
+    // This build carries no TLS stack. Saying so at configuration time is the
+    // difference between a clear message and a connection error nobody can
+    // interpret, and it keeps the missing capability visible rather than
+    // looking like a bug when the cloud adapters land.
+    let error = OpenAiCompatibleProvider::new(
+        "openai",
+        "https://api.openai.com",
+        OpenAiCompatibleProvider::local_descriptor("openai", "m", "M"),
+        ProviderAuth::None,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::CapabilityUnsupported);
+    assert!(error.message.contains("https"));
+}
+
+#[tokio::test]
 async fn an_unreachable_endpoint_is_a_provider_failure_without_echoing_the_url() {
     // A base URL can carry a query string pasted from a provider console, and
     // the transport error's own `Display` includes the URL.

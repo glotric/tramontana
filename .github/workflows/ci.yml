@@ -62,6 +62,15 @@ jobs:
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
+          # The runner image ships third-party apt sources this build does not
+          # use. One of them (Chrome) served a `Packages.gz` whose hash did not
+          # match its own index, and `apt-get update` treats any repository
+          # failure as fatal — so a CDN hiccup at Google failed a run that had
+          # nothing to do with Chrome. Drop the sources we do not need rather
+          # than making update non-fatal, which would hide a real failure of a
+          # repository we do depend on.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/microsoft-prod.list
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \

@@ -99,10 +99,20 @@ impl OpenAiCompatibleProvider {
         auth: ProviderAuth,
     ) -> Result<Self, ErrorEnvelope> {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
-        if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+        // Refused here, plainly, rather than failing obscurely at the first
+        // request. This build has no TLS stack: the endpoints M5 targets are
+        // on loopback, and the decision to add one belongs to the milestone
+        // that ships a cloud adapter (`docs/decisions/0007-http-client-and-tls.md`).
+        if base_url.starts_with("https://") {
+            return Err(error(
+                ErrorCode::CapabilityUnsupported,
+                "this build reaches http endpoints only; https support arrives with the cloud adapters",
+            ));
+        }
+        if !base_url.starts_with("http://") {
             return Err(error(
                 ErrorCode::InvalidRequest,
-                format!("model endpoint must be an http or https URL, got {base_url:?}"),
+                format!("model endpoint must be an http URL, got {base_url:?}"),
             ));
         }
 
