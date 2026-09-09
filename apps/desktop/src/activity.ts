@@ -48,7 +48,12 @@ function describePayload(payload: EventPayload): string {
       const plan = payload.plan;
       const what = `${plan.totalBytes} byte(s) of ${plan.dataClasses.join(", ")} context`;
       const where = `${plan.destination.modelId} (${plan.destination.providerId})`;
-      const withheld = plan.exclusions.length === 0 ? "" : `, ${plan.exclusions.length} withheld`;
+      // A redaction is the visible half of "your key did not go", so it is
+      // on the line rather than only in the record.
+      const notes: string[] = [];
+      if (plan.exclusions.length > 0) notes.push(`${plan.exclusions.length} withheld`);
+      if (plan.redactions.length > 0) notes.push(`redacted: ${plan.redactions.join(", ")}`);
+      const withheld = notes.length === 0 ? "" : `, ${notes.join(", ")}`;
       // A release that left the device says so first. The authority it went on
       // is the second thing a person asks, so it is on the same line.
       const authority = plan.authorization ? ` — ${plan.authorization.reasonCode}` : " — proposed";

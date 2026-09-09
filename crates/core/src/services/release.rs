@@ -181,6 +181,7 @@ impl ReleaseManager {
         // impossible to ship quietly.
         let mut released: Vec<ReleasedCategory> = Vec::new();
         let mut transmitted_source_ids = Vec::new();
+        let mut redactions: Vec<String> = Vec::new();
         for hash in &carried {
             let Some(source) = manifest
                 .sources
@@ -206,7 +207,14 @@ impl ReleaseManager {
                 }),
             }
             transmitted_source_ids.push(source.source_id.clone());
+            // Redactions belong to the source they were made in, so the plan
+            // reports what applies to the payload rather than every redaction
+            // the task ever made. A disclosure listing a redaction from a
+            // source that was never sent describes a different release.
+            redactions.extend(source.redactions.iter().cloned());
         }
+        redactions.sort_unstable();
+        redactions.dedup();
         // Ordered explicitly rather than by however the payload happened to be
         // laid out, so two identical releases produce identical records and
         // can be compared rather than only read — the same property the router
@@ -255,7 +263,7 @@ impl ReleaseManager {
             released,
             data_classes,
             total_token_estimate: manifest.total_token_estimate,
-            redactions: manifest.redactions.clone(),
+            redactions,
             exclusions,
             tools_offered: request.tools.iter().map(|tool| tool.name.clone()).collect(),
             authorization: None,

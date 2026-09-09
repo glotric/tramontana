@@ -81,6 +81,13 @@ pub struct ContextSource {
     /// Why it was not, when it was not.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub exclusion_reason: Option<String>,
+    /// Stable codes for credentials removed from this source at ingestion.
+    ///
+    /// Per source rather than only on the manifest, so a release plan can
+    /// report the redactions that apply to what it actually carried instead
+    /// of every redaction the task ever made.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub redactions: Vec<String>,
 }
 
 impl ContextSource {
@@ -101,6 +108,26 @@ impl ContextSource {
             token_estimate: None,
             included: true,
             exclusion_reason: None,
+            redactions: Vec::new(),
+        }
+    }
+
+    /// A source that was gathered, redacted, and sent.
+    ///
+    /// `content` must already be the redacted text: the hash names what was
+    /// released, and hashing the original would make the record describe
+    /// content that never left.
+    #[must_use]
+    pub fn redacted(
+        source_id: impl Into<String>,
+        category: ContextCategory,
+        data_class: DataClass,
+        content: &str,
+        redactions: Vec<String>,
+    ) -> Self {
+        Self {
+            redactions,
+            ..Self::included(source_id, category, data_class, content)
         }
     }
 
@@ -175,6 +202,16 @@ impl ContextManifest {
             .filter(|source| source.included)
             .map(|source| source.byte_count)
             .sum();
+        // Aggregated from the sources rather than passed in, for the same
+        // reason `total_bytes` is: a manifest whose summary could disagree
+        // with its own contents is a record of nothing.
+        let mut redactions: Vec<String> = sources
+            .iter()
+            .flat_map(|source| source.redactions.iter().cloned())
+            .collect();
+        redactions.sort_unstable();
+        redactions.dedup();
+
         Self {
             schema_version: SCHEMA_VERSION,
             context_manifest_id: context_manifest_id.into(),
@@ -183,7 +220,7 @@ impl ContextManifest {
             sources,
             total_bytes,
             total_token_estimate: None,
-            redactions: Vec::new(),
+            redactions,
             created_at,
         }
     }

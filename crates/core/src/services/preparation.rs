@@ -27,14 +27,25 @@ pub fn assemble_context(
     context_manifest_id: impl Into<String>,
     task_id: TaskId,
     goal: &str,
+    goal_redactions: Vec<String>,
     configuration: Option<&EffectiveConfiguration>,
     created_at: Timestamp,
 ) -> ContextManifest {
-    let mut sources = vec![ContextSource::included(
+    // `goal` is already redacted — `TaskService::start_task` does it, so no
+    // durable record ever held the original. The codes travel separately
+    // because redacting twice would report nothing: the second pass has
+    // nothing left to find, and the manifest would say a credential-free goal
+    // had always been credential-free.
+    debug_assert!(
+        !crate::services::carries_credential(goal),
+        "the goal reached context assembly without being redacted at ingestion"
+    );
+    let mut sources = vec![ContextSource::redacted(
         "conversation.goal",
         ContextCategory::Conversation,
         DataClass::Project,
         goal,
+        goal_redactions,
     )];
 
     if let Some(configuration) = configuration {
@@ -53,6 +64,12 @@ pub fn assemble_context(
                 // An inactive source was gathered and deliberately not used;
                 // saying so is the difference between a manifest and a list.
                 exclusion_reason: (!source.active).then(|| "context.notActive".to_owned()),
+                // Instruction content is not redacted yet: nothing assembles
+                // it into a payload, so there is nothing to redact it out of.
+                // That changes with prompt assembly in M6, and the hash here
+                // must name the redacted text when it does — recorded in the
+                // M5 evidence note rather than left to be rediscovered.
+                redactions: Vec::new(),
             });
         }
     }
@@ -92,12 +109,41 @@ mod tests {
 
     #[test]
     fn the_goal_is_always_a_source() {
-        let manifest =
-            assemble_context("context-1", TaskId::new("task-1"), "say hello", None, at());
+        let manifest = assemble_context(
+            "context-1",
+            TaskId::new("task-1"),
+            "say hello",
+            Vec::new(),
+            None,
+            at(),
+        );
         assert_eq!(manifest.sources.len(), 1);
         assert_eq!(manifest.sources[0].category, ContextCategory::Conversation);
         assert!(manifest.sources[0].included);
         assert_eq!(manifest.total_bytes, "say hello".len() as u64);
+    }
+
+    #[test]
+    fn what_was_redacted_from_the_goal_reaches_the_manifest() {
+        // The codes travel with the already-redacted text. Recomputing them
+        // here would find nothing, and the manifest would report that a goal
+        // which did carry a credential never had one.
+        let manifest = assemble_context(
+            "context-1",
+            TaskId::new("task-1"),
+            "call with [redacted]",
+            vec![crate::services::redaction_reason::PROVIDER_API_KEY.to_owned()],
+            None,
+            at(),
+        );
+        assert_eq!(
+            manifest.redactions,
+            vec![crate::services::redaction_reason::PROVIDER_API_KEY]
+        );
+        assert_eq!(
+            manifest.sources[0].redactions,
+            vec![crate::services::redaction_reason::PROVIDER_API_KEY]
+        );
     }
 
     #[test]
@@ -116,6 +162,7 @@ mod tests {
             "context-1",
             TaskId::new("task-1"),
             "say hello",
+            Vec::new(),
             Some(&configuration),
             at(),
         );

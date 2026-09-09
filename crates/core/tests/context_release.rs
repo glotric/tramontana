@@ -375,6 +375,147 @@ fn a_plan_describes_the_payload_without_copying_it() {
     assert!(!plan.summary().contains(GOAL), "{}", plan.summary());
 }
 
+/// A cloud provider that records the payload it was handed.
+///
+/// Recording the text is what lets a test assert that a credential did not
+/// reach a provider, which is the only assertion that actually matters.
+#[derive(Debug, Default)]
+struct RecordingEndpoint {
+    seen: std::sync::Mutex<Vec<String>>,
+}
+
+impl RecordingEndpoint {
+    fn payloads(&self) -> Vec<String> {
+        self.seen
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[async_trait]
+impl ModelProvider for RecordingEndpoint {
+    fn id(&self) -> ProviderId {
+        ProviderId::new("fake")
+    }
+
+    async fn list_models(&self) -> Vec<ModelDescriptor> {
+        FakeModelProvider::streaming(["ok"]).list_models().await
+    }
+
+    async fn stream(
+        &self,
+        request: AuthorizedModelRequest,
+        cancel: CancellationToken,
+    ) -> Result<mpsc::Receiver<ModelEvent>, ErrorEnvelope> {
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.push(serde_json::to_string(request.request()).unwrap());
+        }
+        FakeModelProvider::streaming(["ok"])
+            .stream(request, cancel)
+            .await
+    }
+}
+
+#[tokio::test]
+async fn a_credential_pasted_into_a_goal_reaches_nothing() {
+    // The whole redaction path, end to end. Every value here is synthetic.
+    const PASTED: &str = "sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4";
+
+    let endpoint = Arc::new(RecordingEndpoint::default());
+    let events: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
+    let ids = Arc::new(SequentialIdSource::new());
+    let (tools, permissions, releases) = assemble_tool_plane(
+        vec![Arc::new(FakeToolProvider::new())],
+        Arc::new(InMemoryApprovalStore::new()),
+        Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce)),
+        ids.clone(),
+    )
+    .unwrap();
+
+    let service = TaskService::new(
+        Repositories {
+            projects: Arc::new(InMemoryProjectRepository::new()),
+            conversations: Arc::new(InMemoryConversationRepository::new()),
+            tasks: Arc::new(InMemoryTaskRepository::with_events(events.clone())),
+            events,
+            configuration: Arc::new(InMemoryConfigurationRepository::new()),
+            checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
+        },
+        Providers {
+            model: endpoint.clone(),
+            tools,
+            permissions,
+            releases,
+            worker: Arc::new(FakeWorker::new()),
+        },
+        Arc::new(FakeClock::new()),
+        ids,
+    );
+
+    let task_id = service
+        .start_task(StartTaskRequest {
+            conversation_id: None,
+            goal: format!("call the API with {PASTED} and report back"),
+        })
+        .await
+        .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if service
+                .get_task(&task_id)
+                .await
+                .unwrap()
+                .state
+                .is_terminal()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the task never settled");
+
+    // Not in the durable record — not the task-created event, not the
+    // manifest, not the release plan, not the committed message.
+    let recorded = service.replay_task_events(&task_id, 0).await.unwrap();
+    let rendered = serde_json::to_string(&recorded).unwrap();
+    assert!(
+        !rendered.contains(PASTED),
+        "a pasted credential survived into the durable record"
+    );
+    assert!(
+        rendered.contains("[redacted]"),
+        "nothing was redacted at all"
+    );
+
+    // And above all, not in what was handed to the provider.
+    let payloads = endpoint.payloads();
+    assert_eq!(payloads.len(), 1, "the model was not called at all");
+    assert!(
+        !payloads[0].contains(PASTED),
+        "a pasted credential was sent to a model provider"
+    );
+
+    // The release says what was taken out, so the removal is visible rather
+    // than silent — a user who pasted a key should be able to see that it did
+    // not go, not merely hope.
+    let plan = recorded
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ContextReleased { plan } => Some(plan),
+            _ => None,
+        })
+        .expect("no release was recorded");
+    assert_eq!(
+        plan.redactions,
+        vec![redaction_reason::PROVIDER_API_KEY],
+        "the release plan did not report the redaction it carried"
+    );
+}
+
 /// A cloud provider that records every time it is reached.
 #[derive(Debug, Default)]
 struct CloudEndpoint {

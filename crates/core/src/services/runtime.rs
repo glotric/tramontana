@@ -43,6 +43,12 @@ pub(crate) struct TaskDriver {
     /// Held so the context manifest can name the instruction sources in force
     /// rather than only their combined hash.
     configuration: Option<EffectiveConfiguration>,
+    /// What was removed from the goal when the task was created.
+    ///
+    /// Carried rather than recomputed: the goal the driver receives is already
+    /// redacted, so asking it again would find nothing and the manifest would
+    /// claim no credential was ever there.
+    goal_redactions: Vec<String>,
     checkpoint: Option<TaskCheckpoint>,
     /// The canonical record handed to a *different* worker taking over.
     handoff: Option<HandoffBundle>,
@@ -68,6 +74,7 @@ impl TaskDriver {
             clock,
             routing_mode: RoutingMode::Automatic,
             configuration: None,
+            goal_redactions: Vec::new(),
             checkpoint: None,
             handoff: None,
             worker: None,
@@ -79,6 +86,12 @@ impl TaskDriver {
     /// Run this task under `mode`.
     pub(crate) fn with_routing_mode(mut self, mode: RoutingMode) -> Self {
         self.routing_mode = mode;
+        self
+    }
+
+    /// Record what was redacted out of the goal at ingestion.
+    pub(crate) fn with_goal_redactions(mut self, redactions: Vec<String>) -> Self {
+        self.goal_redactions = redactions;
         self
     }
 
@@ -289,6 +302,7 @@ impl TaskDriver {
             self.journal.next_id("context"),
             self.journal.task_id().clone(),
             goal,
+            self.goal_redactions.clone(),
             self.configuration.as_ref(),
             self.clock.now(),
         );

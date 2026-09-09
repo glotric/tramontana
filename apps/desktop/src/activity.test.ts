@@ -75,7 +75,7 @@ describe("activity rendering", () => {
           ],
           dataClasses: ["project"],
           totalBytes: 9,
-          redactions: [],
+          redactions: ["redaction.providerApiKey"],
           exclusions: [
             {
               sourceId: "AGENTS.md",
@@ -95,7 +95,8 @@ describe("activity rendering", () => {
     ).detail;
 
     expect(detail).toBe(
-      "9 byte(s) of project context left the device to gpt-oss (openai), 1 withheld — release.approvedOnce",
+      "9 byte(s) of project context left the device to gpt-oss (openai), 1 withheld, " +
+        "redacted: redaction.providerApiKey — release.approvedOnce",
     );
   });
 

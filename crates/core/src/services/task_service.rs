@@ -502,12 +502,20 @@ impl TaskService {
             },
         };
 
+        // Redacted here, at the one point a goal enters the system, and not
+        // on the way out. Redacting at output means the durable event, the
+        // task record, the checkpoint, and the export bundle all held the
+        // credential first, and every consumer that forgets is a leak. From
+        // here on there is only the redacted text
+        // (`SECURITY_AND_PERMISSIONS.md` §7).
+        let goal = crate::services::redact(&request.goal);
+
         let created_at = self.clock.now();
         let mut record = TaskRecord::new(
             task_id.clone(),
             request.conversation_id.clone(),
             project_id,
-            request.goal.clone(),
+            goal.text.clone(),
             created_at,
         );
         if let Some(configuration) = &configuration {
@@ -518,7 +526,7 @@ impl TaskService {
             EventDraft::user(
                 TaskEventKind::TaskCreated,
                 EventPayload::TaskCreated {
-                    goal_summary: request.goal.clone(),
+                    goal_summary: goal.text.clone(),
                     conversation_id: request.conversation_id.clone(),
                 },
             )
@@ -603,8 +611,11 @@ impl TaskService {
         )
         .with_routing_mode(self.routing_mode())
         .with_configuration(resolved_configuration)
+        .with_goal_redactions(goal.reason_codes.clone())
         .continuing(None, super::ResumePlan::default(), interrupt);
-        let goal = request.goal;
+        // The redacted text, not `request.goal`. The worker, the manifest, and
+        // the model payload all see the same thing the record does.
+        let goal = goal.text;
         let execution_guard = self.execution_guard.clone();
         tokio::spawn(async move {
             let _execution_guard = execution_guard;

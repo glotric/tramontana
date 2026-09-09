@@ -84,10 +84,22 @@ pub(crate) fn event_line(event: &EventEnvelope) -> String {
                 } else {
                     ""
                 },
-                if plan.exclusions.is_empty() {
-                    String::new()
-                } else {
-                    format!(", {} withheld", plan.exclusions.len())
+                {
+                    // A redaction is the visible half of "your key did not
+                    // go". Counting it silently would be the same as not
+                    // doing it, from the reader's side.
+                    let mut notes = Vec::new();
+                    if !plan.exclusions.is_empty() {
+                        notes.push(format!("{} withheld", plan.exclusions.len()));
+                    }
+                    if !plan.redactions.is_empty() {
+                        notes.push(format!("redacted: {}", plan.redactions.join(", ")));
+                    }
+                    if notes.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {}", notes.join(", "))
+                    }
                 },
                 plan.authorization
                     .as_ref()

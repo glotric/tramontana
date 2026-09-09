@@ -16,6 +16,7 @@ mod journal;
 mod permission_manager;
 mod preparation;
 mod projection;
+mod redaction;
 mod release;
 mod routing;
 mod runtime;
@@ -36,6 +37,9 @@ pub use journal::{JournalPorts, TaskJournal};
 pub use permission_manager::PermissionManager;
 pub use preparation::assemble_context;
 pub use projection::TaskProjectionWriter;
+pub use redaction::{
+    PLACEHOLDER, Redacted, carries_credential, reason as redaction_reason, redact, redacted_hash,
+};
 pub use release::{RELEASE_CAPABILITY, ReleaseContext, ReleaseError, ReleaseManager};
 pub use routing::{
     AvailabilitySnapshot, NoEligibleRoute, RoutingInput, route, route_after_failure,

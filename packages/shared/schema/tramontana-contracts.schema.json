@@ -592,6 +592,13 @@
           "description": "Whether it was actually sent.",
           "type": "boolean"
         },
+        "redactions": {
+          "description": "Stable codes for credentials removed from this source at ingestion.\n\nPer source rather than only on the manifest, so a release plan can\nreport the redactions that apply to what it actually carried instead\nof every redaction the task ever made.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "sourceId": {
           "description": "Stable identifier for this source within the task.",
           "type": "string"

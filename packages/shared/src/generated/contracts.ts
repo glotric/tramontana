@@ -450,6 +450,14 @@ export interface ContextSource {
    */
   included: boolean;
   /**
+   * Stable codes for credentials removed from this source at ingestion.
+   *
+   * Per source rather than only on the manifest, so a release plan can
+   * report the redactions that apply to what it actually carried instead
+   * of every redaction the task ever made.
+   */
+  redactions?: string[];
+  /**
    * Stable identifier for this source within the task.
    */
   sourceId: string;
