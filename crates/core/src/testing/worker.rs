@@ -72,7 +72,12 @@ impl AgentProvider for FakeWorker {
             model_control,
             tool_control: ToolControl::TramontanaBrokered,
             network_control,
-            checkpoint_support: CheckpointSupport::SameWorker,
+            // Portable, not merely same-worker: every effect goes through
+            // the host, so this worker keeps no private state and a resumed
+            // run is a pure function of the goal and the completed-step
+            // watermark. Understating it would make canonical handoff
+            // untestable against the only worker that exists.
+            checkpoint_support: CheckpointSupport::Portable,
             // Computed, never asserted: the core decides eligibility from the
             // control facts above (`CORE_CONTRACTS.md` §7.2).
             local_only_eligible: AgentDescriptor::compute_local_only_eligibility(

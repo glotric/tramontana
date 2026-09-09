@@ -97,6 +97,31 @@ fn summarize(payload: &EventPayload) -> Option<String> {
             "{} took the task ({:?} tool control, {:?} network).",
             descriptor.display_name, descriptor.tool_control, descriptor.network_control
         )),
+        EventPayload::ContextPrepared { manifest } => {
+            let withheld = manifest.exclusions().count();
+            Some(format!(
+                "Context assembled for a {:?} destination: {} source(s), {} byte(s) released{}.",
+                manifest.destination_class,
+                manifest.sources.len(),
+                manifest.total_bytes,
+                if withheld == 0 {
+                    String::new()
+                } else {
+                    format!(", {withheld} withheld")
+                }
+            ))
+        }
+        EventPayload::RoutingDecided { decision } => Some(format!(
+            "Routed to {}/{} ({}){}.",
+            decision.model.provider_id,
+            decision.model.model_id,
+            decision.reason_codes.join(", "),
+            if decision.requires_disclosure {
+                " — this left the device"
+            } else {
+                ""
+            }
+        )),
         EventPayload::MessageCommitted { message } => {
             let text: String = message
                 .parts

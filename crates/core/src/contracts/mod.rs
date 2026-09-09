@@ -16,6 +16,7 @@
 
 mod checkpoint;
 mod configuration;
+mod context;
 mod descriptor;
 mod error;
 mod event;
@@ -25,6 +26,7 @@ mod message;
 mod permission;
 mod primitives;
 mod records;
+mod routing;
 mod task;
 mod time;
 
@@ -36,6 +38,9 @@ pub(crate) use configuration::hex as configuration_hex;
 pub use configuration::{
     ConfigurationDiagnostic, ConfigurationKind, ConfigurationSource, DiagnosticSeverity,
     EffectiveConfiguration,
+};
+pub use context::{
+    ContextCategory, ContextManifest, ContextSource, DestinationClass, content_hash,
 };
 pub use descriptor::{
     AgentDescriptor, CheckpointSupport, Health, IntegrationMode, ModelCapability, ModelControl,
@@ -66,6 +71,7 @@ pub use primitives::{
     Visibility,
 };
 pub use records::{ConversationRecord, ProjectRecord, TaskRecord};
+pub use routing::{RoutedModel, RoutingDecision, RoutingFallback, reason as routing_reason};
 pub use task::{InvalidTransition, TaskSnapshot, TaskState};
 pub use time::Timestamp;
 

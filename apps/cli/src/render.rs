@@ -43,6 +43,44 @@ pub(crate) fn event_line(event: &EventEnvelope) -> String {
         EventPayload::WorkerSelected { descriptor } => {
             format!("{} [{}]", descriptor.display_name, descriptor.agent_id)
         }
+        EventPayload::ContextPrepared { manifest } => {
+            let withheld = manifest.exclusions().count();
+            format!(
+                "{} source(s), {} byte(s) to {:?}{}",
+                manifest.sources.len(),
+                manifest.total_bytes,
+                manifest.destination_class,
+                if withheld == 0 {
+                    String::new()
+                } else {
+                    format!(", {withheld} withheld")
+                }
+            )
+        }
+        EventPayload::RoutingDecided { decision } => format!(
+            "{} ({}){}",
+            decision.model.model_id,
+            decision.reason_codes.join(", "),
+            if decision.requires_disclosure {
+                " — LEAVES THE DEVICE"
+            } else {
+                ""
+            }
+        ),
+        EventPayload::CheckpointSaved {
+            checkpoint_id,
+            completed_step_count,
+            resume,
+            ..
+        } => format!(
+            "{checkpoint_id} — {completed_step_count} step(s) done, resume {}",
+            if resume.eligible {
+                "offered"
+            } else {
+                "refused"
+            }
+        ),
+        EventPayload::DiagnosticRecorded { code, summary } => format!("{code}: {summary}"),
         EventPayload::ModelStarted { model_id, .. } => format!("model {model_id}"),
         EventPayload::ConfigurationResolved { configuration } => {
             format!("manifest {}", configuration.manifest_hash)

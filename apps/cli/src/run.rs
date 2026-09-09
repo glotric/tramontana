@@ -83,7 +83,30 @@ enum TaskCommand {
     /// Discard interrupted continuation without deleting history or undoing effects.
     Discard(TaskShowArgs),
     /// Print what a different worker would need to continue this task.
-    Handoff(TaskShowArgs),
+    Handoff(HandoffArgs),
+}
+
+#[derive(Debug, Args)]
+struct HandoffArgs {
+    #[arg(value_name = "TASK_ID")]
+    task_id: String,
+
+    /// Checkpoint to hand over. Omit to print the bundle without handing it on.
+    #[arg(long, requires = "to")]
+    checkpoint_id: Option<String>,
+
+    /// Worker to hand the task to.
+    #[arg(long, value_name = "AGENT_ID", default_value = "fake.receiving")]
+    to: String,
+
+    #[arg(long)]
+    json: bool,
+
+    #[arg(long, default_value_t = 120)]
+    chunk_delay_ms: u64,
+
+    #[arg(long, value_name = "PATH")]
+    profile: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -434,21 +457,54 @@ fn emit_event(event: &tramontana_core::contracts::EventEnvelope, json: bool) {
     }
 }
 
-/// Show everything a different worker would need to continue this task.
+/// Show what a different worker would need to continue this task, and
+/// optionally hand it over.
 ///
-/// Printed rather than handed to a worker: M4 proves the bundle can be built
-/// from canonical state, and V2 asks a person to read it and judge whether it
-/// is enough. Handing it to a second worker automatically is M10's job.
-async fn handoff(args: TaskShowArgs) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
+/// Printing and handing over are the same command because they are the same
+/// decision seen twice: the bundle a person reads is exactly the bundle the
+/// second worker is given. A separate "preview" would be a different artifact
+/// and would prove nothing about the one that matters.
+async fn handoff(args: HandoffArgs) -> ExitCode {
+    let service = match wiring::open(&wiring::profile_path(args.profile), args.chunk_delay_ms).await
+    {
         Ok(service) => service,
         Err(message) => {
             eprintln!("error: {message}");
             return ExitCode::FAILURE;
         }
     };
-    match service.handoff_task(&TaskId::new(args.task_id)).await {
-        Ok(handoff) => render::json(&handoff),
-        Err(error) => render::application_error(&error),
+    let task_id = TaskId::new(args.task_id);
+
+    let Some(checkpoint_id) = args.checkpoint_id else {
+        return match service.handoff_task(&task_id).await {
+            Ok(handoff) => render::json(&handoff),
+            Err(error) => render::application_error(&error),
+        };
+    };
+
+    let Some(receiving) = wiring::worker_named(&args.to) else {
+        eprintln!(
+            "error: unknown worker {:?}; available: {}",
+            args.to,
+            wiring::available_workers().join(", ")
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let handed = match service
+        .hand_off_task(&task_id, &CheckpointId::new(checkpoint_id), receiving)
+        .await
+    {
+        Ok(handed) => handed,
+        Err(error) => return render::application_error(&error),
+    };
+
+    if args.json {
+        // The bundle first, so what the second worker was given is on the
+        // record before any of its activity scrolls past.
+        let _ = render::json(&handed);
+    } else {
+        println!("handed to {} at event {}", args.to, handed.event_sequence);
     }
+    stream_task(service, task_id, args.json, None, handed.event_sequence).await
 }

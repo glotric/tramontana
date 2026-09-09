@@ -87,6 +87,12 @@ pub fn derive_state(events: &[EventEnvelope]) -> DerivedState {
         match &event.payload {
             EventPayload::TaskStateChanged { current, .. } => state.task_state = Some(*current),
             EventPayload::WorkerSelected { descriptor } => state.worker = Some(descriptor.clone()),
+            // The latest manifest wins: a resumed run prepares context again,
+            // and a checkpoint that named the first attempt's context would
+            // describe a release that is no longer the one in force.
+            EventPayload::ContextPrepared { manifest } => {
+                state.context_manifest_id = Some(manifest.context_manifest_id.clone());
+            }
             EventPayload::ToolRequested {
                 invocation_id,
                 tool_id,

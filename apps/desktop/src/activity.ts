@@ -32,6 +32,24 @@ function describePayload(payload: EventPayload): string {
       return `${payload.previous} → ${payload.current} (${payload.reasonCode})`;
     case "workerSelected":
       return `${payload.descriptor.displayName} [${payload.descriptor.agentId}]`;
+    case "contextPrepared": {
+      const withheld = payload.manifest.sources.filter((source) => !source.included).length;
+      const scope = `${payload.manifest.sources.length} source(s), ${payload.manifest.totalBytes} byte(s) to ${payload.manifest.destinationClass}`;
+      return withheld === 0 ? scope : `${scope}, ${withheld} withheld`;
+    }
+    case "routingDecided": {
+      const why = payload.decision.reasonCodes.join(", ");
+      // Disclosure is the part a person must not have to look for.
+      return payload.decision.requiresDisclosure
+        ? `${payload.decision.model.modelId} (${why}) — leaves the device`
+        : `${payload.decision.model.modelId} (${why})`;
+    }
+    case "checkpointSaved":
+      return `${payload.checkpointId} — ${payload.completedStepCount} step(s) done, resume ${
+        payload.resume.eligible ? "offered" : "refused"
+      }`;
+    case "diagnosticRecorded":
+      return `${payload.code}: ${payload.summary}`;
     case "modelStarted":
       return `model ${payload.modelId}`;
     case "configurationResolved":

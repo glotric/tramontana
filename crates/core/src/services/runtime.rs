@@ -4,19 +4,21 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::contracts::{
-    AuthorizedToolRequest, CancellationOrigin, CapabilityScope, ErrorCode, ErrorEnvelope,
-    EventDraft, EventPayload, InvocationId, MessageId, MessageRole, MessageStatus,
-    NormalizedMessage, PermissionOrigin, ReplaySafety, RiskClass, SideEffect, StreamFrame,
-    TaskCheckpoint, TaskEventKind, TaskState,
+    AuthorizedToolRequest, CancellationOrigin, CapabilityScope, EffectiveConfiguration, ErrorCode,
+    ErrorEnvelope, EventDraft, EventPayload, HandoffBundle, InvocationId, MessageId, MessageRole,
+    MessageStatus, NormalizedMessage, PermissionOrigin, ReplaySafety, RiskClass, SideEffect,
+    StreamFrame, TaskCheckpoint, TaskEventKind, TaskState,
+};
+use crate::ports::{
+    AgentProvider, ModelEvent, ModelProvider, ModelRequest, StopReason, WorkerHost, WorkerOutcome,
+    WorkerRequest,
 };
 use crate::ports::{Clock, PermissionQuery};
-use crate::ports::{
-    ModelEvent, ModelProvider, ModelRequest, StopReason, WorkerHost, WorkerOutcome, WorkerRequest,
-};
 use crate::services::PermissionManager;
 use crate::services::ToolRegistry;
 use crate::services::checkpoint::ResumePlan;
 use crate::services::journal::TaskJournal;
+use crate::services::preparation::{assemble_context, choose_route};
 use crate::services::task_service::Providers;
 
 /// Drives one task through its state machine.
@@ -34,7 +36,18 @@ pub(crate) struct TaskDriver {
     scope: CapabilityScope,
     /// Source of decision timestamps.
     clock: Arc<dyn Clock>,
+    /// The effective configuration this task started under, when it has one.
+    ///
+    /// Held so the context manifest can name the instruction sources in force
+    /// rather than only their combined hash.
+    configuration: Option<EffectiveConfiguration>,
     checkpoint: Option<TaskCheckpoint>,
+    /// The canonical record handed to a *different* worker taking over.
+    handoff: Option<HandoffBundle>,
+    /// The worker actually running, which is not `providers.worker` on a
+    /// handoff. Held separately so the composition root does not have to be
+    /// rebuilt to run one task under a different worker.
+    worker: Option<Arc<dyn AgentProvider>>,
     resume: ResumePlan,
     interrupt: CancellationToken,
 }
@@ -51,10 +64,42 @@ impl TaskDriver {
             providers,
             scope,
             clock,
+            configuration: None,
             checkpoint: None,
+            handoff: None,
+            worker: None,
             resume: ResumePlan::default(),
             interrupt: CancellationToken::new(),
         }
+    }
+
+    /// Attach the effective configuration this task resolved at start.
+    pub(crate) fn with_configuration(
+        mut self,
+        configuration: Option<EffectiveConfiguration>,
+    ) -> Self {
+        self.configuration = configuration;
+        self
+    }
+
+    /// Run this task under `worker`, continuing from `handoff`.
+    pub(crate) fn handing_over(
+        mut self,
+        worker: Arc<dyn AgentProvider>,
+        handoff: HandoffBundle,
+        resume: ResumePlan,
+        interrupt: CancellationToken,
+    ) -> Self {
+        self.worker = Some(worker);
+        self.handoff = Some(handoff);
+        self.resume = resume;
+        self.interrupt = interrupt;
+        self
+    }
+
+    /// The worker this run uses: the one taking over, or the configured one.
+    fn worker(&self) -> &Arc<dyn AgentProvider> {
+        self.worker.as_ref().unwrap_or(&self.providers.worker)
     }
 
     pub(crate) fn continuing(
@@ -77,9 +122,19 @@ impl TaskDriver {
             TaskState::Queued
         };
 
+        // A resumed run prepares context again rather than reusing what an
+        // earlier attempt assembled: the project may have changed while the
+        // task was interrupted, and routing against a stale manifest would
+        // describe a release that did not happen.
+        let mut context_manifest_id: Option<String> = None;
+
         // Each step checks cancellation first. A cancel that arrives before the
         // task really starts still produces a proper Cancelling -> Cancelled
         // pair rather than a task that never moved.
+        //
+        // Preparing and Routing each leave a record of what they decided, so
+        // "what was this task given, and why that model?" is answerable from
+        // the stream rather than from someone's memory of the policy.
         for next in [
             TaskState::Preparing,
             TaskState::Routing,
@@ -101,9 +156,25 @@ impl TaskDriver {
                     return;
                 }
             }
+
+            let recorded = match state {
+                TaskState::Preparing => match self.record_context(&goal).await {
+                    Ok(manifest_id) => {
+                        context_manifest_id = Some(manifest_id);
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                },
+                TaskState::Routing => self.record_route(context_manifest_id.as_deref()).await,
+                _ => Ok(()),
+            };
+            if let Err(error) = recorded {
+                self.finish_failed(state, error).await;
+                return;
+            }
         }
 
-        let descriptor = self.providers.worker.describe();
+        let descriptor = self.worker().describe();
         if let Err(error) = self
             .record(EventDraft::user(
                 TaskEventKind::WorkerSelected,
@@ -130,8 +201,9 @@ impl TaskDriver {
 
         let request = WorkerRequest {
             task_id: self.journal.task_id().clone(),
-            goal,
+            goal: goal.clone(),
             checkpoint: self.checkpoint.clone(),
+            handoff: self.handoff.clone(),
         };
         let host = BrokeredHost {
             journal: self.journal.clone(),
@@ -149,11 +221,11 @@ impl TaskDriver {
             },
         };
 
-        let outcome = self
-            .providers
-            .worker
-            .run(request, &host, cancel.clone())
-            .await;
+        // `worker()`, not `providers.worker`: on a handoff the task is run by
+        // the worker taking it over, and the descriptor recorded above is
+        // already that one. Reading them from different places is how the
+        // record and the execution come apart.
+        let outcome = self.worker().run(request, &host, cancel.clone()).await;
         if self.interrupt.is_cancelled() {
             let _ = self
                 .change_state(state, TaskState::Interrupted, "user.checkpoint")
@@ -169,6 +241,54 @@ impl TaskDriver {
             Ok(_) => self.finish_cancelled(state).await,
             Err(error) => self.finish_failed(state, error).await,
         }
+    }
+
+    /// Assemble the context for this task and record what it holds.
+    ///
+    /// Returns the manifest identifier so the routing decision can name the
+    /// context it released — the link that makes a disclosure traceable to
+    /// what was actually sent.
+    async fn record_context(&self, goal: &str) -> Result<String, ErrorEnvelope> {
+        let manifest = assemble_context(
+            self.journal.next_id("context"),
+            self.journal.task_id().clone(),
+            goal,
+            self.configuration.as_ref(),
+            self.clock.now(),
+        );
+        let manifest_id = manifest.context_manifest_id.clone();
+
+        self.record(EventDraft::user(
+            TaskEventKind::ContextPrepared,
+            EventPayload::ContextPrepared { manifest },
+        ))
+        .await?;
+        Ok(manifest_id)
+    }
+
+    /// Choose a route for the context just prepared and record why.
+    ///
+    /// A task with no model available records no decision rather than an
+    /// invented one; the failure surfaces when the worker asks for inference.
+    async fn record_route(&self, context_manifest_id: Option<&str>) -> Result<(), ErrorEnvelope> {
+        let available = self.providers.model.list_models().await;
+        let Some(decision) = choose_route(
+            self.journal.next_id("decision"),
+            &available,
+            // Absent only when preparation recorded no manifest, which is a
+            // state the loop above does not reach. Named rather than empty so
+            // a reader is never left wondering what an empty string meant.
+            context_manifest_id.unwrap_or("context.unavailable"),
+            self.journal.next_id("availability"),
+        ) else {
+            return Ok(());
+        };
+
+        self.record(EventDraft::user(
+            TaskEventKind::RoutingDecided,
+            EventPayload::RoutingDecided { decision },
+        ))
+        .await
     }
 
     /// Validate and journal a state change.

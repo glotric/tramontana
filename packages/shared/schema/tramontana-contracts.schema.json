@@ -327,6 +327,155 @@
       ],
       "type": "object"
     },
+    "ContextCategory": {
+      "description": "Where a piece of context came from.",
+      "oneOf": [
+        {
+          "const": "conversation",
+          "description": "The conversation, including the user's goal.",
+          "type": "string"
+        },
+        {
+          "const": "selectedFile",
+          "description": "A file the user chose.",
+          "type": "string"
+        },
+        {
+          "const": "instruction",
+          "description": "Project-authored instructions.",
+          "type": "string"
+        },
+        {
+          "const": "skill",
+          "description": "A named skill definition.",
+          "type": "string"
+        },
+        {
+          "const": "repositoryMetadata",
+          "description": "Facts about the repository, such as its branch.",
+          "type": "string"
+        },
+        {
+          "const": "toolResult",
+          "description": "Output an earlier tool produced.",
+          "type": "string"
+        }
+      ]
+    },
+    "ContextManifest": {
+      "description": "Everything assembled for one destination.",
+      "properties": {
+        "contextManifestId": {
+          "description": "Stable identifier, referenced by routing decisions and checkpoints.",
+          "type": "string"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it was assembled."
+        },
+        "destinationClass": {
+          "$ref": "#/$defs/DestinationClass",
+          "description": "Where it was going."
+        },
+        "redactions": {
+          "description": "Stable codes for redactions applied before release.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sources": {
+          "description": "Everything considered, included or not.",
+          "items": {
+            "$ref": "#/$defs/ContextSource"
+          },
+          "type": "array"
+        },
+        "taskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "The task this was assembled for."
+        },
+        "totalBytes": {
+          "description": "Total bytes actually sent.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "totalTokenEstimate": {
+          "description": "Approximate total token cost, when estimated.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "contextManifestId",
+        "taskId",
+        "destinationClass",
+        "sources",
+        "totalBytes",
+        "redactions",
+        "createdAt"
+      ],
+      "type": "object"
+    },
+    "ContextSource": {
+      "description": "One thing that was considered for a context bundle.",
+      "properties": {
+        "byteCount": {
+          "description": "Size of the content in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "category": {
+          "$ref": "#/$defs/ContextCategory",
+          "description": "What kind of source it is."
+        },
+        "contentHash": {
+          "description": "Hash of the content, so the manifest explains without copying.",
+          "type": "string"
+        },
+        "dataClass": {
+          "$ref": "#/$defs/DataClass",
+          "description": "How sensitive its content is."
+        },
+        "exclusionReason": {
+          "description": "Why it was not, when it was not.",
+          "type": "string"
+        },
+        "included": {
+          "description": "Whether it was actually sent.",
+          "type": "boolean"
+        },
+        "sourceId": {
+          "description": "Stable identifier for this source within the task.",
+          "type": "string"
+        },
+        "tokenEstimate": {
+          "description": "Approximate token cost, when one was estimated.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sourceId",
+        "category",
+        "dataClass",
+        "contentHash",
+        "byteCount",
+        "included"
+      ],
+      "type": "object"
+    },
     "ConversationId": {
       "description": "A conversation within a project, or a projectless conversation.",
       "type": "string"
@@ -394,6 +543,26 @@
         {
           "const": "secret",
           "description": "A credential or token. Never serialized; see [`SecretRef`].",
+          "type": "string"
+        }
+      ]
+    },
+    "DestinationClass": {
+      "description": "Where assembled context is about to go.\n\nThe distinction is a policy one, not a technical one: crossing to `Cloud`\nis a data-release decision that needs a disclosure, and `Worker` means a\nprocess that is not the model and not Tramontana\n(`SECURITY_AND_PERMISSIONS.md` §8).",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "A model running on this device.",
+          "type": "string"
+        },
+        {
+          "const": "cloud",
+          "description": "A third-party endpoint.",
+          "type": "string"
+        },
+        {
+          "const": "worker",
+          "description": "A worker process.",
           "type": "string"
         }
       ]
@@ -764,6 +933,42 @@
           "required": [
             "kind",
             "configuration"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A context bundle was assembled for a destination.\n\nCarries the manifest whole rather than an identifier, because the\nrecord has to explain a data release without a second lookup — and\nbecause an exported bundle must still explain it on a machine that has\nnone of the original storage.",
+          "properties": {
+            "kind": {
+              "const": "contextPrepared",
+              "type": "string"
+            },
+            "manifest": {
+              "$ref": "#/$defs/ContextManifest",
+              "description": "What was assembled, and what was withheld."
+            }
+          },
+          "required": [
+            "kind",
+            "manifest"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A model and a location were chosen.",
+          "properties": {
+            "decision": {
+              "$ref": "#/$defs/RoutingDecision",
+              "description": "The decision, its reasons, and the context it released."
+            },
+            "kind": {
+              "const": "routingDecided",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "decision"
           ],
           "type": "object"
         },
@@ -2065,6 +2270,113 @@
           "type": "string"
         }
       ]
+    },
+    "RoutedModel": {
+      "description": "One model a decision could use.",
+      "properties": {
+        "modelId": {
+          "description": "The model.",
+          "type": "string"
+        },
+        "providerId": {
+          "description": "The provider offering it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "providerId",
+        "modelId"
+      ],
+      "type": "object"
+    },
+    "RoutingDecision": {
+      "description": "Where a task's inference was sent, and why.",
+      "properties": {
+        "availabilitySnapshotId": {
+          "description": "The availability snapshot the decision was made against.\n\nRecorded so a decision can be explained later even though availability\nhas moved on. Without it, \"why not the other model?\" is unanswerable.",
+          "type": "string"
+        },
+        "contextManifestId": {
+          "description": "The context this decision released.",
+          "type": "string"
+        },
+        "decisionId": {
+          "description": "Stable identifier for this decision.",
+          "type": "string"
+        },
+        "fallbackOrder": {
+          "description": "What would have been tried next, in order.",
+          "items": {
+            "$ref": "#/$defs/RoutingFallback"
+          },
+          "type": "array"
+        },
+        "location": {
+          "$ref": "#/$defs/ExecutionLocation",
+          "description": "Where it runs."
+        },
+        "mode": {
+          "$ref": "#/$defs/RoutingMode",
+          "description": "The routing mode in force when it was made."
+        },
+        "model": {
+          "$ref": "#/$defs/RoutedModel",
+          "description": "The model chosen."
+        },
+        "reasonCodes": {
+          "description": "Why, in deterministic order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "requiresDisclosure": {
+          "description": "Whether reaching this route needs the user told.",
+          "type": "boolean"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "decisionId",
+        "mode",
+        "model",
+        "location",
+        "availabilitySnapshotId",
+        "reasonCodes",
+        "fallbackOrder",
+        "contextManifestId",
+        "requiresDisclosure"
+      ],
+      "type": "object"
+    },
+    "RoutingFallback": {
+      "description": "A model and where it would run, as a fallback option.",
+      "properties": {
+        "location": {
+          "$ref": "#/$defs/ExecutionLocation",
+          "description": "Where it would run."
+        },
+        "modelId": {
+          "description": "The model.",
+          "type": "string"
+        },
+        "providerId": {
+          "description": "The provider offering it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "providerId",
+        "modelId",
+        "location"
+      ],
+      "type": "object"
     },
     "RoutingMode": {
       "description": "The user's standing policy for where inference may run.",

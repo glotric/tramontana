@@ -120,6 +120,23 @@ pub enum EventPayload {
         /// Secret-free manifest metadata. Markdown bodies are not copied.
         configuration: super::EffectiveConfiguration,
     },
+    /// A context bundle was assembled for a destination.
+    ///
+    /// Carries the manifest whole rather than an identifier, because the
+    /// record has to explain a data release without a second lookup — and
+    /// because an exported bundle must still explain it on a machine that has
+    /// none of the original storage.
+    #[serde(rename_all = "camelCase")]
+    ContextPrepared {
+        /// What was assembled, and what was withheld.
+        manifest: super::ContextManifest,
+    },
+    /// A model and a location were chosen.
+    #[serde(rename_all = "camelCase")]
+    RoutingDecided {
+        /// The decision, its reasons, and the context it released.
+        decision: super::RoutingDecision,
+    },
     /// A worker was selected for this task.
     ///
     /// Carries the whole descriptor rather than a name, because a checkpoint

@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::contracts::{
-    AgentDescriptor, ErrorEnvelope, EventDraft, StreamFrame, TaskCheckpoint, TaskId,
+    AgentDescriptor, ErrorEnvelope, EventDraft, HandoffBundle, StreamFrame, TaskCheckpoint, TaskId,
 };
 
 /// What a worker was asked to do.
@@ -14,6 +14,15 @@ pub struct WorkerRequest {
     pub goal: String,
     /// Canonical checkpoint on explicit resume. Never opaque worker state.
     pub checkpoint: Option<TaskCheckpoint>,
+    /// Canonical handoff when a *different* worker is taking the task over.
+    ///
+    /// Separate from `checkpoint` because the two answer different questions.
+    /// A checkpoint says "here is where you left off" to the worker that was
+    /// already running. A handoff says "here is what happened, none of it
+    /// yours" to one that was not — and carries the normalized history a
+    /// stranger needs, with nothing private to the previous worker in it
+    /// (`PROJECT_FORMAT.md` §4).
+    pub handoff: Option<HandoffBundle>,
 }
 
 /// How a worker session ended.

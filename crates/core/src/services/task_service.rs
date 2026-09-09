@@ -492,6 +492,11 @@ impl TaskService {
                 correlation_id.clone(),
             ),
         ];
+        // Cloned before the event takes ownership: the driver needs the same
+        // manifest to name the instruction sources in its context record, and
+        // reading it back from storage would be a second source of truth for
+        // something already in hand.
+        let resolved_configuration = configuration.clone();
         if let Some(configuration) = configuration {
             initial_events.push(
                 EventDraft::user(
@@ -557,6 +562,7 @@ impl TaskService {
             scope,
             Arc::clone(&self.clock),
         )
+        .with_configuration(resolved_configuration)
         .continuing(None, super::ResumePlan::default(), interrupt);
         let goal = request.goal;
         let execution_guard = self.execution_guard.clone();

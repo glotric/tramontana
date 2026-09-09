@@ -17,13 +17,14 @@ use anyhow::{Context, Result, bail};
 use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings};
 use tramontana_core::contracts::{
     AgentDescriptor, BundleEntry, CheckpointWorker, ConfigurationDiagnostic, ConfigurationKind,
-    ConfigurationSource, ConversationRecord, DataClass, DiagnosticSeverity, EffectiveConfiguration,
-    ErrorCode, ErrorEnvelope, EventEnvelope, EventPayload, ExecutionLocation, ExportManifest,
-    ExportOptions, ExportedConfiguration, HandoffBundle, HandoffEntry, ModelDescriptor,
-    NormalizedMessage, Omission, OmissionCategory, PendingAction, PendingActionKind, ProjectRecord,
-    ReplaySafety, ResumeEligibility, ResumeMode, RiskClass, RoutingMode, SecretRef, SecretStore,
-    SideEffect, StreamFrame, TaskCheckpoint, TaskEventKind, TaskRecord, TaskSnapshot, TaskState,
-    TaskUpdate, ToolDescriptor, Visibility,
+    ConfigurationSource, ContextCategory, ContextManifest, ContextSource, ConversationRecord,
+    DataClass, DestinationClass, DiagnosticSeverity, EffectiveConfiguration, ErrorCode,
+    ErrorEnvelope, EventEnvelope, EventPayload, ExecutionLocation, ExportManifest, ExportOptions,
+    ExportedConfiguration, HandoffBundle, HandoffEntry, ModelDescriptor, NormalizedMessage,
+    Omission, OmissionCategory, PendingAction, PendingActionKind, ProjectRecord, ReplaySafety,
+    ResumeEligibility, ResumeMode, RiskClass, RoutedModel, RoutingDecision, RoutingFallback,
+    RoutingMode, SecretRef, SecretStore, SideEffect, StreamFrame, TaskCheckpoint, TaskEventKind,
+    TaskRecord, TaskSnapshot, TaskState, TaskUpdate, ToolDescriptor, Visibility,
 };
 
 /// Filename of the single bundled contract schema.
@@ -111,6 +112,13 @@ fn emit_schema(dir: &Path) -> Result<PathBuf> {
     register::<ProjectRecord>(&mut generator);
     register::<ConversationRecord>(&mut generator);
     register::<TaskRecord>(&mut generator);
+    register::<ContextCategory>(&mut generator);
+    register::<DestinationClass>(&mut generator);
+    register::<ContextSource>(&mut generator);
+    register::<ContextManifest>(&mut generator);
+    register::<RoutedModel>(&mut generator);
+    register::<RoutingFallback>(&mut generator);
+    register::<RoutingDecision>(&mut generator);
     register::<PendingActionKind>(&mut generator);
     register::<ReplaySafety>(&mut generator);
     register::<PendingAction>(&mut generator);
@@ -283,6 +291,13 @@ mod tests {
             "ProjectRecord",
             "ConversationRecord",
             "TaskRecord",
+            "ContextCategory",
+            "DestinationClass",
+            "ContextSource",
+            "ContextManifest",
+            "RoutedModel",
+            "RoutingFallback",
+            "RoutingDecision",
             "PendingActionKind",
             "ReplaySafety",
             "PendingAction",

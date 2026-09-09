@@ -13,8 +13,23 @@ use super::runtime::TaskDriver;
 use super::task_service::{LiveTask, TaskService};
 use crate::contracts::{
     CancellationOrigin, CapabilityScope, CheckpointId, CorrelationId, ErrorCode, ErrorEnvelope,
-    EventDraft, EventPayload, TaskCheckpoint, TaskEventKind, TaskId, TaskRecord, TaskState,
+    EventDraft, EventEnvelope, EventPayload, HandoffBundle, ResumeMode, TaskCheckpoint,
+    TaskEventKind, TaskId, TaskRecord, TaskState,
 };
+use crate::services::handoff::build_handoff;
+
+/// A validated interrupted task, ready for someone to continue.
+struct Continuation {
+    record: TaskRecord,
+    /// The checkpoint the user inspected.
+    checkpoint: TaskCheckpoint,
+    /// The same point, recomputed from canonical events.
+    derived: TaskCheckpoint,
+    /// The task's durable history.
+    events: Vec<EventEnvelope>,
+    /// The limits the continued run inherits.
+    scope: CapabilityScope,
+}
 
 impl TaskService {
     pub(super) fn require_execution(&self) -> Result<(), ErrorEnvelope> {
@@ -115,14 +130,20 @@ impl TaskService {
             .map_err(|error| self.repository_error(&error))
     }
 
-    /// Resume the exact inspected checkpoint with the same worker.
-    /// Eligibility is recomputed from canonical events, never trusted from a row.
-    pub async fn resume_task(
+    /// Everything both continuation paths need, validated against canonical
+    /// events rather than trusted from a stored row.
+    ///
+    /// Resuming and handing over differ only in *who* continues; every reason
+    /// a continuation can be refused — the task is running, is not
+    /// interrupted, the checkpoint is stale or was never inspected, the
+    /// pending action cannot be repeated, the configuration moved — is the
+    /// same for both. Sharing the check is what keeps the newer path from
+    /// quietly having weaker rules than the older one.
+    async fn validated_continuation(
         &self,
         task_id: &TaskId,
         checkpoint_id: &CheckpointId,
-    ) -> Result<(), ErrorEnvelope> {
-        let _lifecycle = self.lifecycle.lock().await;
+    ) -> Result<Continuation, ErrorEnvelope> {
         self.require_execution()?;
         if self
             .lock_live()?
@@ -133,7 +154,10 @@ impl TaskService {
         }
         let record = self.canonical_record(task_id).await?;
         if record.state != TaskState::Interrupted {
-            return Err(self.error(ErrorCode::Conflict, "Only interrupted tasks can be resumed"));
+            return Err(self.error(
+                ErrorCode::Conflict,
+                "Only interrupted tasks can be continued",
+            ));
         }
         let checkpoint = self
             .latest_checkpoint(task_id)
@@ -142,7 +166,7 @@ impl TaskService {
             .ok_or_else(|| {
                 self.error(
                     ErrorCode::Conflict,
-                    "Inspect the latest checkpoint before resuming",
+                    "Inspect the latest checkpoint before continuing",
                 )
             })?;
         let events = self.replay_task_events(task_id, 0).await?;
@@ -164,17 +188,8 @@ impl TaskService {
                 derived
                     .resume
                     .reason_code
+                    .clone()
                     .unwrap_or_else(|| "Checkpoint is not resumable".into()),
-            ));
-        }
-        if derived
-            .worker
-            .as_ref()
-            .is_some_and(|worker| worker.descriptor != self.providers.worker.describe())
-        {
-            return Err(self.error(
-                ErrorCode::Conflict,
-                "Same-worker resume requires the recorded worker and capabilities",
             ));
         }
         let scope = if let Some(project_id) = &record.project_id {
@@ -184,7 +199,7 @@ impl TaskService {
             {
                 return Err(self.error(
                     ErrorCode::Conflict,
-                    "Configuration changed; this checkpoint cannot be resumed unchanged",
+                    "Configuration changed; this checkpoint cannot be continued unchanged",
                 ));
             }
             CapabilityScope::project(
@@ -198,13 +213,133 @@ impl TaskService {
                 releases_data: false,
             }
         };
+
+        Ok(Continuation {
+            record,
+            checkpoint,
+            derived,
+            events,
+            scope,
+        })
+    }
+
+    /// Resume the exact inspected checkpoint with the same worker.
+    /// Eligibility is recomputed from canonical events, never trusted from a row.
+    pub async fn resume_task(
+        &self,
+        task_id: &TaskId,
+        checkpoint_id: &CheckpointId,
+    ) -> Result<(), ErrorEnvelope> {
+        let _lifecycle = self.lifecycle.lock().await;
+        let continuation = self.validated_continuation(task_id, checkpoint_id).await?;
+
+        if continuation
+            .derived
+            .worker
+            .as_ref()
+            .is_some_and(|worker| worker.descriptor != self.providers.worker.describe())
+        {
+            return Err(self.error(
+                ErrorCode::Conflict,
+                "Same-worker resume requires the recorded worker and capabilities",
+            ));
+        }
+        self.launch(continuation, None).await
+    }
+
+    /// Hand an interrupted task to a *different* worker, from canonical state.
+    ///
+    /// The receiving worker is given a [`HandoffBundle`] and nothing else: no
+    /// checkpoint belonging to the previous worker, and no opaque continuation
+    /// data. That is the claim `PROJECT_FORMAT.md` §4 makes and validation
+    /// gate V2 tests — if the bundle is not enough, the handed-over task fails
+    /// here rather than the claim going unchallenged until M10 depends on it.
+    ///
+    /// Returns the bundle that was handed over, so a caller can show a person
+    /// exactly what the second worker was given.
+    ///
+    /// # Errors
+    ///
+    /// Every refusal [`TaskService::resume_task`] can produce, plus
+    /// [`ErrorCode::Conflict`] when the checkpoint is not portable or when the
+    /// receiving worker is the one that was already running.
+    pub async fn hand_off_task(
+        &self,
+        task_id: &TaskId,
+        checkpoint_id: &CheckpointId,
+        receiving: Arc<dyn crate::ports::AgentProvider>,
+    ) -> Result<HandoffBundle, ErrorEnvelope> {
+        let _lifecycle = self.lifecycle.lock().await;
+        let continuation = self.validated_continuation(task_id, checkpoint_id).await?;
+
+        if continuation.derived.resume.mode != Some(ResumeMode::CanonicalHandoff) {
+            // A worker that needs its own session state cannot be replaced by
+            // one reading the canonical record, and pretending otherwise would
+            // hand the second worker a record it cannot act on.
+            return Err(self.error(
+                ErrorCode::Conflict,
+                "This checkpoint is not portable; only the recorded worker can continue it",
+            ));
+        }
+
+        let receiving_descriptor = receiving.describe();
+        if continuation
+            .derived
+            .worker
+            .as_ref()
+            .is_some_and(|worker| worker.descriptor.agent_id == receiving_descriptor.agent_id)
+        {
+            return Err(self.error(
+                ErrorCode::Conflict,
+                "That worker already had this task; resume it instead of handing it over",
+            ));
+        }
+
+        let handoff = build_handoff(
+            &continuation.record,
+            &continuation.events,
+            &continuation.derived,
+            self.clock.now(),
+        );
+        self.launch(continuation, Some((receiving, handoff.clone())))
+            .await?;
+        Ok(handoff)
+    }
+
+    /// Move an interrupted task back into `preparing` and run it.
+    ///
+    /// `taking_over` is absent for a same-worker resume and present for a
+    /// handoff. Everything else — the live registry entry, the journal, the
+    /// configuration read back by hash, the replay guard built from the
+    /// events — is identical, because the difference between the two paths is
+    /// only who continues.
+    async fn launch(
+        &self,
+        continuation: Continuation,
+        taking_over: Option<(Arc<dyn crate::ports::AgentProvider>, HandoffBundle)>,
+    ) -> Result<(), ErrorEnvelope> {
+        let Continuation {
+            record,
+            checkpoint,
+            events,
+            scope,
+            ..
+        } = continuation;
+        let task_id = record.task_id.clone();
+
         let cancel = CancellationToken::new();
         let interrupt = CancellationToken::new();
         let (finished, receiver) = watch::channel(false);
         let (updates, _) = broadcast::channel(256);
-        self.append_state(&record, TaskState::Preparing, "user.resumedCheckpoint")
+
+        let reason = if taking_over.is_some() {
+            "user.handedOver"
+        } else {
+            "user.resumedCheckpoint"
+        };
+        self.append_state(&record, TaskState::Preparing, reason)
             .await?;
-        let record = self.canonical_record(task_id).await?;
+        let record = self.canonical_record(&task_id).await?;
         let journal = self.journal_for(&record, updates.clone());
         self.lock_live()?.insert(
             task_id.clone(),
@@ -215,12 +350,29 @@ impl TaskService {
                 finished: receiver,
             },
         );
+
+        // The manifest the task started under, not whatever the project holds
+        // now: the validation above already refused if the configuration
+        // moved, so this is the same one, read back by hash rather than
+        // assumed.
+        let configuration = match (&record.project_id, &record.configuration_manifest_hash) {
+            (Some(project_id), Some(hash)) => self
+                .repositories
+                .configuration
+                .get(project_id, hash)
+                .await
+                .ok(),
+            _ => None,
+        };
+
+        let plan = ResumePlan::from_events(&events);
         let driver = TaskDriver::new(journal, self.providers.clone(), scope, self.clock.clone())
-            .continuing(
-                Some(checkpoint),
-                ResumePlan::from_events(&events),
-                interrupt,
-            );
+            .with_configuration(configuration);
+        let driver = match taking_over {
+            Some((receiving, handoff)) => driver.handing_over(receiving, handoff, plan, interrupt),
+            None => driver.continuing(Some(checkpoint), plan, interrupt),
+        };
+
         let guard = self.execution_guard.clone();
         tokio::spawn(async move {
             let _guard = guard;

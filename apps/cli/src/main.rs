@@ -184,6 +184,19 @@ mod tests {
             .is_ok()
         );
         assert!(Cli::try_parse_from(["tramontana", "task", "handoff", "task-1"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "tramontana",
+                "task",
+                "handoff",
+                "task-1",
+                "--checkpoint-id",
+                "checkpoint-1",
+                "--to",
+                "fake.receiving",
+            ])
+            .is_ok()
+        );
     }
 
     #[test]

@@ -255,6 +255,92 @@ export interface ConfigurationSource {
 }
 
 /**
+ * Where a piece of context came from.
+ */
+export type ContextCategory =
+  "conversation" | "selectedFile" | "instruction" | "skill" | "repositoryMetadata" | "toolResult";
+
+/**
+ * Everything assembled for one destination.
+ */
+export interface ContextManifest {
+  /**
+   * Stable identifier, referenced by routing decisions and checkpoints.
+   */
+  contextManifestId: string;
+  /**
+   * When it was assembled.
+   */
+  createdAt: string;
+  /**
+   * Where it was going.
+   */
+  destinationClass: "local" | "cloud" | "worker";
+  /**
+   * Stable codes for redactions applied before release.
+   */
+  redactions: string[];
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  /**
+   * Everything considered, included or not.
+   */
+  sources: ContextSource[];
+  /**
+   * The task this was assembled for.
+   */
+  taskId: string;
+  /**
+   * Total bytes actually sent.
+   */
+  totalBytes: number;
+  /**
+   * Approximate total token cost, when estimated.
+   */
+  totalTokenEstimate?: number;
+}
+
+/**
+ * One thing that was considered for a context bundle.
+ */
+export interface ContextSource {
+  /**
+   * Size of the content in bytes.
+   */
+  byteCount: number;
+  /**
+   * What kind of source it is.
+   */
+  category: "conversation" | "selectedFile" | "instruction" | "skill" | "repositoryMetadata" | "toolResult";
+  /**
+   * Hash of the content, so the manifest explains without copying.
+   */
+  contentHash: string;
+  /**
+   * How sensitive its content is.
+   */
+  dataClass: "public" | "project" | "sensitive" | "secret";
+  /**
+   * Why it was not, when it was not.
+   */
+  exclusionReason?: string;
+  /**
+   * Whether it was actually sent.
+   */
+  included: boolean;
+  /**
+   * Stable identifier for this source within the task.
+   */
+  sourceId: string;
+  /**
+   * Approximate token cost, when one was estimated.
+   */
+  tokenEstimate?: number;
+}
+
+/**
  * A conversation within a project, or a projectless conversation.
  */
 export type ConversationId = string;
@@ -299,6 +385,16 @@ export type CorrelationId = string;
  * Sensitivity of a piece of content, used to decide what may leave the device.
  */
 export type DataClass = "public" | "project" | "sensitive" | "secret";
+
+/**
+ * Where assembled context is about to go.
+ *
+ * The distinction is a policy one, not a technical one: crossing to `Cloud`
+ * is a data-release decision that needs a disclosure, and `Worker` means a
+ * process that is not the model and not Tramontana
+ * (`SECURITY_AND_PERMISSIONS.md` §8).
+ */
+export type DestinationClass = "local" | "cloud" | "worker";
 
 /**
  * Why a source was rejected or flagged.
@@ -536,6 +632,14 @@ export interface EventEnvelope {
     | {
         configuration: EffectiveConfiguration;
         kind: "configurationResolved";
+      }
+    | {
+        kind: "contextPrepared";
+        manifest: ContextManifest;
+      }
+    | {
+        decision: RoutingDecision;
+        kind: "routingDecided";
       }
     | {
         descriptor: AgentDescriptor;
@@ -803,6 +907,14 @@ export type EventPayload =
   | {
       configuration: EffectiveConfiguration;
       kind: "configurationResolved";
+    }
+  | {
+      kind: "contextPrepared";
+      manifest: ContextManifest;
+    }
+  | {
+      decision: RoutingDecision;
+      kind: "routingDecided";
     }
   | {
       descriptor: AgentDescriptor;
@@ -1491,6 +1603,128 @@ export type ResumeMode = "sameWorker" | "canonicalHandoff";
  * How much damage a tool invocation could do if the model asked for it wrongly.
  */
 export type RiskClass = "read" | "modify" | "dangerous";
+
+/**
+ * One model a decision could use.
+ */
+export interface RoutedModel {
+  /**
+   * The model.
+   */
+  modelId: string;
+  /**
+   * The provider offering it.
+   */
+  providerId: string;
+}
+
+/**
+ * Where a task's inference was sent, and why.
+ */
+export interface RoutingDecision {
+  /**
+   * The availability snapshot the decision was made against.
+   *
+   * Recorded so a decision can be explained later even though availability
+   * has moved on. Without it, "why not the other model?" is unanswerable.
+   */
+  availabilitySnapshotId: string;
+  /**
+   * The context this decision released.
+   */
+  contextManifestId: string;
+  /**
+   * Stable identifier for this decision.
+   */
+  decisionId: string;
+  /**
+   * What would have been tried next, in order.
+   */
+  fallbackOrder: RoutingFallback[];
+  /**
+   * Where it runs.
+   */
+  location:
+    | {
+        /**
+         * Human-readable name for the interface.
+         */
+        displayName: string;
+        kind: "local";
+        /**
+         * Stable identifier for the compute target.
+         */
+        targetId: string;
+      }
+    | {
+        kind: "cloud";
+        /**
+         * Stable provider identifier.
+         */
+        providerId: string;
+        /**
+         * Provider region, when the provider exposes one.
+         */
+        region?: string;
+      };
+  /**
+   * The routing mode in force when it was made.
+   */
+  mode: "localOnly" | "automatic" | "cloudPreferred";
+  model: RoutedModel;
+  /**
+   * Why, in deterministic order.
+   */
+  reasonCodes: string[];
+  /**
+   * Whether reaching this route needs the user told.
+   */
+  requiresDisclosure: boolean;
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+}
+
+/**
+ * A model and where it would run, as a fallback option.
+ */
+export interface RoutingFallback {
+  /**
+   * Where it would run.
+   */
+  location:
+    | {
+        /**
+         * Human-readable name for the interface.
+         */
+        displayName: string;
+        kind: "local";
+        /**
+         * Stable identifier for the compute target.
+         */
+        targetId: string;
+      }
+    | {
+        kind: "cloud";
+        /**
+         * Stable provider identifier.
+         */
+        providerId: string;
+        /**
+         * Provider region, when the provider exposes one.
+         */
+        region?: string;
+      };
+  /**
+   * The model.
+   */
+  modelId: string;
+  /**
+   * The provider offering it.
+   */
+  providerId: string;
+}
 
 /**
  * The user's standing policy for where inference may run.

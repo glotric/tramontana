@@ -14,6 +14,7 @@ mod export;
 mod handoff;
 mod journal;
 mod permission_manager;
+mod preparation;
 mod projection;
 mod runtime;
 mod task_export;
@@ -31,6 +32,7 @@ pub use export::{
 pub use handoff::build_handoff;
 pub use journal::{JournalPorts, TaskJournal};
 pub use permission_manager::PermissionManager;
+pub use preparation::{assemble_context, choose_route};
 pub use projection::TaskProjectionWriter;
 pub use task_export::ImportSummary;
 pub use task_service::{Providers, Repositories, StartTaskRequest, TaskService};
