@@ -7,9 +7,15 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use tramontana_adapters_tools::{FilesystemTools, GitTools};
 use tramontana_core::ports::EventStore;
+use tramontana_core::ports::{ApprovalStore, Approver, ToolProvider};
 use tramontana_core::services::{Providers, Repositories, TaskService};
-use tramontana_core::testing::{FakeModelProvider, FakeToolProvider, FakeWorker};
+use tramontana_core::testing::{
+    FakeModelProvider, FakeWorker, InMemoryApprovalStore, assemble_tool_plane,
+};
+
+use crate::approval::TerminalApprover;
 use tramontana_persistence::{
     Database, SqliteConfigurationRepository, SqliteConversationRepository, SqliteEventStore,
     SqliteProjectRepository, SqliteTaskRepository,
@@ -57,6 +63,23 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
         .await
         .map_err(|error| format!("could not open {}: {error}", path.display()))?;
 
+    // Read-only tools, behind the permission boundary. The registry says a
+    // tool exists; only the permission manager says it may run.
+    let (registry, permissions) = assemble_tool_plane(
+        vec![
+            Arc::new(FilesystemTools::new()) as Arc<dyn ToolProvider>,
+            Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
+        ],
+        Arc::new(InMemoryApprovalStore::new()) as Arc<dyn ApprovalStore>,
+        // Prompts on a terminal, and refuses when there is no terminal to
+        // prompt on. Every tool registered above is a read inside an approved
+        // project, which policy permits without asking, so this is exercised
+        // only once modifying tools arrive in M7.
+        Arc::new(TerminalApprover::new()) as Arc<dyn Approver>,
+        Arc::new(UuidIdSource::new()),
+    )
+    .map_err(|error| format!("could not register tools: {error}"))?;
+
     let events = Arc::new(SqliteEventStore::new(database.clone())) as Arc<dyn EventStore>;
     let service = TaskService::new(
         Repositories {
@@ -73,8 +96,15 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
                 ["Hello", ", ", "world"],
                 chunk_delay_ms,
             )),
-            tools: Arc::new(FakeToolProvider::new()),
-            worker: Arc::new(FakeWorker::new()),
+            tools: Arc::clone(&registry),
+            permissions: Arc::clone(&permissions),
+            // Points the reference worker at a genuine read-only tool, so the
+            // skeleton exercises the real permission and containment path
+            // rather than a fake that cannot be refused.
+            worker: Arc::new(FakeWorker::calling(
+                "builtin.fs.list",
+                serde_json::json!({ "path": "." }),
+            )),
         },
         Arc::new(SystemClock::new()),
         Arc::new(UuidIdSource::new()),

@@ -79,7 +79,37 @@ async function schemaToTypeScript(schemaJson) {
     }
   }
 
-  return `${BANNER}\n${deduped.join("\n\n")}\n`;
+  return `${BANNER}\n${collapseNumberedAliases(deduped.join("\n\n"), seen)}\n`;
+}
+
+/**
+ * Collapse `Name1`, `Name2` back onto `Name`.
+ *
+ * Each definition is compiled on its own, so when two of them reference the
+ * same shared type the generator emits `ErrorEnvelope` for the first and
+ * `ErrorEnvelope1` for the second. Deduplicating by name then drops the second
+ * declaration and leaves a reference to a type that does not exist — which
+ * type-checks as `any` in some positions and fails outright in others.
+ *
+ * Rewriting the suffixed references onto the surviving declaration is safe
+ * precisely because they came from one schema definition.
+ */
+function collapseNumberedAliases(source, declared) {
+  let output = source;
+  const suffixed = new Set(source.match(/\b[A-Z][A-Za-z0-9]*?[0-9]+\b/g) ?? []);
+
+  for (const alias of suffixed) {
+    const base = alias.replace(/[0-9]+$/, "");
+    if (!declared.has(base)) continue;
+    // Drop a duplicate declaration of the alias if one survived, then point
+    // every remaining reference at the base type.
+    output = output.replace(
+      new RegExp(`export (?:type|interface) ${alias}\\b[\\s\\S]*?\\n}\\n`, "g"),
+      "",
+    );
+    output = output.replace(new RegExp(`\\b${alias}\\b`, "g"), base);
+  }
+  return output;
 }
 
 async function generate(schemaDir, tsPath) {

@@ -4,13 +4,16 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::contracts::{
-    CancellationOrigin, ErrorCode, ErrorEnvelope, EventDraft, EventPayload, InvocationId,
-    StreamFrame, TaskEventKind, TaskState,
+    AuthorizedToolRequest, CancellationOrigin, CapabilityScope, ErrorCode, ErrorEnvelope,
+    EventDraft, EventPayload, InvocationId, PermissionOrigin, RiskClass, StreamFrame,
+    TaskEventKind, TaskState,
 };
+use crate::ports::{Clock, PermissionQuery};
 use crate::ports::{
-    ModelEvent, ModelProvider, ModelRequest, ToolInvocation, ToolProvider, WorkerHost,
-    WorkerOutcome, WorkerRequest,
+    ModelEvent, ModelProvider, ModelRequest, WorkerHost, WorkerOutcome, WorkerRequest,
 };
+use crate::services::PermissionManager;
+use crate::services::ToolRegistry;
 use crate::services::journal::TaskJournal;
 use crate::services::task_service::Providers;
 
@@ -23,11 +26,27 @@ use crate::services::task_service::Providers;
 pub(crate) struct TaskDriver {
     journal: TaskJournal,
     providers: Providers,
+    /// The limits every tool call this task makes inherits, taken from the
+    /// project's approved roots. A projectless task gets an empty scope, which
+    /// the permission manager reads as no filesystem access at all.
+    scope: CapabilityScope,
+    /// Source of decision timestamps.
+    clock: Arc<dyn Clock>,
 }
 
 impl TaskDriver {
-    pub(crate) fn new(journal: TaskJournal, providers: Providers) -> Self {
-        Self { journal, providers }
+    pub(crate) fn new(
+        journal: TaskJournal,
+        providers: Providers,
+        scope: CapabilityScope,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self {
+            journal,
+            providers,
+            scope,
+            clock,
+        }
     }
 
     /// Run the task to exactly one terminal state.
@@ -87,7 +106,15 @@ impl TaskDriver {
         let host = BrokeredHost {
             journal: self.journal.clone(),
             model: Arc::clone(&self.providers.model),
-            tools: Arc::clone(&self.providers.tools),
+            tools: ToolBroker {
+                registry: Arc::clone(&self.providers.tools),
+                permissions: Arc::clone(&self.providers.permissions),
+                scope: self.scope.clone(),
+                origin: PermissionOrigin::Worker {
+                    agent_id: self.providers.worker.describe().agent_id,
+                },
+                clock: Arc::clone(&self.clock),
+            },
         };
 
         match self
@@ -206,7 +233,32 @@ impl TaskDriver {
 struct BrokeredHost {
     journal: TaskJournal,
     model: Arc<dyn ModelProvider>,
-    tools: Arc<dyn ToolProvider>,
+    tools: ToolBroker,
+}
+
+/// Everything needed to turn a worker's tool request into an audited action.
+///
+/// Bundled because the five pieces are meaningless apart: a registry with no
+/// policy would authorize nothing, and a policy with no scope would authorize
+/// everything.
+#[derive(Clone)]
+pub(crate) struct ToolBroker {
+    /// Where tools are found.
+    pub(crate) registry: Arc<ToolRegistry>,
+    /// What decides whether they may run.
+    pub(crate) permissions: Arc<PermissionManager>,
+    /// The limits every request inherits.
+    pub(crate) scope: CapabilityScope,
+    /// Who is asking, for the audit record.
+    pub(crate) origin: PermissionOrigin,
+    /// Source of decision timestamps.
+    pub(crate) clock: Arc<dyn Clock>,
+}
+
+impl std::fmt::Debug for ToolBroker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolBroker").finish_non_exhaustive()
+    }
 }
 
 #[async_trait]
@@ -259,20 +311,20 @@ impl WorkerHost for BrokeredHost {
         cancel: &CancellationToken,
     ) -> Result<serde_json::Value, ErrorEnvelope> {
         let invocation_id = InvocationId::new(format!("invocation-{tool_id}"));
+        let correlation = self.journal.correlation_id().clone();
 
-        let descriptor = self
-            .tools
-            .list_tools()
-            .into_iter()
-            .find(|tool| tool.tool_id == tool_id)
-            .ok_or_else(|| {
-                ErrorEnvelope::new(
-                    ErrorCode::NotFound,
-                    format!("unknown tool {tool_id}"),
-                    self.journal.correlation_id().clone(),
-                )
-            })?;
+        // 1. Resolve. An unknown tool never reaches policy: there is nothing
+        //    to evaluate, and inventing a scope for it would be guessing.
+        let Some((capability, risk_class)) = self.tools.registry.requirements(tool_id) else {
+            return Err(ErrorEnvelope::new(
+                ErrorCode::NotFound,
+                format!("unknown tool {tool_id}"),
+                correlation,
+            ));
+        };
 
+        // 2. Announce the request before it is judged, so the record shows
+        //    what was asked for even when the answer is no.
         self.journal
             .append(EventDraft::user(
                 TaskEventKind::ToolRequested,
@@ -280,36 +332,125 @@ impl WorkerHost for BrokeredHost {
                     invocation_id: invocation_id.clone(),
                     tool_id: tool_id.to_owned(),
                     arguments_summary: summarize_arguments(&arguments),
-                    risk_class: descriptor.risk_class,
+                    risk_class,
                 },
             ))
             .await?;
 
-        let outcome = self
+        // 3. Decide.
+        let query = PermissionQuery {
+            tool_id: tool_id.to_owned(),
+            capability,
+            risk_class,
+            scope: self.tools.scope.clone(),
+            persistable: risk_class != RiskClass::Dangerous,
+        };
+        let (outcome, authorized) = self
             .tools
-            .invoke(
-                ToolInvocation {
-                    invocation_id: invocation_id.clone(),
-                    tool_id: tool_id.to_owned(),
-                    arguments,
-                },
-                cancel.clone(),
+            .permissions
+            .authorize(
+                &query,
+                self.journal.task_id(),
+                &invocation_id,
+                arguments,
+                &self.tools.clock.now(),
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                ErrorEnvelope::new(
+                    ErrorCode::PermissionDenied,
+                    error.to_string(),
+                    correlation.clone(),
+                )
+            })?;
 
+        // 4. Record the decision — allowed or not. "Every tool invocation
+        //    carries origin, requested capability, scope, risk class, routing
+        //    destination, and approval result in an auditable event"
+        //    (`AGENTS.md`, Security and privacy).
         self.journal
             .append(EventDraft::user(
-                TaskEventKind::ToolCompleted,
-                EventPayload::ToolCompleted {
-                    invocation_id,
-                    display_summary: outcome.display_summary.clone(),
-                    side_effect: outcome.side_effect,
-                    truncated: outcome.truncated,
+                TaskEventKind::ApprovalResolved,
+                EventPayload::PermissionDecided {
+                    invocation_id: invocation_id.clone(),
+                    origin: self.tools.origin.clone(),
+                    capability: query.capability.to_string(),
+                    scope: query.scope.clone(),
+                    allowed: outcome.is_allowed(),
+                    reason_code: outcome.reason_code().to_owned(),
+                    grant_kind: authorized.as_ref().map(AuthorizedToolRequest::grant_kind),
                 },
             ))
             .await?;
 
-        Ok(outcome.content)
+        let Some(authorized) = authorized else {
+            let denial = ErrorEnvelope::new(
+                ErrorCode::PermissionDenied,
+                format!("{tool_id} was not permitted: {}", outcome.reason_code()),
+                correlation,
+            );
+            self.journal
+                .append(EventDraft::user(
+                    TaskEventKind::ToolFailed,
+                    EventPayload::ToolFailed {
+                        invocation_id,
+                        error: denial.clone(),
+                    },
+                ))
+                .await?;
+            // The worker receives a structured refusal, "not an opportunity to
+            // rephrase the same request indefinitely"
+            // (`SECURITY_AND_PERMISSIONS.md` §4).
+            return Err(denial);
+        };
+
+        // 5. Run it.
+        self.journal
+            .append(EventDraft::user(
+                TaskEventKind::ToolStarted,
+                EventPayload::ToolStarted {
+                    invocation_id: invocation_id.clone(),
+                    tool_id: tool_id.to_owned(),
+                },
+            ))
+            .await?;
+
+        let Some(registered) = self.tools.registry.get(tool_id) else {
+            return Err(ErrorEnvelope::new(
+                ErrorCode::NotFound,
+                format!("unknown tool {tool_id}"),
+                correlation,
+            ));
+        };
+
+        match registered.provider.invoke(authorized, cancel.clone()).await {
+            Ok(outcome) => {
+                self.journal
+                    .append(EventDraft::user(
+                        TaskEventKind::ToolCompleted,
+                        EventPayload::ToolCompleted {
+                            invocation_id,
+                            display_summary: outcome.display_summary.clone(),
+                            side_effect: outcome.side_effect,
+                            truncated: outcome.truncated,
+                        },
+                    ))
+                    .await?;
+                Ok(outcome.content)
+            }
+            Err(error) => {
+                self.journal
+                    .append(EventDraft::user(
+                        TaskEventKind::ToolFailed,
+                        EventPayload::ToolFailed {
+                            invocation_id,
+                            error: error.clone(),
+                        },
+                    ))
+                    .await?;
+                Err(error)
+            }
+        }
     }
 }
 

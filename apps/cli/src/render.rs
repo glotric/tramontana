@@ -65,6 +65,20 @@ pub(crate) fn event_line(event: &EventEnvelope) -> String {
         } => {
             format!("{tool_id} ({risk_class:?}) — {arguments_summary}")
         }
+        EventPayload::PermissionDecided {
+            capability,
+            allowed,
+            reason_code,
+            origin,
+            ..
+        } => {
+            let verdict = if *allowed { "allowed" } else { "DENIED" };
+            format!("{capability} {verdict} for {origin:?} ({reason_code})")
+        }
+        EventPayload::ToolStarted { tool_id, .. } => format!("running {tool_id}"),
+        EventPayload::ToolFailed { error, .. } => {
+            format!("{:?}: {}", error.code, error.message)
+        }
         EventPayload::ToolCompleted {
             display_summary,
             side_effect,

@@ -3,9 +3,16 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use tauri::AppHandle;
+use tramontana_adapters_tools::{FilesystemTools, GitTools};
 use tramontana_core::ports::EventStore;
+use tramontana_core::ports::{ApprovalStore, Approver, ToolProvider};
 use tramontana_core::services::{Providers, Repositories, TaskService};
-use tramontana_core::testing::{FakeModelProvider, FakeToolProvider, FakeWorker};
+use tramontana_core::testing::{
+    FakeModelProvider, FakeWorker, InMemoryApprovalStore, assemble_tool_plane,
+};
+
+use crate::approval::DesktopApprover;
 use tramontana_persistence::{
     Database, SqliteConfigurationRepository, SqliteConversationRepository, SqliteEventStore,
     SqliteProjectRepository, SqliteTaskRepository,
@@ -20,6 +27,10 @@ use tramontana_platform::{SystemClock, UuidIdSource};
 pub(crate) struct AppState {
     /// The application service every command delegates to.
     pub(crate) service: Arc<TaskService>,
+    /// Where approval questions are raised and answered.
+    pub(crate) approver: Arc<DesktopApprover>,
+    /// Where grants live, so they can be listed and revoked.
+    pub(crate) approvals: Arc<InMemoryApprovalStore>,
 }
 
 impl AppState {
@@ -28,11 +39,15 @@ impl AppState {
     /// Providers remain deterministic fakes until their later milestones, but
     /// task, project, conversation, event, and configuration records use the
     /// same SQLite repositories as the CLI.
-    pub(crate) async fn open(path: &Path) -> Result<Self, String> {
-        Self::open_with_chunk_delay(path, 220).await
+    pub(crate) async fn open(path: &Path, app: AppHandle) -> Result<Self, String> {
+        Self::open_with_chunk_delay(path, 220, Arc::new(DesktopApprover::new(app))).await
     }
 
-    async fn open_with_chunk_delay(path: &Path, chunk_delay_ms: u64) -> Result<Self, String> {
+    async fn open_with_chunk_delay(
+        path: &Path,
+        chunk_delay_ms: u64,
+        approver: Arc<DesktopApprover>,
+    ) -> Result<Self, String> {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
@@ -42,6 +57,22 @@ impl AppState {
         let database = Database::open(path)
             .await
             .map_err(|error| format!("could not open {}: {error}", path.display()))?;
+        // Read-only tools, behind the permission boundary. The registry says
+        // a tool exists; only the permission manager says it may run. The CLI
+        // assembles the identical set, so the two adapters cannot drift into
+        // offering different tools under different policy.
+        let approvals = Arc::new(InMemoryApprovalStore::new());
+        let (registry, permissions) = assemble_tool_plane(
+            vec![
+                Arc::new(FilesystemTools::new()) as Arc<dyn ToolProvider>,
+                Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
+            ],
+            Arc::clone(&approvals) as Arc<dyn ApprovalStore>,
+            Arc::clone(&approver) as Arc<dyn Approver>,
+            Arc::new(UuidIdSource::new()),
+        )
+        .map_err(|error| format!("could not register tools: {error}"))?;
+
         let store: Arc<dyn EventStore> = Arc::new(SqliteEventStore::new(database.clone()));
         let service = TaskService::new(
             Repositories {
@@ -56,8 +87,15 @@ impl AppState {
                     ["Hello", ", ", "world", " from ", "Tramontana"],
                     chunk_delay_ms,
                 )),
-                tools: Arc::new(FakeToolProvider::new()),
-                worker: Arc::new(FakeWorker::new()),
+                tools: Arc::clone(&registry),
+                permissions: Arc::clone(&permissions),
+                // Points the reference worker at a genuine read-only tool, so the
+                // skeleton exercises the real permission and containment path
+                // rather than a fake that cannot be refused.
+                worker: Arc::new(FakeWorker::calling(
+                    "builtin.fs.list",
+                    serde_json::json!({ "path": "." }),
+                )),
             },
             Arc::new(SystemClock::new()),
             Arc::new(UuidIdSource::new()),
@@ -68,6 +106,8 @@ impl AppState {
             .map_err(|error| format!("recovery failed: {}", error.message))?;
         Ok(Self {
             service: Arc::new(service),
+            approver,
+            approvals,
         })
     }
 }
@@ -100,7 +140,10 @@ mod tests {
         let root = canonicalize_root(&project_directory).unwrap();
         let profile = directory.path().join("desktop.sqlite");
 
-        let first = AppState::open_with_chunk_delay(&profile, 0).await.unwrap();
+        let first =
+            AppState::open_with_chunk_delay(&profile, 0, Arc::new(DesktopApprover::headless()))
+                .await
+                .unwrap();
         let project = first
             .service
             .open_project("Restart fixture", vec![root.as_str().to_owned()])
@@ -153,7 +196,10 @@ mod tests {
         let events_before = first.service.replay_task_events(&task_id, 0).await.unwrap();
         drop(first);
 
-        let reopened = AppState::open_with_chunk_delay(&profile, 0).await.unwrap();
+        let reopened =
+            AppState::open_with_chunk_delay(&profile, 0, Arc::new(DesktopApprover::headless()))
+                .await
+                .unwrap();
         assert_eq!(
             reopened.service.list_projects().await.unwrap(),
             vec![project]

@@ -16,17 +16,21 @@ mod clock;
 mod event_store;
 mod ids;
 mod model;
+mod permission;
 mod repositories;
 mod tool;
+mod tool_plane;
 mod worker;
 
 pub use clock::FakeClock;
 pub use event_store::InMemoryEventStore;
 pub use ids::SequentialIdSource;
 pub use model::{FakeModelProvider, FakeModelScript};
+pub use permission::{InMemoryApprovalStore, ScriptedApprover};
 pub use repositories::{
     InMemoryConfigurationRepository, InMemoryConversationRepository, InMemoryProjectRepository,
     InMemoryTaskRepository,
 };
 pub use tool::{FAKE_TOOL_ID, FakeToolProvider};
+pub use tool_plane::assemble_tool_plane;
 pub use worker::{FAKE_AGENT_ID, FakeWorker};

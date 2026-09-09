@@ -12,6 +12,7 @@ mod clock;
 mod event_store;
 mod ids;
 mod model;
+mod permission;
 mod repository;
 mod tool;
 mod worker;
@@ -20,6 +21,10 @@ pub use clock::Clock;
 pub use event_store::{EventStore, EventStoreError};
 pub use ids::IdSource;
 pub use model::{ModelEvent, ModelProvider, ModelRequest, StopReason};
+pub use permission::{
+    ApprovalStore, Approver, PermissionError, PermissionOutcome, PermissionPolicy, PermissionQuery,
+    reason,
+};
 pub use repository::{
     ConfigurationRepository, ConversationRepository, ProjectRepository, RepositoryError,
     TaskRepository,

@@ -17,14 +17,45 @@ pub const FAKE_AGENT_ID: &str = "fake.reference";
 /// through a tool, report. Every effect goes through [`WorkerHost`], so the
 /// same path a real external worker will take is the one under test from the
 /// first milestone.
-#[derive(Debug, Default)]
-pub struct FakeWorker;
+#[derive(Debug)]
+pub struct FakeWorker {
+    /// Which tool the worker asks the host to run.
+    ///
+    /// Configurable because the worker lives in `core` and the real read-only
+    /// tools live in an adapter crate that `core` must not depend on. A
+    /// deployment points it at a genuine tool; a core test points it at the
+    /// echo fake.
+    tool_id: String,
+    /// The arguments it sends.
+    arguments: serde_json::Value,
+}
+
+impl Default for FakeWorker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl FakeWorker {
-    /// A reference worker.
+    /// A reference worker that echoes through the fake tool.
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self {
+            tool_id: FAKE_TOOL_ID.to_owned(),
+            arguments: serde_json::json!({ "value": "" }),
+        }
+    }
+
+    /// A reference worker that calls a named tool.
+    ///
+    /// How the walking skeleton is pointed at real filesystem tools without
+    /// `core` learning about them.
+    #[must_use]
+    pub fn calling(tool_id: impl Into<String>, arguments: serde_json::Value) -> Self {
+        Self {
+            tool_id: tool_id.into(),
+            arguments,
+        }
     }
 }
 
@@ -84,22 +115,40 @@ impl AgentProvider for FakeWorker {
         // would make the interface render it twice, and the interface has no
         // way to tell a duplicate from genuinely repeated output.
 
-        let echoed = host
-            .call_tool(
-                FAKE_TOOL_ID,
-                serde_json::json!({ "value": answer }),
-                &cancel,
-            )
-            .await?;
+        // The arguments are the worker's own, except that the echo fake wants
+        // the model's answer back. A real tool gets exactly what it was
+        // configured with.
+        let arguments = if self.tool_id == FAKE_TOOL_ID {
+            serde_json::json!({ "value": answer })
+        } else {
+            self.arguments.clone()
+        };
+
+        let result = host.call_tool(&self.tool_id, arguments, &cancel).await?;
         if cancel.is_cancelled() {
             return Ok(WorkerOutcome::Cancelled);
         }
 
-        let summary = echoed
+        // Summarize whatever the tool returned. A worker reports what it
+        // learned; it does not copy the payload into the task summary, which
+        // is displayed and exported.
+        let summary = result
             .get("echoed")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
+            .map(str::to_owned)
+            .or_else(|| {
+                result
+                    .get("entries")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|entries| {
+                        format!(
+                            "{} entr{} listed",
+                            entries.len(),
+                            if entries.len() == 1 { "y" } else { "ies" }
+                        )
+                    })
+            })
+            .unwrap_or_else(|| format!("{} completed", self.tool_id));
 
         Ok(WorkerOutcome::Completed { summary })
     }

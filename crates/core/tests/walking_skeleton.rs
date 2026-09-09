@@ -17,18 +17,27 @@ use std::time::Duration;
 
 use tramontana_core::config::{ConfigurationSelection, RawSource};
 use tramontana_core::contracts::{
-    ConfigurationKind, EventPayload, TaskEventKind, TaskId, TaskState, TaskUpdate,
+    ConfigurationKind, ConversationId, EventPayload, TaskEventKind, TaskId, TaskState, TaskUpdate,
 };
-use tramontana_core::ports::EventStore;
+use tramontana_core::ports::{ApprovalStore, Approver, EventStore, ToolProvider};
 use tramontana_core::services::{Providers, Repositories, StartTaskRequest, TaskService};
 use tramontana_core::testing::{
-    FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryConfigurationRepository,
-    InMemoryConversationRepository, InMemoryEventStore, InMemoryProjectRepository,
-    InMemoryTaskRepository, SequentialIdSource,
+    FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryApprovalStore,
+    InMemoryConfigurationRepository, InMemoryConversationRepository, InMemoryEventStore,
+    InMemoryProjectRepository, InMemoryTaskRepository, ScriptedApprover, SequentialIdSource,
+    assemble_tool_plane,
 };
 
 /// Assemble a service over an event store the test can also inspect.
 fn service_with_store() -> (Arc<TaskService>, Arc<InMemoryEventStore>) {
+    let (registry, permissions) = assemble_tool_plane(
+        vec![Arc::new(FakeToolProvider::new()) as Arc<dyn ToolProvider>],
+        Arc::new(InMemoryApprovalStore::new()) as Arc<dyn ApprovalStore>,
+        Arc::new(ScriptedApprover::unavailable()) as Arc<dyn Approver>,
+        Arc::new(SequentialIdSource::new()),
+    )
+    .expect("the fake tool registers");
+
     let store = Arc::new(InMemoryEventStore::new());
     let events = Arc::clone(&store) as Arc<dyn EventStore>;
     let service = TaskService::new(
@@ -41,7 +50,8 @@ fn service_with_store() -> (Arc<TaskService>, Arc<InMemoryEventStore>) {
         },
         Providers {
             model: Arc::new(FakeModelProvider::streaming(["Hello", ", ", "world"])),
-            tools: Arc::new(FakeToolProvider::new()),
+            tools: registry,
+            permissions,
             worker: Arc::new(FakeWorker::new()),
         },
         Arc::new(FakeClock::new()),
@@ -52,6 +62,24 @@ fn service_with_store() -> (Arc<TaskService>, Arc<InMemoryEventStore>) {
 
 fn service() -> Arc<TaskService> {
     service_with_store().0
+}
+
+/// Create a project and a conversation inside it.
+///
+/// Tools are only permitted inside an opened project
+/// (`SECURITY_AND_PERMISSIONS.md` §3.1), so a task that means to use one needs
+/// a conversation that belongs to a project. A projectless task reaching for a
+/// tool is a separate case, asserted on its own below.
+async fn conversation_in_a_project(service: &TaskService) -> ConversationId {
+    let project = service
+        .create_project("Demo", vec!["/work/demo".to_owned()])
+        .await
+        .expect("project");
+    service
+        .create_conversation(Some(project.project_id), "First")
+        .await
+        .expect("conversation")
+        .conversation_id
 }
 
 #[tokio::test]
@@ -142,7 +170,7 @@ async fn a_task_runs_to_completion_with_an_ordered_event_stream() {
 
     let task_id = service
         .start_task(StartTaskRequest {
-            conversation_id: None,
+            conversation_id: Some(conversation_in_a_project(&service).await),
             goal: "say hello".into(),
         })
         .await
@@ -200,7 +228,7 @@ async fn a_task_reaches_exactly_one_terminal_state() {
 
     let task_id = service
         .start_task(StartTaskRequest {
-            conversation_id: None,
+            conversation_id: Some(conversation_in_a_project(&service).await),
             goal: "say hello".into(),
         })
         .await
@@ -224,7 +252,7 @@ async fn cancelling_before_the_work_starts_still_converges_to_cancelled() {
 
     let task_id = service
         .start_task(StartTaskRequest {
-            conversation_id: None,
+            conversation_id: Some(conversation_in_a_project(&service).await),
             goal: "say hello".into(),
         })
         .await
@@ -258,7 +286,7 @@ async fn cancelling_after_completion_does_not_move_a_terminal_task() {
 
     let task_id = service
         .start_task(StartTaskRequest {
-            conversation_id: None,
+            conversation_id: Some(conversation_in_a_project(&service).await),
             goal: "say hello".into(),
         })
         .await
@@ -290,7 +318,7 @@ async fn a_subscriber_replays_missed_events_and_then_receives_live_ones() {
 
     let task_id = service
         .start_task(StartTaskRequest {
-            conversation_id: None,
+            conversation_id: Some(conversation_in_a_project(&service).await),
             goal: "say hello".into(),
         })
         .await
@@ -325,7 +353,7 @@ async fn resubscribing_after_a_disconnect_recovers_the_gap() {
 
     let task_id = service
         .start_task(StartTaskRequest {
-            conversation_id: None,
+            conversation_id: Some(conversation_in_a_project(&service).await),
             goal: "say hello".into(),
         })
         .await
@@ -355,7 +383,7 @@ async fn streamed_frames_reconstruct_the_answer_exactly_once() {
 
     let task_id = service
         .start_task(StartTaskRequest {
-            conversation_id: None,
+            conversation_id: Some(conversation_in_a_project(&service).await),
             goal: "say hello".into(),
         })
         .await
@@ -373,6 +401,104 @@ async fn streamed_frames_reconstruct_the_answer_exactly_once() {
 
     // The fake model is scripted with exactly these chunks.
     assert_eq!(streamed, "Hello, world");
+}
+
+#[tokio::test]
+async fn a_projectless_task_cannot_use_a_tool_at_all() {
+    // Discovered by wiring real tools: with no project, a task has no approved
+    // roots, so a read is not "a read inside an already-opened project" and
+    // the safe default does not apply. With no approver configured, it is
+    // refused. That is `SECURITY_AND_PERMISSIONS.md` §3.1 working, not a
+    // regression — projectless tasks have no implicit access to anything.
+    let (service, store) = service_with_store();
+
+    let task_id = service
+        .start_task(StartTaskRequest {
+            conversation_id: None,
+            goal: "say hello".into(),
+        })
+        .await
+        .unwrap();
+    let state = await_terminal(&service, &task_id).await;
+    assert_eq!(state, TaskState::Failed);
+
+    let events = store.replay(&task_id, 0).await.unwrap();
+    let decision = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::PermissionDecided {
+                allowed,
+                reason_code,
+                ..
+            } => Some((*allowed, reason_code.clone())),
+            _ => None,
+        })
+        .expect("a decision is recorded even when the answer is no");
+
+    assert!(!decision.0, "a projectless tool call must be refused");
+    assert_eq!(decision.1, "policy.no_approver");
+}
+
+#[tokio::test]
+async fn every_tool_call_records_an_origin_scope_and_decision() {
+    // The M3 exit criterion. A permitted action that leaves no decision event
+    // satisfies the permission system and fails the audit requirement.
+    let (service, store) = service_with_store();
+
+    let task_id = service
+        .start_task(StartTaskRequest {
+            conversation_id: Some(conversation_in_a_project(&service).await),
+            goal: "say hello".into(),
+        })
+        .await
+        .unwrap();
+    await_terminal(&service, &task_id).await;
+
+    let events = store.replay(&task_id, 0).await.unwrap();
+    let decision = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::PermissionDecided {
+                origin,
+                capability,
+                scope,
+                allowed,
+                reason_code,
+                ..
+            } => Some((
+                origin.clone(),
+                capability.clone(),
+                scope.clone(),
+                *allowed,
+                reason_code.clone(),
+            )),
+            _ => None,
+        })
+        .expect("every tool call records a decision");
+
+    let (origin, capability, scope, allowed, reason_code) = decision;
+    assert!(matches!(
+        origin,
+        tramontana_core::contracts::PermissionOrigin::Worker { .. }
+    ));
+    assert_eq!(capability, "fake.echo");
+    assert_eq!(scope.roots, vec!["/work/demo".to_owned()]);
+    assert!(allowed);
+    assert_eq!(reason_code, "policy.safe_default");
+
+    // And the full lifecycle is in the stream, in order.
+    let kinds: Vec<TaskEventKind> = events.iter().map(|event| event.kind).collect();
+    for expected in [
+        TaskEventKind::ToolRequested,
+        TaskEventKind::ApprovalResolved,
+        TaskEventKind::ToolStarted,
+        TaskEventKind::ToolCompleted,
+    ] {
+        assert!(
+            kinds.contains(&expected),
+            "missing {expected:?} in {kinds:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -424,7 +550,7 @@ async fn a_task_can_be_attached_to_a_conversation_in_a_project() {
 
 #[tokio::test]
 async fn unknown_projects_conversations_and_tasks_are_reported_not_invented() {
-    use tramontana_core::contracts::{ConversationId, ErrorCode, ProjectId};
+    use tramontana_core::contracts::{ErrorCode, ProjectId};
 
     let service = service();
 

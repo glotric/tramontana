@@ -1,15 +1,16 @@
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use crate::contracts::{ErrorEnvelope, InvocationId, ProviderId, SideEffect, ToolDescriptor};
+use crate::contracts::{
+    AuthorizedToolRequest, ErrorEnvelope, InvocationId, ProviderId, SideEffect, ToolDescriptor,
+};
 
-/// A tool call that has passed schema validation.
+/// A tool call that has passed schema validation but not yet policy.
 ///
-/// M1 has no permission boundary yet, so this is not the `AuthorizedToolRequest`
-/// of `CORE_CONTRACTS.md` §9 — that type carries proof of a policy decision and
-/// cannot be constructed without one. M3 introduces it, and
-/// [`ToolProvider::invoke`] takes it instead. Until then the skeleton's only
-/// tool is read-only and its provider is a fake.
+/// The *request*. `PermissionManager` turns one of these into an
+/// [`AuthorizedToolRequest`], which is what [`ToolProvider::invoke`] accepts —
+/// so an unauthorized call is not merely forbidden, it is unrepresentable
+/// (`CORE_CONTRACTS.md` §9).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolInvocation {
     /// Identifies this invocation across its request, start, and result events.
@@ -46,14 +47,22 @@ pub trait ToolProvider: Send + Sync {
     /// Tools this provider offers, with their risk and side-effect metadata.
     fn list_tools(&self) -> Vec<ToolDescriptor>;
 
-    /// Run a validated invocation.
+    /// Run an authorized invocation.
+    ///
+    /// The argument type is the proof: a provider cannot be called without a
+    /// permission decision, because only the permission manager can build one.
+    ///
+    /// A provider must not exceed
+    /// [`AuthorizedToolRequest::granted_scope`]. The scope is the authority,
+    /// not a hint — and re-checking it inside the provider is what makes a
+    /// mistake in the caller fail safe.
     ///
     /// # Errors
     ///
     /// Returns a normalized error on failure, timeout, or cancellation.
     async fn invoke(
         &self,
-        invocation: ToolInvocation,
+        request: AuthorizedToolRequest,
         cancel: CancellationToken,
     ) -> Result<ToolOutcome, ErrorEnvelope>;
 }

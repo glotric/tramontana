@@ -60,6 +60,33 @@ export interface AgentDescriptor {
 export type CancellationOrigin = "user" | "system";
 
 /**
+ * What an authorization is limited to.
+ *
+ * `SECURITY_AND_PERMISSIONS.md` §3.2. A scope binds the project and, for
+ * filesystem work, the canonical roots it may touch. Authorizations are
+ * non-transferable: a grant naming one project authorizes nothing in another.
+ */
+export interface CapabilityScope {
+  /**
+   * The project this is limited to. Absent means a projectless task, which
+   * has no filesystem access at all.
+   */
+  projectId?: ProjectId | null;
+  /**
+   * Whether the operation sends project-derived data off the device.
+   *
+   * A separate dimension from risk: "a read action that sends content to a
+   * cloud endpoint is not treated as a harmless local read"
+   * (`SECURITY_AND_PERMISSIONS.md` §3.1).
+   */
+  releasesData: boolean;
+  /**
+   * Canonical roots the operation may touch.
+   */
+  roots?: string[];
+}
+
+/**
  * How well a worker can be stopped and resumed.
  */
 export type CheckpointSupport = "none" | "sameWorker" | "portable";
@@ -509,6 +536,70 @@ export interface EventEnvelope {
       }
     | {
         /**
+         * Whether it may proceed.
+         */
+        allowed: boolean;
+        /**
+         * What was asked for.
+         */
+        capability: string;
+        /**
+         * How the authorization was obtained, when it was allowed.
+         */
+        grantKind?: GrantKind | null;
+        /**
+         * The invocation the decision covers.
+         */
+        invocationId: string;
+        kind: "permissionDecided";
+        /**
+         * Who asked.
+         */
+        origin:
+          | {
+              kind: "user";
+            }
+          | {
+              /**
+               * Namespaced worker identifier.
+               */
+              agentId: string;
+              kind: "worker";
+            }
+          | {
+              kind: "workflow";
+              /**
+               * Workflow identifier.
+               */
+              workflowId: string;
+            };
+        /**
+         * Stable reason, matching `ports::reason`.
+         */
+        reasonCode: string;
+        scope: CapabilityScope;
+      }
+    | {
+        /**
+         * The invocation.
+         */
+        invocationId: string;
+        kind: "toolStarted";
+        /**
+         * The tool.
+         */
+        toolId: string;
+      }
+    | {
+        error: ErrorEnvelope;
+        /**
+         * The invocation.
+         */
+        invocationId: string;
+        kind: "toolFailed";
+      }
+    | {
+        /**
          * Short, safe description of the result.
          */
         displaySummary: string;
@@ -679,6 +770,70 @@ export type EventPayload =
     }
   | {
       /**
+       * Whether it may proceed.
+       */
+      allowed: boolean;
+      /**
+       * What was asked for.
+       */
+      capability: string;
+      /**
+       * How the authorization was obtained, when it was allowed.
+       */
+      grantKind?: GrantKind | null;
+      /**
+       * The invocation the decision covers.
+       */
+      invocationId: string;
+      kind: "permissionDecided";
+      /**
+       * Who asked.
+       */
+      origin:
+        | {
+            kind: "user";
+          }
+        | {
+            /**
+             * Namespaced worker identifier.
+             */
+            agentId: string;
+            kind: "worker";
+          }
+        | {
+            kind: "workflow";
+            /**
+             * Workflow identifier.
+             */
+            workflowId: string;
+          };
+      /**
+       * Stable reason, matching `ports::reason`.
+       */
+      reasonCode: string;
+      scope: CapabilityScope;
+    }
+  | {
+      /**
+       * The invocation.
+       */
+      invocationId: string;
+      kind: "toolStarted";
+      /**
+       * The tool.
+       */
+      toolId: string;
+    }
+  | {
+      error: ErrorEnvelope;
+      /**
+       * The invocation.
+       */
+      invocationId: string;
+      kind: "toolFailed";
+    }
+  | {
+      /**
        * Short, safe description of the result.
        */
       displaySummary: string;
@@ -747,6 +902,11 @@ export type ExecutionLocation =
        */
       region?: string;
     };
+
+/**
+ * How long an authorization lasts.
+ */
+export type GrantKind = "implicitSafeDefault" | "once" | "project";
 
 /**
  * Whether a provider or worker is usable right now.
@@ -922,6 +1082,32 @@ export interface NormalizedMessage {
    */
   taskId?: TaskId | null;
 }
+
+/**
+ * Who asked for a capability.
+ *
+ * An audit record that cannot say *who* asked is not an audit record. A
+ * built-in tool invoked by the user and the same tool invoked by an external
+ * worker are different events, even when the arguments match.
+ */
+export type PermissionOrigin =
+  | {
+      kind: "user";
+    }
+  | {
+      /**
+       * Namespaced worker identifier.
+       */
+      agentId: string;
+      kind: "worker";
+    }
+  | {
+      kind: "workflow";
+      /**
+       * Workflow identifier.
+       */
+      workflowId: string;
+    };
 
 /**
  * A project: one or more user-approved roots and the work done against them.

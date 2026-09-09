@@ -72,6 +72,37 @@
         }
       ]
     },
+    "CapabilityScope": {
+      "description": "What an authorization is limited to.\n\n`SECURITY_AND_PERMISSIONS.md` §3.2. A scope binds the project and, for\nfilesystem work, the canonical roots it may touch. Authorizations are\nnon-transferable: a grant naming one project authorizes nothing in another.",
+      "properties": {
+        "projectId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The project this is limited to. Absent means a projectless task, which\nhas no filesystem access at all."
+        },
+        "releasesData": {
+          "description": "Whether the operation sends project-derived data off the device.\n\nA separate dimension from risk: \"a read action that sends content to a\ncloud endpoint is not treated as a harmless local read\"\n(`SECURITY_AND_PERMISSIONS.md` §3.1).",
+          "type": "boolean"
+        },
+        "roots": {
+          "description": "Canonical roots the operation may touch.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "releasesData"
+      ],
+      "type": "object"
+    },
     "CheckpointSupport": {
       "description": "How well a worker can be stopped and resumed.",
       "oneOf": [
@@ -800,6 +831,106 @@
           "type": "object"
         },
         {
+          "description": "A permission decision was reached.\n\nEmitted for *every* decision, including the ones nobody was asked\nabout. The exit criterion for M3 is that every action carries an\norigin, a scope, and a decision — a silently-permitted action would\nsatisfy the permission system and fail the audit requirement.",
+          "properties": {
+            "allowed": {
+              "description": "Whether it may proceed.",
+              "type": "boolean"
+            },
+            "capability": {
+              "description": "What was asked for.",
+              "type": "string"
+            },
+            "grantKind": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GrantKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How the authorization was obtained, when it was allowed."
+            },
+            "invocationId": {
+              "$ref": "#/$defs/InvocationId",
+              "description": "The invocation the decision covers."
+            },
+            "kind": {
+              "const": "permissionDecided",
+              "type": "string"
+            },
+            "origin": {
+              "$ref": "#/$defs/PermissionOrigin",
+              "description": "Who asked."
+            },
+            "reasonCode": {
+              "description": "Stable reason, matching `ports::reason`.",
+              "type": "string"
+            },
+            "scope": {
+              "$ref": "#/$defs/CapabilityScope",
+              "description": "What it was limited to."
+            }
+          },
+          "required": [
+            "kind",
+            "invocationId",
+            "origin",
+            "capability",
+            "scope",
+            "allowed",
+            "reasonCode"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An authorized tool invocation began.",
+          "properties": {
+            "invocationId": {
+              "$ref": "#/$defs/InvocationId",
+              "description": "The invocation."
+            },
+            "kind": {
+              "const": "toolStarted",
+              "type": "string"
+            },
+            "toolId": {
+              "description": "The tool.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "invocationId",
+            "toolId"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A tool invocation failed.",
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/ErrorEnvelope",
+              "description": "Normalized, already-redacted error."
+            },
+            "invocationId": {
+              "$ref": "#/$defs/InvocationId",
+              "description": "The invocation."
+            },
+            "kind": {
+              "const": "toolFailed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "invocationId",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
           "description": "A tool invocation finished.",
           "properties": {
             "displaySummary": {
@@ -948,6 +1079,26 @@
             "providerId"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "GrantKind": {
+      "description": "How long an authorization lasts.",
+      "oneOf": [
+        {
+          "const": "implicitSafeDefault",
+          "description": "No approval was needed: a read inside an already-opened project.",
+          "type": "string"
+        },
+        {
+          "const": "once",
+          "description": "Approved for exactly this request, and consumed by it.",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "description": "A persistent, revocable grant for this project and capability.",
+          "type": "string"
         }
       ]
     },
@@ -1338,6 +1489,60 @@
         "parts"
       ],
       "type": "object"
+    },
+    "PermissionOrigin": {
+      "description": "Who asked for a capability.\n\nAn audit record that cannot say *who* asked is not an audit record. A\nbuilt-in tool invoked by the user and the same tool invoked by an external\nworker are different events, even when the arguments match.",
+      "oneOf": [
+        {
+          "description": "The person, directly.",
+          "properties": {
+            "kind": {
+              "const": "user",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A worker acting on the task.",
+          "properties": {
+            "agentId": {
+              "description": "Namespaced worker identifier.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "worker",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "agentId"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A named workflow.",
+          "properties": {
+            "kind": {
+              "const": "workflow",
+              "type": "string"
+            },
+            "workflowId": {
+              "description": "Workflow identifier.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "workflowId"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "ProjectId": {
       "description": "A project: one or more user-approved roots and the work done against them.",

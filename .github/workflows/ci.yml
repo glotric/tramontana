@@ -99,6 +99,13 @@ jobs:
   supply-chain:
     name: Dependency audit
     runs-on: ubuntu-latest
+    # `rustsec/audit-check` reports through the Checks API, which a read-only
+    # default token cannot write to — the audit itself succeeded and only the
+    # reporting failed. Granting it here rather than widening the repository
+    # default keeps every other job read-only.
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable

@@ -6,6 +6,7 @@
 //! validates its input, calls an application service, and translates the
 //! result. The CLI is its peer over the same services.
 
+mod approval;
 mod commands;
 mod state;
 
@@ -33,8 +34,13 @@ pub fn run() {
                     },
                     Ok,
                 )?;
-            let state = tauri::async_runtime::block_on(state::AppState::open(&profile))
-                .map_err(std::io::Error::other)?;
+            // The approver needs a window handle, so state is assembled here
+            // rather than before the app exists.
+            let state = tauri::async_runtime::block_on(state::AppState::open(
+                &profile,
+                app.handle().clone(),
+            ))
+            .map_err(std::io::Error::other)?;
             app.manage(state);
             Ok(())
         })
@@ -50,6 +56,9 @@ pub fn run() {
             commands::start_task,
             commands::cancel_task,
             commands::get_task,
+            commands::resolve_approval,
+            commands::list_project_grants,
+            commands::revoke_project_grant,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the Tramontana desktop shell");

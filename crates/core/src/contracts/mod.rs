@@ -20,6 +20,7 @@ mod error;
 mod event;
 mod ids;
 mod message;
+mod permission;
 mod primitives;
 mod records;
 mod task;
@@ -36,14 +37,19 @@ pub use descriptor::{
 };
 pub use error::{ErrorCode, ErrorEnvelope};
 pub use event::{
-    CancellationOrigin, EventDraft, EventEnvelope, EventPayload, StreamFrame, TaskEventKind,
-    TaskUpdate,
+    CancellationOrigin, EventDraft, EventEnvelope, EventPayload, PermissionOrigin, StreamFrame,
+    TaskEventKind, TaskUpdate,
 };
 pub use ids::{
     AgentId, AgentProviderId, ApprovalId, CheckpointId, ConversationId, CorrelationId, EventId,
     InvocationId, MessageId, ModelId, ProjectId, ProviderId, TaskId, WorkerSessionId,
 };
 pub use message::{MessagePart, MessageRole, MessageStatus, NormalizedMessage};
+pub use permission::{
+    ApprovalDecision, ApprovalDecisionKind, ApprovalDetail, ApprovalRequest, AuthorizedToolRequest,
+    Capability, CapabilityScope, GrantKind, ProjectGrant,
+};
+pub(crate) use permission::{AuthorizedTarget, GrantedAuthority};
 pub use primitives::{
     DataClass, ExecutionLocation, RiskClass, RoutingMode, SecretRef, SecretStore, SideEffect,
     Visibility,
