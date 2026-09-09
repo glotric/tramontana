@@ -4457,6 +4457,7 @@ name = "tramontana-adapters-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "same-file",
  "serde_json",
  "tempfile",
  "tokio",

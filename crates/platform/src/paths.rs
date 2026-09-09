@@ -364,6 +364,29 @@ mod tests {
     }
 
     #[test]
+    fn a_nonexistent_spelling_is_not_rewritten_into_one_that_exists() {
+        // Found by CI on Linux. Folding case unconditionally turned
+        // `PROJECT/src` — which does not exist on a case-sensitive filesystem —
+        // into `project/src`, which does. That silently answers a question
+        // about one path using a different one.
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        let root = canonicalize_root(&project).unwrap();
+
+        let variant = temp.path().join("PROJECT").join("src");
+        if variant.exists() {
+            // Case-insensitive: the two spellings are one directory, and the
+            // folded form is the same place.
+            assert!(contains(&root, &variant).unwrap());
+        } else {
+            // Case-sensitive: `PROJECT` is simply not there, and must not be
+            // resolved into the directory that is.
+            assert!(!contains(&root, &variant).unwrap_or(false));
+        }
+    }
+
+    #[test]
     fn case_variance_never_admits_a_path_from_outside_the_root() {
         // The direction that matters. Whatever a filesystem does about case,
         // no spelling may put a sibling inside the root.

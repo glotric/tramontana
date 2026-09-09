@@ -412,7 +412,7 @@ fn read_verifying_identity(
         )
     };
 
-    let mut handle = std::fs::File::open(path).map_err(|error| {
+    let opened = std::fs::File::open(path).map_err(|error| {
         ErrorEnvelope::new(
             ErrorCode::NotFound,
             format!("could not read file: {}", error.kind()),
@@ -420,7 +420,7 @@ fn read_verifying_identity(
         )
     })?;
 
-    let Some(held) = FileIdentity::of_handle(&handle) else {
+    let Some(mut held) = FileIdentity::of_handle(opened) else {
         // No identity means no way to prove the file did not change. Refusing
         // is the fail-closed answer; proceeding would be a guess.
         return Err(denied("cannot verify the file's identity on this platform"));
@@ -439,8 +439,9 @@ fn read_verifying_identity(
         ));
     }
 
+    // Read through the verified handle, not by reopening the path.
     let mut bytes = Vec::new();
-    handle.read_to_end(&mut bytes).map_err(|error| {
+    held.file_mut().read_to_end(&mut bytes).map_err(|error| {
         ErrorEnvelope::new(
             ErrorCode::ToolFailed,
             format!("could not read file: {}", error.kind()),

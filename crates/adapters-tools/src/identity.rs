@@ -1,4 +1,4 @@
-use std::fs::{File, Metadata};
+use std::fs::File;
 use std::path::Path;
 
 /// A filesystem object's identity, independent of the name used to reach it.
@@ -6,51 +6,41 @@ use std::path::Path;
 /// Two paths naming the same identity are the same object; two identities that
 /// differ are different objects even if the paths are spelled identically.
 /// That is what makes it possible to notice a swap.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct FileIdentity {
-    volume: u64,
-    file: u64,
+///
+/// Backed by `same-file`, which reads device and inode on Unix and calls
+/// `GetFileInformationByHandle` on Windows. The equivalent standard-library
+/// accessors on Windows — `volume_serial_number` and `file_index` — are still
+/// behind the unstable `windows_by_handle` feature, which CI proved by
+/// refusing to compile them.
+#[derive(Debug)]
+pub(crate) struct FileIdentity(same_file::Handle);
+
+impl PartialEq for FileIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
 }
 
+impl Eq for FileIdentity {}
+
 impl FileIdentity {
-    /// Read the identity of an already-open handle.
+    /// Take ownership of an open handle and read its identity.
     ///
-    /// The handle is the point: its identity cannot change afterwards, however
-    /// the path is manipulated.
-    pub(crate) fn of_handle(file: &File) -> Option<Self> {
-        file.metadata()
-            .ok()
-            .and_then(|metadata| Self::of(&metadata))
+    /// The handle is the point: its identity is fixed at open and cannot
+    /// change afterwards, however the path is manipulated. Read through
+    /// [`Self::file_mut`] so the bytes come from the object that was verified.
+    pub(crate) fn of_handle(file: File) -> Option<Self> {
+        same_file::Handle::from_file(file).ok().map(Self)
     }
 
     /// Read the identity a path currently resolves to.
     pub(crate) fn of_path(path: &Path) -> Option<Self> {
-        std::fs::metadata(path).ok().and_then(|m| Self::of(&m))
+        same_file::Handle::from_path(path).ok().map(Self)
     }
 
-    #[cfg(unix)]
-    fn of(metadata: &Metadata) -> Option<Self> {
-        use std::os::unix::fs::MetadataExt;
-        Some(Self {
-            volume: metadata.dev(),
-            file: metadata.ino(),
-        })
-    }
-
-    #[cfg(windows)]
-    fn of(metadata: &Metadata) -> Option<Self> {
-        use std::os::windows::fs::MetadataExt;
-        Some(Self {
-            volume: u64::from(metadata.volume_serial_number()?),
-            file: metadata.file_index()?,
-        })
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    fn of(_metadata: &Metadata) -> Option<Self> {
-        // No identity available. Callers treat `None` as "cannot prove the
-        // file did not change", which refuses rather than proceeding.
-        None
+    /// The underlying file, for reading.
+    pub(crate) fn file_mut(&mut self) -> &mut File {
+        self.0.as_file_mut()
     }
 }
 
@@ -91,11 +81,8 @@ mod tests {
         let path = temp.path().join("file.txt");
         std::fs::write(&path, "x").unwrap();
 
-        let handle = File::open(&path).unwrap();
-        assert_eq!(
-            FileIdentity::of_handle(&handle).unwrap(),
-            FileIdentity::of_path(&path).unwrap()
-        );
+        let held = FileIdentity::of_handle(File::open(&path).unwrap()).unwrap();
+        assert_eq!(held, FileIdentity::of_path(&path).unwrap());
     }
 
     #[cfg(unix)]
@@ -109,13 +96,15 @@ mod tests {
         std::fs::write(&path, "original").unwrap();
         std::fs::write(temp.path().join("other.txt"), "swapped").unwrap();
 
-        let handle = File::open(&path).unwrap();
-        let held = FileIdentity::of_handle(&handle).unwrap();
+        let held = FileIdentity::of_handle(File::open(&path).unwrap()).unwrap();
 
         std::fs::remove_file(&path).unwrap();
         std::os::unix::fs::symlink(temp.path().join("other.txt"), &path).unwrap();
 
-        let now = FileIdentity::of_path(&path).unwrap();
-        assert_ne!(held, now, "the path now names a different object");
+        assert_ne!(
+            held,
+            FileIdentity::of_path(&path).unwrap(),
+            "the path now names a different object"
+        );
     }
 }
