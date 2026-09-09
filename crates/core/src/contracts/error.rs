@@ -37,6 +37,15 @@ pub enum ErrorCode {
     PolicyBlocked,
     /// The selected model or worker cannot do what was asked.
     CapabilityUnsupported,
+    /// No credential is stored for the reference that was asked for.
+    ///
+    /// Distinct from [`Self::ProviderAuthentication`], which is a credential
+    /// that exists and was refused, and from
+    /// [`Self::ProviderUnavailable`], which is a credential store that could
+    /// not be reached. Collapsing the three would make "you need to sign in
+    /// again" the answer to a locked Keychain
+    /// (`SECURITY_AND_PERMISSIONS.md` §7).
+    CredentialMissing,
     /// The provider rejected the credential.
     ProviderAuthentication,
     /// The provider applied a rate limit.

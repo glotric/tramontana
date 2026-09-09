@@ -11,6 +11,7 @@ mod discovery;
 mod ids;
 mod paths;
 mod profile;
+mod secrets;
 
 pub use bundle::{BundleError, MANIFEST_FILE, read_bundle, write_bundle};
 pub use clock::SystemClock;
@@ -18,3 +19,4 @@ pub use discovery::discover;
 pub use ids::UuidIdSource;
 pub use paths::{CanonicalRoot, PathError, canonicalize_root, contains};
 pub use profile::ProfileLease;
+pub use secrets::PlatformSecretVault;

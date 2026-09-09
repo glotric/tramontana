@@ -18,9 +18,9 @@ use crate::contracts::{
     PendingActionKind, ReplaySafety, ResumeEligibility, TaskCheckpoint, TaskEventKind, TaskId,
     TaskState, Timestamp,
 };
-use crate::contracts::{ModelEvent, ModelRequest, StopReason};
+use crate::contracts::{ModelEvent, ModelRequest, SecretRef, SecretStore, StopReason};
 use crate::ports::{
-    CheckpointRepository, EventStore, EventStoreError, ModelProvider, RepositoryError,
+    CheckpointRepository, EventStore, EventStoreError, ModelProvider, RepositoryError, SecretVault,
 };
 
 /// Build an event for `task_id` at `sequence`.
@@ -544,6 +544,128 @@ where
             events.iter().filter(|event| event.is_terminal()).count(),
             1,
             "a pre-cancelled stream must still end exactly once, got {events:?}"
+        );
+    }
+}
+
+/// A reference a contract run uses, namespaced so a real store can be swept.
+///
+/// Every key a test writes begins with the same prefix, so a run against a
+/// developer's actual Keychain leaves nothing that cannot be identified and
+/// removed — and cannot collide with a credential the user put there.
+#[must_use]
+pub fn test_secret_ref(name: &str) -> SecretRef {
+    SecretRef {
+        key: format!("tramontana.test.{name}"),
+        store: SecretStore::Platform,
+    }
+}
+
+/// Assert that `vault` obeys the full [`SecretVault`] contract.
+///
+/// Run against the in-memory fake and against the real platform store, so a
+/// divergence is a defect in one of them rather than a difference in what was
+/// tested (`TESTING_STRATEGY.md` §4).
+///
+/// The vault must start with none of the contract's keys present. Every key it
+/// writes is removed before returning, including on the paths that assert
+/// failure, so a run against a real credential store leaves the machine as it
+/// found it.
+///
+/// # Panics
+///
+/// Panics with the failing expectation, which is how a test reports.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "this is a test suite; a panic is the failure report"
+)]
+pub async fn secret_vault_contract(vault: &dyn SecretVault) {
+    let reference = test_secret_ref("contract");
+    let other = test_secret_ref("contract.other");
+
+    // Start clean, whatever an earlier run left behind.
+    vault.delete(&reference).await.unwrap();
+    vault.delete(&other).await.unwrap();
+
+    // An absent credential is missing, not empty. A store that answered with
+    // an empty string would be indistinguishable from one holding "".
+    assert!(!vault.contains(&reference).await.unwrap());
+    let missing = vault.resolve(&reference).await.unwrap_err();
+    assert_eq!(
+        missing.code,
+        crate::contracts::ErrorCode::CredentialMissing,
+        "an absent credential reported {:?}",
+        missing.code
+    );
+
+    // Stored, then resolved as itself.
+    vault.store(&reference, "value-one").await.unwrap();
+    assert!(vault.contains(&reference).await.unwrap());
+    assert_eq!(vault.resolve(&reference).await.unwrap(), "value-one");
+
+    // Replacement, which is what a rotated key is. No delete-then-store
+    // window where the credential is absent.
+    vault.store(&reference, "value-two").await.unwrap();
+    assert_eq!(vault.resolve(&reference).await.unwrap(), "value-two");
+
+    // References are independent: one key's value is not another's.
+    vault.store(&other, "different").await.unwrap();
+    assert_eq!(vault.resolve(&reference).await.unwrap(), "value-two");
+    assert_eq!(vault.resolve(&other).await.unwrap(), "different");
+
+    // A value that is not ASCII, and one that is long, both survive intact.
+    // A store that silently truncated or re-encoded would hand back a
+    // credential that fails to authenticate for no visible reason.
+    let awkward = format!("ключ-{}-🔑", "x".repeat(512));
+    vault.store(&other, &awkward).await.unwrap();
+    assert_eq!(vault.resolve(&other).await.unwrap(), awkward);
+
+    // Deleting reports whether anything was there, and deleting again is not
+    // an error: the caller asked for it to be gone, and it is gone.
+    assert!(vault.delete(&reference).await.unwrap());
+    assert!(!vault.delete(&reference).await.unwrap());
+    assert!(!vault.contains(&reference).await.unwrap());
+
+    // The error for a deleted credential is the same as for one never stored.
+    let after_delete = vault.resolve(&reference).await.unwrap_err();
+    assert_eq!(
+        after_delete.code,
+        crate::contracts::ErrorCode::CredentialMissing
+    );
+
+    // Nothing this suite wrote is left behind.
+    vault.delete(&other).await.unwrap();
+    assert!(!vault.contains(&other).await.unwrap());
+}
+
+/// Assert that an unreachable store is distinguishable from an empty one.
+///
+/// A store that cannot be reached reporting "no credential" is the failure
+/// that makes a user re-enter a key that was already there
+/// (`SECURITY_AND_PERMISSIONS.md` §7).
+///
+/// # Panics
+///
+/// Panics with the failing expectation.
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "this is a test suite; a panic is the failure report"
+)]
+pub async fn unavailable_store_contract(vault: &dyn SecretVault) {
+    let reference = test_secret_ref("unavailable");
+    for code in [
+        vault.resolve(&reference).await.unwrap_err().code,
+        vault.contains(&reference).await.unwrap_err().code,
+        vault.store(&reference, "x").await.unwrap_err().code,
+        vault.delete(&reference).await.unwrap_err().code,
+    ] {
+        assert_ne!(
+            code,
+            crate::contracts::ErrorCode::CredentialMissing,
+            "an unreachable store reported a missing credential"
         );
     }
 }

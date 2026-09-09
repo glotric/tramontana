@@ -799,6 +799,11 @@
           "type": "string"
         },
         {
+          "const": "credentialMissing",
+          "description": "No credential is stored for the reference that was asked for.\n\nDistinct from [`Self::ProviderAuthentication`], which is a credential\nthat exists and was refused, and from\n[`Self::ProviderUnavailable`], which is a credential store that could\nnot be reached. Collapsing the three would make \"you need to sign in\nagain\" the answer to a locked Keychain\n(`SECURITY_AND_PERMISSIONS.md` §7).",
+          "type": "string"
+        },
+        {
           "const": "providerAuthentication",
           "description": "The provider rejected the credential.",
           "type": "string"

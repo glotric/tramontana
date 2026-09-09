@@ -54,6 +54,10 @@ tramontana task discard  <TASK>                          # keeps history, undoes
 tramontana bundle export  ./out --project-id <PROJECT>
 tramontana bundle inspect ./out                          # validates, writes nothing
 tramontana bundle import  ./out                          # into a clean profile
+
+tramontana secret set    openai.apiKey < key.txt         # stdin only, never an argument
+tramontana secret status openai.apiKey                   # configured or not; never the value
+tramontana secret forget openai.apiKey
 ```
 
 Prerequisites, root commands, and known gaps: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
@@ -91,6 +95,7 @@ crates/core/        Provider-neutral Rust domain and application services
 crates/persistence/ SQLite implementation of the local operational plane
 crates/platform/    Paths, clock, identifiers, profile lease, bundle files
 crates/adapters-tools/  Read-only filesystem and Git tools
+crates/adapters-model/  Model provider adapters over HTTP
 packages/shared/    Generated schemas and TypeScript client types
 xtask/              Repository build tooling; not shipped
 scripts/            Repository checks that are not tests
