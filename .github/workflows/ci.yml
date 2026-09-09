@@ -66,11 +66,24 @@ jobs:
           # use. One of them (Chrome) served a `Packages.gz` whose hash did not
           # match its own index, and `apt-get update` treats any repository
           # failure as fatal — so a CDN hiccup at Google failed a run that had
-          # nothing to do with Chrome. Drop the sources we do not need rather
-          # than making update non-fatal, which would hide a real failure of a
-          # repository we do depend on.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
-                     /etc/apt/sources.list.d/microsoft-prod.list
+          # nothing to do with Chrome.
+          #
+          # Matched by content rather than by filename: an earlier attempt
+          # removed `google-chrome.list`, which is not what this image calls
+          # it, so the fix silently did nothing and the run failed the same
+          # way. Only `sources.list.d` is searched — on some images the Ubuntu
+          # archive itself lives there, but never under these hostnames.
+          #
+          # Removing the sources is deliberate rather than making update
+          # non-fatal, which would also hide a real failure of a repository
+          # this build does depend on.
+          for source in $(grep -rIl -e 'dl\.google\.com' -e 'packages\.microsoft\.com' \
+                          /etc/apt/sources.list.d/ 2>/dev/null); do
+            echo "removing unused third-party apt source: $source"
+            sudo rm -f "$source"
+          done
+          echo "remaining apt sources:"
+          ls -1 /etc/apt/sources.list.d/ 2>/dev/null || echo "  (none)"
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
