@@ -87,6 +87,14 @@ pub enum TaskEventKind {
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[non_exhaustive]
 pub enum EventPayload {
+    /// A bounded explanation of a core lifecycle decision.
+    #[serde(rename_all = "camelCase")]
+    DiagnosticRecorded {
+        /// Stable machine-readable code.
+        code: String,
+        /// Secret-free description.
+        summary: String,
+    },
     /// The task was created.
     #[serde(rename_all = "camelCase")]
     TaskCreated {
@@ -153,6 +161,12 @@ pub enum EventPayload {
         arguments_summary: String,
         /// How much damage the tool could do.
         risk_class: super::RiskClass,
+        /// Worker-supplied stable step identity, scoped to this task.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        step_id: Option<String>,
+        /// Hash of the tool identity and normalized arguments, never raw values.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        request_hash: Option<String>,
     },
     /// A permission decision was reached.
     ///
@@ -185,6 +199,9 @@ pub enum EventPayload {
         invocation_id: super::InvocationId,
         /// The tool.
         tool_id: String,
+        /// Effect classification recorded before execution. Legacy events are unknown.
+        #[serde(default)]
+        replay_safety: super::ReplaySafety,
     },
     /// A tool invocation failed.
     #[serde(rename_all = "camelCase")]

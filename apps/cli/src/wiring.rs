@@ -80,6 +80,9 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
     )
     .map_err(|error| format!("could not register tools: {error}"))?;
 
+    let lease = tramontana_platform::ProfileLease::try_acquire(path)
+        .map_err(|error| format!("could not acquire runtime profile lease: {error}"))?
+        .map(|lease| Arc::new(lease) as Arc<dyn Send + Sync>);
     let events = Arc::new(SqliteEventStore::new(database.clone())) as Arc<dyn EventStore>;
     let service = TaskService::new(
         Repositories {
@@ -87,6 +90,9 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
             conversations: Arc::new(SqliteConversationRepository::new(database.clone())),
             tasks: Arc::new(SqliteTaskRepository::new(database.clone())),
             events,
+            checkpoints: Arc::new(tramontana_persistence::SqliteCheckpointRepository::new(
+                database.clone(),
+            )),
             configuration: Arc::new(SqliteConfigurationRepository::new(database)),
         },
         Providers {
@@ -109,6 +115,8 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
         Arc::new(SystemClock::new()),
         Arc::new(UuidIdSource::new()),
     );
+
+    let service = service.with_execution_guard(lease);
 
     // A process that died between appending an event and updating a task's
     // cached row leaves the two disagreeing. The events are the record, so the

@@ -72,7 +72,7 @@ impl AgentProvider for FakeWorker {
             model_control,
             tool_control: ToolControl::TramontanaBrokered,
             network_control,
-            checkpoint_support: CheckpointSupport::None,
+            checkpoint_support: CheckpointSupport::SameWorker,
             // Computed, never asserted: the core decides eligibility from the
             // control facts above (`CORE_CONTRACTS.md` §7.2).
             local_only_eligible: AgentDescriptor::compute_local_only_eligibility(
@@ -124,7 +124,9 @@ impl AgentProvider for FakeWorker {
             self.arguments.clone()
         };
 
-        let result = host.call_tool(&self.tool_id, arguments, &cancel).await?;
+        let result = host
+            .call_tool_step("reference-tool", &self.tool_id, arguments, &cancel)
+            .await?;
         if cancel.is_cancelled() {
             return Ok(WorkerOutcome::Cancelled);
         }

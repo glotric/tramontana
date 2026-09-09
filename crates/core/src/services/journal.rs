@@ -151,4 +151,25 @@ impl TaskJournal {
     pub fn correlation_id(&self) -> &CorrelationId {
         &self.correlation_id
     }
+
+    /// The conversation this task belongs to, when it has one.
+    #[must_use]
+    pub fn conversation_id(&self) -> Option<&ConversationId> {
+        self.conversation_id.as_ref()
+    }
+
+    /// Mint an identifier from the same source the journal numbers events with.
+    ///
+    /// Exposed so a caller building a durable record does not reach for a
+    /// second source and lose determinism under the fakes.
+    #[must_use]
+    pub fn next_id(&self, prefix: &str) -> String {
+        self.ports.ids.next(prefix)
+    }
+
+    /// The current time, from the same clock the journal stamps events with.
+    #[must_use]
+    pub fn now(&self) -> crate::contracts::Timestamp {
+        self.ports.clock.now()
+    }
 }

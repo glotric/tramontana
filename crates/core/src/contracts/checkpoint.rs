@@ -38,7 +38,7 @@ pub enum PendingActionKind {
 /// This is a statement about *effects*, not about whether the action would
 /// succeed. Reading a file twice is safe; writing one twice may not be, and a
 /// tool whose effects are not known is treated as though they are not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub enum ReplaySafety {
@@ -47,6 +47,7 @@ pub enum ReplaySafety {
     /// Repeating it could duplicate an effect.
     Unsafe,
     /// Not determinable from the record. Treated as [`ReplaySafety::Unsafe`].
+    #[default]
     Unknown,
 }
 

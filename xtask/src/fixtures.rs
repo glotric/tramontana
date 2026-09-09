@@ -95,6 +95,7 @@ fn service(chunk_delay_ms: u64) -> Result<Arc<TaskService>> {
             tasks: Arc::new(InMemoryTaskRepository::with_events(Arc::clone(&events))),
             events,
             configuration: Arc::new(InMemoryConfigurationRepository::new()),
+            checkpoints: Arc::new(tramontana_core::testing::InMemoryCheckpointRepository::new()),
         },
         Providers {
             model: Arc::new(FakeModelProvider::streaming_paced(

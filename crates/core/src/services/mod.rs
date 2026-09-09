@@ -9,13 +9,18 @@
 //! skeleton needs, driving one task from creation to exactly one terminal
 //! state.
 
+mod checkpoint;
 mod journal;
 mod permission_manager;
 mod projection;
 mod runtime;
+mod task_recovery;
 mod task_service;
 mod tool_registry;
 
+pub use checkpoint::{
+    DerivedState, ResumePlan, derive_checkpoint, derive_state, reason as checkpoint_reason,
+};
 pub use journal::{JournalPorts, TaskJournal};
 pub use permission_manager::PermissionManager;
 pub use projection::TaskProjectionWriter;

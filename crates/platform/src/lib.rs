@@ -9,8 +9,10 @@ mod clock;
 mod discovery;
 mod ids;
 mod paths;
+mod profile;
 
 pub use clock::SystemClock;
 pub use discovery::discover;
 pub use ids::UuidIdSource;
 pub use paths::{CanonicalRoot, PathError, canonicalize_root, contains};
+pub use profile::ProfileLease;

@@ -680,6 +680,29 @@
       "description": "The body of a durable event.\n\nTagged by `kind` so the discriminator is one field in both Rust and\nTypeScript. M1 defines the payloads the walking skeleton emits; the rest\narrive with the milestones that produce them.",
       "oneOf": [
         {
+          "description": "A bounded explanation of a core lifecycle decision.",
+          "properties": {
+            "code": {
+              "description": "Stable machine-readable code.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "diagnosticRecorded",
+              "type": "string"
+            },
+            "summary": {
+              "description": "Secret-free description.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "code",
+            "summary"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The task was created.",
           "properties": {
             "conversationId": {
@@ -828,9 +851,17 @@
               "const": "toolRequested",
               "type": "string"
             },
+            "requestHash": {
+              "description": "Hash of the tool identity and normalized arguments, never raw values.",
+              "type": "string"
+            },
             "riskClass": {
               "$ref": "#/$defs/RiskClass",
               "description": "How much damage the tool could do."
+            },
+            "stepId": {
+              "description": "Worker-supplied stable step identity, scoped to this task.",
+              "type": "string"
             },
             "toolId": {
               "description": "Namespaced tool identifier.",
@@ -911,6 +942,11 @@
               "const": "toolStarted",
               "type": "string"
             },
+            "replaySafety": {
+              "$ref": "#/$defs/ReplaySafety",
+              "default": "unknown",
+              "description": "Effect classification recorded before execution. Legacy events are unknown."
+            },
             "toolId": {
               "description": "The tool.",
               "type": "string"
@@ -919,7 +955,8 @@
           "required": [
             "kind",
             "invocationId",
-            "toolId"
+            "toolId",
+            "replaySafety"
           ],
           "type": "object"
         },
@@ -1499,8 +1536,15 @@
       "description": "A durable, provider-neutral message.",
       "properties": {
         "conversationId": {
-          "$ref": "#/$defs/ConversationId",
-          "description": "Conversation this message belongs to."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConversationId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Conversation this message belongs to, when it has one.\n\nOptional because a task can be started outside a conversation, and its\nassistant answer is still the durable record of what the model said.\nDropping the message because there was no conversation would leave the\nexported task with tool calls and no answer."
         },
         "createdAt": {
           "$ref": "#/$defs/Timestamp",
@@ -1546,7 +1590,6 @@
       "required": [
         "schemaVersion",
         "messageId",
-        "conversationId",
         "role",
         "createdAt",
         "status",

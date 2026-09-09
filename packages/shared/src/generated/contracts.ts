@@ -456,6 +456,17 @@ export interface EventEnvelope {
   payload:
     | {
         /**
+         * Stable machine-readable code.
+         */
+        code: string;
+        kind: "diagnosticRecorded";
+        /**
+         * Secret-free description.
+         */
+        summary: string;
+      }
+    | {
+        /**
          * Conversation this task belongs to, when it has one.
          */
         conversationId?: ConversationId | null;
@@ -538,9 +549,17 @@ export interface EventEnvelope {
         invocationId: string;
         kind: "toolRequested";
         /**
+         * Hash of the tool identity and normalized arguments, never raw values.
+         */
+        requestHash?: string;
+        /**
          * How much damage the tool could do.
          */
         riskClass: "read" | "modify" | "dangerous";
+        /**
+         * Worker-supplied stable step identity, scoped to this task.
+         */
+        stepId?: string;
         /**
          * Namespaced tool identifier.
          */
@@ -597,6 +616,10 @@ export interface EventEnvelope {
          */
         invocationId: string;
         kind: "toolStarted";
+        /**
+         * Effect classification recorded before execution. Legacy events are unknown.
+         */
+        replaySafety: "safe" | "unsafe" | "unknown";
         /**
          * The tool.
          */
@@ -703,6 +726,17 @@ export type EventId = string;
 export type EventPayload =
   | {
       /**
+       * Stable machine-readable code.
+       */
+      code: string;
+      kind: "diagnosticRecorded";
+      /**
+       * Secret-free description.
+       */
+      summary: string;
+    }
+  | {
+      /**
        * Conversation this task belongs to, when it has one.
        */
       conversationId?: ConversationId | null;
@@ -785,9 +819,17 @@ export type EventPayload =
       invocationId: string;
       kind: "toolRequested";
       /**
+       * Hash of the tool identity and normalized arguments, never raw values.
+       */
+      requestHash?: string;
+      /**
        * How much damage the tool could do.
        */
       riskClass: "read" | "modify" | "dangerous";
+      /**
+       * Worker-supplied stable step identity, scoped to this task.
+       */
+      stepId?: string;
       /**
        * Namespaced tool identifier.
        */
@@ -844,6 +886,10 @@ export type EventPayload =
        */
       invocationId: string;
       kind: "toolStarted";
+      /**
+       * Effect classification recorded before execution. Legacy events are unknown.
+       */
+      replaySafety: "safe" | "unsafe" | "unknown";
       /**
        * The tool.
        */
@@ -1095,9 +1141,14 @@ export type NetworkControl = "denied" | "brokered" | "constrained" | "unobservab
  */
 export interface NormalizedMessage {
   /**
-   * Conversation this message belongs to.
+   * Conversation this message belongs to, when it has one.
+   *
+   * Optional because a task can be started outside a conversation, and its
+   * assistant answer is still the durable record of what the model said.
+   * Dropping the message because there was no conversation would leave the
+   * exported task with tool calls and no answer.
    */
-  conversationId: string;
+  conversationId?: ConversationId | null;
   /**
    * When it was created.
    */

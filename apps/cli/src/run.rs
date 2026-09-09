@@ -6,8 +6,10 @@ use std::time::Duration;
 
 use clap::{Args, Subcommand};
 use tramontana_core::config::ConfigurationSelection;
-use tramontana_core::contracts::{ConversationId, TaskId, TaskState, TaskUpdate};
-use tramontana_core::services::StartTaskRequest;
+use tramontana_core::contracts::{
+    CheckpointId, ConversationId, EventEnvelope, EventPayload, TaskId, TaskState, TaskUpdate,
+};
+use tramontana_core::services::{StartTaskRequest, TaskService};
 
 use crate::configuration;
 use crate::render::{self, event_line, frame_line};
@@ -72,6 +74,29 @@ enum TaskCommand {
     Show(TaskShowArgs),
     /// Replay canonical task events without transient stream frames.
     Replay(TaskReplayArgs),
+    /// Stop and checkpoint this task, or inspectably snapshot recovered work.
+    Checkpoint(TaskShowArgs),
+    /// Show the durable record and latest checkpoint, including replay safety.
+    Inspect(TaskShowArgs),
+    /// Explicitly resume the latest inspected checkpoint with the same worker.
+    Resume(TaskResumeArgs),
+    /// Discard interrupted continuation without deleting history or undoing effects.
+    Discard(TaskShowArgs),
+}
+
+#[derive(Debug, Args)]
+struct TaskResumeArgs {
+    #[arg(value_name = "TASK_ID")]
+    task_id: String,
+    /// Exact checkpoint ID shown by task inspect.
+    #[arg(long)]
+    checkpoint_id: String,
+    #[arg(long)]
+    json: bool,
+    #[arg(long, default_value_t = 120)]
+    chunk_delay_ms: u64,
+    #[arg(long, value_name = "PATH")]
+    profile: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -114,6 +139,10 @@ pub(crate) async fn execute(mut args: TaskArgs) -> ExitCode {
         Some(TaskCommand::List(args)) => list(args).await,
         Some(TaskCommand::Show(args)) => show(args).await,
         Some(TaskCommand::Replay(args)) => replay(args).await,
+        Some(TaskCommand::Checkpoint(args)) => checkpoint_command(args, "checkpoint").await,
+        Some(TaskCommand::Inspect(args)) => checkpoint_command(args, "inspect").await,
+        Some(TaskCommand::Discard(args)) => checkpoint_command(args, "discard").await,
+        Some(TaskCommand::Resume(args)) => resume(args).await,
         None => run(args).await,
     }
 }
@@ -164,8 +193,21 @@ async fn run(args: TaskArgs) -> ExitCode {
         }
     };
 
-    // Subscribe from sequence 0 so nothing between start and here is missed.
-    let (replayed, mut updates) = match service.subscribe_task_events(&task_id, 0).await {
+    stream_task(service, task_id, args.json, args.cancel_after_ms, 0).await
+}
+
+async fn stream_task(
+    service: Arc<TaskService>,
+    task_id: TaskId,
+    json: bool,
+    cancel_after_ms: Option<u64>,
+    after_sequence: u64,
+) -> ExitCode {
+    // Subscribe before replay so nothing between start/resume and here is missed.
+    let (replayed, mut updates) = match service
+        .subscribe_task_events(&task_id, after_sequence)
+        .await
+    {
         Ok(subscription) => subscription,
         Err(error) => {
             eprintln!("error: {:?}: {}", error.code, error.message);
@@ -173,7 +215,7 @@ async fn run(args: TaskArgs) -> ExitCode {
         }
     };
 
-    if let Some(delay_ms) = args.cancel_after_ms {
+    if let Some(delay_ms) = cancel_after_ms {
         let service = Arc::clone(&service);
         let task_id = task_id.clone();
         tokio::spawn(async move {
@@ -182,12 +224,12 @@ async fn run(args: TaskArgs) -> ExitCode {
         });
     }
 
-    let mut highest_rendered = 0;
+    let mut highest_rendered = after_sequence;
     let mut terminal_rendered = false;
     for event in replayed {
         highest_rendered = highest_rendered.max(event.sequence);
-        terminal_rendered |= event.is_terminal_outcome();
-        emit_event(&event, args.json);
+        terminal_rendered |= is_stopped(&event);
+        emit_event(&event, json);
     }
 
     while !terminal_rendered {
@@ -199,14 +241,14 @@ async fn run(args: TaskArgs) -> ExitCode {
                     continue;
                 }
                 highest_rendered = event.sequence;
-                let terminal = event.is_terminal_outcome();
-                emit_event(&event, args.json);
+                let terminal = is_stopped(&event);
+                emit_event(&event, json);
                 if terminal {
                     terminal_rendered = true;
                 }
             }
             Ok(TaskUpdate::Frame { frame }) => {
-                if !args.json {
+                if !json {
                     println!("{}", frame_line(&frame));
                 }
             }
@@ -220,8 +262,8 @@ async fn run(args: TaskArgs) -> ExitCode {
                     Ok((missed, _)) => {
                         for event in missed {
                             highest_rendered = highest_rendered.max(event.sequence);
-                            terminal_rendered |= event.is_terminal_outcome();
-                            emit_event(&event, args.json);
+                            terminal_rendered |= is_stopped(&event);
+                            emit_event(&event, json);
                         }
                     }
                     Err(error) => {
@@ -239,8 +281,16 @@ async fn run(args: TaskArgs) -> ExitCode {
 
     match service.get_task(&task_id).await {
         Ok(snapshot) => {
-            if !args.json {
-                println!("\nterminal state: {:?}", snapshot.state);
+            // A run that ended interrupted leaves a checkpoint behind, so the
+            // next command can inspect what was pending rather than having to
+            // reconstruct it.
+            if snapshot.state == TaskState::Interrupted
+                && let Err(error) = service.create_checkpoint(&task_id).await
+            {
+                return render::application_error(&error);
+            }
+            if !json {
+                println!("\nstate: {:?}", snapshot.state);
             }
             // A cancelled or failed task is a non-zero exit so a script can
             // tell what happened without parsing output.
@@ -254,6 +304,73 @@ async fn run(args: TaskArgs) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn is_stopped(event: &EventEnvelope) -> bool {
+    event.is_terminal_outcome()
+        || matches!(
+            &event.payload,
+            EventPayload::TaskStateChanged {
+                current: TaskState::Interrupted,
+                ..
+            }
+        )
+}
+
+async fn checkpoint_command(args: TaskShowArgs, operation: &str) -> ExitCode {
+    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
+        Ok(service) => service,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let task_id = TaskId::new(args.task_id);
+    match operation {
+        "checkpoint" => match service.create_checkpoint(&task_id).await {
+            Ok(checkpoint) => render::json(&checkpoint),
+            Err(error) => render::application_error(&error),
+        },
+        "discard" => match service.discard_checkpoint(&task_id).await {
+            Ok(()) => match service.get_task_record(&task_id).await {
+                Ok(record) => render::json(&record),
+                Err(error) => render::application_error(&error),
+            },
+            Err(error) => render::application_error(&error),
+        },
+        _ => match (
+            service.get_task_record(&task_id).await,
+            service.latest_checkpoint(&task_id).await,
+        ) {
+            (Ok(task), Ok(checkpoint)) => {
+                render::json(&serde_json::json!({"task":task,"checkpoint":checkpoint}))
+            }
+            (Err(error), _) | (_, Err(error)) => render::application_error(&error),
+        },
+    }
+}
+
+async fn resume(args: TaskResumeArgs) -> ExitCode {
+    let service = match wiring::open(&wiring::profile_path(args.profile), args.chunk_delay_ms).await
+    {
+        Ok(service) => service,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let task_id = TaskId::new(args.task_id);
+    let sequence = match service.get_task(&task_id).await {
+        Ok(snapshot) => snapshot.last_sequence,
+        Err(error) => return render::application_error(&error),
+    };
+    if let Err(error) = service
+        .resume_task(&task_id, &CheckpointId::new(args.checkpoint_id))
+        .await
+    {
+        return render::application_error(&error);
+    }
+    stream_task(service, task_id, args.json, None, sequence).await
 }
 
 async fn list(args: TaskListArgs) -> ExitCode {
