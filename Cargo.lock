@@ -4453,6 +4453,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tramontana-adapters-tools"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tramontana-core",
+ "tramontana-platform",
+]
+
+[[package]]
 name = "tramontana-cli"
 version = "0.1.0"
 dependencies = [
@@ -4461,6 +4475,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tramontana-adapters-tools",
  "tramontana-core",
  "tramontana-persistence",
  "tramontana-platform",
@@ -4487,12 +4502,14 @@ name = "tramontana-desktop"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tempfile",
  "tokio",
  "tracing",
+ "tramontana-adapters-tools",
  "tramontana-core",
  "tramontana-persistence",
  "tramontana-platform",

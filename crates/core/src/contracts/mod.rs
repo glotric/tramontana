@@ -37,8 +37,8 @@ pub use descriptor::{
 };
 pub use error::{ErrorCode, ErrorEnvelope};
 pub use event::{
-    CancellationOrigin, EventDraft, EventEnvelope, EventPayload, StreamFrame, TaskEventKind,
-    TaskUpdate,
+    CancellationOrigin, EventDraft, EventEnvelope, EventPayload, PermissionOrigin, StreamFrame,
+    TaskEventKind, TaskUpdate,
 };
 pub use ids::{
     AgentId, AgentProviderId, ApprovalId, CheckpointId, ConversationId, CorrelationId, EventId,

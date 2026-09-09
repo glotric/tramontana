@@ -19,6 +19,7 @@ mod model;
 mod permission;
 mod repositories;
 mod tool;
+mod tool_plane;
 mod worker;
 
 pub use clock::FakeClock;
@@ -31,4 +32,5 @@ pub use repositories::{
     InMemoryTaskRepository,
 };
 pub use tool::{FAKE_TOOL_ID, FakeToolProvider};
+pub use tool_plane::assemble_tool_plane;
 pub use worker::{FAKE_AGENT_ID, FakeWorker};

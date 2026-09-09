@@ -6,17 +6,18 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::{ConfigurationSelection, RawSource, resolve_with_selection};
 use crate::contracts::{
-    ConversationId, ConversationRecord, CorrelationId, EffectiveConfiguration, ErrorCode,
-    ErrorEnvelope, EventDraft, EventEnvelope, EventId, EventPayload, ProjectId, ProjectRecord,
-    SCHEMA_VERSION, TaskEventKind, TaskId, TaskRecord, TaskSnapshot, TaskUpdate,
+    CapabilityScope, ConversationId, ConversationRecord, CorrelationId, EffectiveConfiguration,
+    ErrorCode, ErrorEnvelope, EventDraft, EventEnvelope, EventId, EventPayload, ProjectId,
+    ProjectRecord, SCHEMA_VERSION, TaskEventKind, TaskId, TaskRecord, TaskSnapshot, TaskUpdate,
 };
 use crate::ports::{
     AgentProvider, Clock, ConfigurationRepository, ConversationRepository, EventStore, IdSource,
-    ModelProvider, ProjectRepository, RepositoryError, TaskRepository, ToolProvider,
+    ModelProvider, ProjectRepository, RepositoryError, TaskRepository,
 };
 use crate::services::journal::{JournalPorts, TaskJournal};
 use crate::services::projection::TaskProjectionWriter;
 use crate::services::runtime::TaskDriver;
+use crate::services::{PermissionManager, ToolRegistry};
 
 /// How many updates a subscriber may fall behind before it must replay.
 ///
@@ -75,8 +76,10 @@ impl std::fmt::Debug for Repositories {
 pub struct Providers {
     /// Inference.
     pub model: Arc<dyn ModelProvider>,
-    /// Tools.
-    pub tools: Arc<dyn ToolProvider>,
+    /// Where tools are found. Registration grants nothing.
+    pub tools: Arc<ToolRegistry>,
+    /// What decides whether a tool may run.
+    pub permissions: Arc<PermissionManager>,
     /// The worker.
     pub worker: Arc<dyn AgentProvider>,
 }
@@ -423,6 +426,26 @@ impl TaskService {
             None => None,
         };
 
+        // Every tool call this task makes inherits the project's approved
+        // roots. A projectless task gets an empty scope, which the permission
+        // manager reads as no filesystem access at all.
+        let scope = match &project_id {
+            Some(id) => CapabilityScope::project(
+                id.clone(),
+                self.repositories
+                    .projects
+                    .get(id)
+                    .await
+                    .map_err(|error| self.repository_error(&error))?
+                    .roots,
+            ),
+            None => CapabilityScope {
+                project_id: None,
+                roots: Vec::new(),
+                releases_data: false,
+            },
+        };
+
         let created_at = self.clock.now();
         let mut record = TaskRecord::new(
             task_id.clone(),
@@ -507,7 +530,12 @@ impl TaskService {
             journal.publish_persisted(event);
         }
 
-        let driver = TaskDriver::new(journal, self.providers.clone());
+        let driver = TaskDriver::new(
+            journal,
+            self.providers.clone(),
+            scope,
+            Arc::clone(&self.clock),
+        );
         let goal = request.goal;
         tokio::spawn(async move {
             driver.run(goal, cancel).await;

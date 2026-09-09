@@ -2,12 +2,13 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::contracts::{
-    CorrelationId, ErrorCode, ErrorEnvelope, ProviderId, RiskClass, SideEffect, ToolDescriptor,
+    AuthorizedToolRequest, CorrelationId, ErrorCode, ErrorEnvelope, ProviderId, RiskClass,
+    SideEffect, ToolDescriptor,
 };
-use crate::ports::{ToolInvocation, ToolOutcome, ToolProvider};
+use crate::ports::{ToolOutcome, ToolProvider};
 
 /// The identifier of the fake read-only tool.
-pub const FAKE_TOOL_ID: &str = "fake.echo";
+pub const FAKE_TOOL_ID: &str = "fake.tool.echo";
 
 /// A tool provider offering one read-only echo tool.
 ///
@@ -52,7 +53,7 @@ impl ToolProvider for FakeToolProvider {
 
     async fn invoke(
         &self,
-        invocation: ToolInvocation,
+        request: AuthorizedToolRequest,
         cancel: CancellationToken,
     ) -> Result<ToolOutcome, ErrorEnvelope> {
         if cancel.is_cancelled() {
@@ -62,16 +63,16 @@ impl ToolProvider for FakeToolProvider {
                 CorrelationId::new("fake"),
             ));
         }
-        if invocation.tool_id != FAKE_TOOL_ID {
+        if request.tool_id() != FAKE_TOOL_ID {
             return Err(ErrorEnvelope::new(
                 ErrorCode::NotFound,
-                format!("unknown tool {}", invocation.tool_id),
+                format!("unknown tool {}", request.tool_id()),
                 CorrelationId::new("fake"),
             ));
         }
 
-        let value = invocation
-            .arguments
+        let value = request
+            .arguments()
             .get("value")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()

@@ -150,6 +150,46 @@ pub enum EventPayload {
         /// How much damage the tool could do.
         risk_class: super::RiskClass,
     },
+    /// A permission decision was reached.
+    ///
+    /// Emitted for *every* decision, including the ones nobody was asked
+    /// about. The exit criterion for M3 is that every action carries an
+    /// origin, a scope, and a decision — a silently-permitted action would
+    /// satisfy the permission system and fail the audit requirement.
+    #[serde(rename_all = "camelCase")]
+    PermissionDecided {
+        /// The invocation the decision covers.
+        invocation_id: super::InvocationId,
+        /// Who asked.
+        origin: PermissionOrigin,
+        /// What was asked for.
+        capability: String,
+        /// What it was limited to.
+        scope: super::CapabilityScope,
+        /// Whether it may proceed.
+        allowed: bool,
+        /// Stable reason, matching `ports::reason`.
+        reason_code: String,
+        /// How the authorization was obtained, when it was allowed.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        grant_kind: Option<super::GrantKind>,
+    },
+    /// An authorized tool invocation began.
+    #[serde(rename_all = "camelCase")]
+    ToolStarted {
+        /// The invocation.
+        invocation_id: super::InvocationId,
+        /// The tool.
+        tool_id: String,
+    },
+    /// A tool invocation failed.
+    #[serde(rename_all = "camelCase")]
+    ToolFailed {
+        /// The invocation.
+        invocation_id: super::InvocationId,
+        /// Normalized, already-redacted error.
+        error: ErrorEnvelope,
+    },
     /// A tool invocation finished.
     #[serde(rename_all = "camelCase")]
     ToolCompleted {
@@ -187,6 +227,31 @@ pub enum EventPayload {
     /// displaying them rather than failing (`CORE_CONTRACTS.md` §2).
     #[serde(other)]
     Unsupported,
+}
+
+/// Who asked for a capability.
+///
+/// An audit record that cannot say *who* asked is not an audit record. A
+/// built-in tool invoked by the user and the same tool invoked by an external
+/// worker are different events, even when the arguments match.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+#[non_exhaustive]
+pub enum PermissionOrigin {
+    /// The person, directly.
+    User,
+    /// A worker acting on the task.
+    #[serde(rename_all = "camelCase")]
+    Worker {
+        /// Namespaced worker identifier.
+        agent_id: String,
+    },
+    /// A named workflow.
+    #[serde(rename_all = "camelCase")]
+    Workflow {
+        /// Workflow identifier.
+        workflow_id: String,
+    },
 }
 
 /// Who requested a cancellation.

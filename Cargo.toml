@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/core",
+    "crates/adapters-tools",
     "crates/persistence",
     "crates/platform",
     "apps/cli",
@@ -22,6 +23,7 @@ repository = "https://github.com/glotric/tramontana"
 # something the core also uses.
 [workspace.dependencies]
 tramontana-core = { path = "crates/core" }
+tramontana-adapters-tools = { path = "crates/adapters-tools" }
 tramontana-persistence = { path = "crates/persistence" }
 tramontana-platform = { path = "crates/platform" }
 
