@@ -556,6 +556,60 @@ fn a_handoff_carries_the_work_and_not_the_previous_workers_session() {
 }
 
 #[test]
+fn a_handoff_is_complete_for_a_differently_configured_worker() {
+    // `BUILD_ORDER.md` §12 asks for a handoff a *second worker configuration*
+    // can pick up. The property that makes that true is negative: nothing in
+    // the bundle is meaningful only to the worker that produced it. So the
+    // test crosses the boundary the way a real handoff would — serialize,
+    // discard everything else, and read it back as the receiving worker.
+    let handoff = build_handoff(
+        &task_record(),
+        &revealing_request().events,
+        &checkpoint_with_session_state(),
+        at(9),
+    );
+    let wire = serde_json::to_string(&handoff).unwrap();
+    let received: tramontana_core::contracts::HandoffBundle = serde_json::from_str(&wire).unwrap();
+
+    // A second worker with different capabilities than the first.
+    let receiving = descriptor(CheckpointSupport::Portable);
+    assert_ne!(
+        receiving.checkpoint_support,
+        received
+            .previous_worker
+            .as_ref()
+            .unwrap()
+            .checkpoint_support,
+        "the two configurations must actually differ for this to prove anything"
+    );
+
+    // Everything it needs to continue is present without consulting anything
+    // else: what was asked for, what has happened, what is already done, and
+    // what was in flight.
+    assert!(!received.goal.is_empty());
+    assert!(!received.history.is_empty());
+    assert!(
+        received
+            .history
+            .iter()
+            .all(|entry| !entry.summary.is_empty())
+    );
+    assert_eq!(received.completed_step_ids, vec!["read-the-readme"]);
+    assert!(received.pending_action.is_some());
+    assert_eq!(received.event_sequence, 6);
+
+    // And nothing it cannot interpret. The previous worker appears only as
+    // provenance, never as something the receiver has to be or to load.
+    assert!(!wire.contains("worker-private-session-42"));
+    assert!(
+        received
+            .omissions
+            .iter()
+            .any(|omission| omission.category == OmissionCategory::WorkerPrivateState)
+    );
+}
+
+#[test]
 fn a_handoff_describes_the_checkpointed_point_not_whatever_happened_after() {
     let mut checkpoint = checkpoint_with_session_state();
     checkpoint.event_sequence = 2;
