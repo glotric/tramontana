@@ -20,7 +20,7 @@ Phase 1 has no enterprise server dependency. The default architecture is persona
 
 ## Status
 
-Milestone M4 is complete. Validation gate V2 is next.
+Milestone M5 is complete. Validation gate V3 is next.
 
 The differentiating capability is built and runs end to end against fakes: a task can be **stopped, understood, continued, handed to a different worker, and carried out of the application** as a record that stands on its own.
 
@@ -31,7 +31,15 @@ The differentiating capability is built and runs end to end against fakes: a tas
 
 Earlier milestones stand behind it: every tool call passes a fail-closed permission boundary and lands in the record with its origin, capability, scope, and decision, refusals included (M3); projects, conversations, tasks, ordered events, and secret-free configuration manifests persist in SQLite and recover on restart (M2).
 
-**The task runtime still uses deterministic fake providers, which the interface labels explicitly.** There is no real model yet and no modifying tools. Context manifests and routing decisions are recorded in their real serialized shape but produced by fakes — deliberately, because those shapes are the most expensive in the system to change late. Validation gate V1 passed.
+M5 added the model path: configured endpoints, a deterministic router, and a release boundary a provider cannot be reached without.
+
+- A model provider takes an **authorized** request, and the only way to obtain one is the release manager. A cloud endpoint cannot be reached without a disclosure and an approval, by construction rather than by discipline — the same technique that makes a tool unreachable without a permission decision.
+- What is disclosed is computed from the payload, not from the assembled context, so the release plan cannot describe something other than what was sent.
+- Credentials live in the operating system's credential store. Only an opaque reference is persisted, and a value reaches a provider as one header on one request.
+- Whether work leaves the device is **derived** — from the endpoint's URL, from the model's location — and never declared, so no settings row can mark a third-party endpoint local and slip past Local Only.
+- Credential-shaped text is redacted where it enters the system, so the durable record never held it.
+
+**A real model streams end to end through the CLI. No request has been made to OpenAI or Anthropic**, no test performs a TLS handshake, and no real `llama-server` has been supervised — those are named in [the M5 evidence note](docs/evidence/M5-models-and-routing.md) rather than implied. The desktop reaches the same models through the same composition but has no settings screen yet. Modifying tools arrive in M7. Validation gates V1 and V2 passed.
 
 ```bash
 corepack enable pnpm     # Node 24.x; Node 25 removed Corepack
