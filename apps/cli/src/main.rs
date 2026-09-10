@@ -11,6 +11,7 @@ mod bundle;
 mod configuration;
 mod conversation;
 mod project;
+mod provider;
 mod render;
 mod run;
 mod secret;
@@ -42,6 +43,8 @@ enum Command {
     Bundle(bundle::BundleArgs),
     /// Resolve and inspect project-authored configuration.
     Configuration(configuration::ConfigurationArgs),
+    /// Configure where models can be reached.
+    Provider(provider::ProviderArgs),
     /// Store, inspect, and remove credentials in the operating system store.
     Secret(secret::SecretArgs),
     /// Run one task against the fake providers and stream its activity.
@@ -83,6 +86,7 @@ async fn execute(command: Command) -> std::process::ExitCode {
         Command::Conversation(args) => conversation::execute(args).await,
         Command::Bundle(args) => bundle::execute(args).await,
         Command::Configuration(args) => configuration::execute(args).await,
+        Command::Provider(args) => provider::execute(args).await,
         Command::Secret(args) => secret::execute(args).await,
         Command::Task(args) => run::execute(args).await,
         Command::Info => std::process::ExitCode::SUCCESS,

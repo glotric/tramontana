@@ -148,7 +148,7 @@ impl Harness {
         )
         .unwrap();
         let providers = Providers {
-            model: Arc::new(FakeModelProvider::streaming(["answer"])),
+            models: vec![Arc::new(FakeModelProvider::streaming(["answer"]))],
             tools,
             permissions,
             releases,

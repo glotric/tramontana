@@ -494,3 +494,94 @@ async fn configuration_manifests_round_trip_and_are_scoped_by_project() {
         Some(manifest)
     );
 }
+
+#[tokio::test]
+async fn provider_endpoints_round_trip_and_never_hold_a_credential() {
+    use tramontana_core::contracts::{
+        ModelLocation, ProviderConfig, ProviderEndpoint, SecretRef, SecretStore,
+    };
+    use tramontana_core::ports::ProviderSettingsRepository;
+    use tramontana_persistence::SqliteProviderSettingsRepository;
+
+    let directory = tempfile::tempdir().unwrap();
+    let settings = SqliteProviderSettingsRepository::new(database(&directory, "providers").await);
+
+    assert!(settings.list().await.unwrap().is_empty());
+
+    let local = ProviderEndpoint::new(
+        "local-llama",
+        "Local llama",
+        ProviderConfig::LlamaServer {
+            binary_path: "/opt/llama-server".to_owned(),
+            model_path: "/models/m.gguf".to_owned(),
+            model_id: "m".to_owned(),
+            extra_args: vec!["--ctx-size".to_owned(), "8192".to_owned()],
+        },
+        at(1),
+    );
+    let cloud = ProviderEndpoint::new(
+        "anthropic",
+        "Anthropic",
+        ProviderConfig::Anthropic {
+            base_url: "https://api.anthropic.com".to_owned(),
+            model_id: "claude-test".to_owned(),
+            credential: SecretRef {
+                key: "anthropic.apiKey".to_owned(),
+                store: SecretStore::Platform,
+            },
+        },
+        at(2),
+    );
+    settings.save(&local).await.unwrap();
+    settings.save(&cloud).await.unwrap();
+
+    // Ordered, so two runs show the same thing.
+    let listed = settings.list().await.unwrap();
+    assert_eq!(listed, vec![local.clone(), cloud.clone()]);
+
+    // Location is derived on the way out, not stored and read back.
+    assert_eq!(listed[0].location(), ModelLocation::Local);
+    assert_eq!(listed[1].location(), ModelLocation::Cloud);
+
+    // Saving the same identifier edits rather than duplicates.
+    let mut edited = cloud.clone();
+    edited.enabled = false;
+    edited.display_name = "Anthropic (off)".to_owned();
+    settings.save(&edited).await.unwrap();
+    let listed = settings.list().await.unwrap();
+    assert_eq!(listed.len(), 2);
+    assert!(!listed[1].enabled);
+    assert_eq!(listed[1].display_name, "Anthropic (off)");
+
+    // Only the reference is on disk, never a value — there is nowhere in the
+    // type for one, and this asserts the row agrees.
+    // Read the file directly rather than through the repository, so this
+    // asserts what is on disk rather than what the type round-trips. The
+    // pool stays private: a test is not a reason to widen an interface.
+    // Every file the database spans, not just the main one: in WAL mode a
+    // recent write lives in `-wal` and reading only `.sqlite` would find
+    // nothing and pass an "is the secret absent?" check for the wrong reason.
+    let mut on_disk = String::new();
+    for entry in std::fs::read_dir(directory.path()).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("providers.sqlite"))
+        {
+            on_disk.push_str(&String::from_utf8_lossy(&std::fs::read(&path).unwrap()));
+        }
+    }
+    assert!(
+        on_disk.contains("anthropic.apiKey"),
+        "the reference is not stored"
+    );
+    assert!(
+        !on_disk.contains("sk-ant-"),
+        "a credential value reached the database file"
+    );
+
+    assert!(settings.delete("anthropic").await.unwrap());
+    assert!(!settings.delete("anthropic").await.unwrap());
+    assert_eq!(settings.list().await.unwrap().len(), 1);
+}

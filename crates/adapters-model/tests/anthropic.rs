@@ -54,8 +54,14 @@ fn credential() -> SecretRef {
 
 fn provider(endpoint: &FakeEndpoint, key: &str) -> AnthropicProvider {
     AnthropicProvider::new(
+        "anthropic",
         &endpoint.base_url,
-        AnthropicProvider::cloud_descriptor("claude-test", "Claude test", Some(200_000)),
+        AnthropicProvider::cloud_descriptor(
+            "anthropic",
+            "claude-test",
+            "Claude test",
+            Some(200_000),
+        ),
         credential(),
         Arc::new(FixedSecret(key.to_owned())),
     )
@@ -89,8 +95,9 @@ async fn the_adapter_obeys_the_model_provider_contract_over_a_socket() {
         };
         let endpoint = FakeEndpoint::start(behavior).await;
         let provider = AnthropicProvider::new(
+            "anthropic",
             &endpoint.base_url,
-            AnthropicProvider::cloud_descriptor("claude-test", "Claude test", None),
+            AnthropicProvider::cloud_descriptor("anthropic", "claude-test", "Claude test", None),
             credential(),
             Arc::new(FixedSecret("synthetic-key".to_owned())),
         )
@@ -254,8 +261,9 @@ async fn an_error_frame_inside_the_stream_becomes_the_terminal_failure() {
 #[tokio::test]
 async fn a_plain_http_endpoint_that_is_not_loopback_is_refused() {
     let error = AnthropicProvider::new(
+        "anthropic",
         "http://api.anthropic.com",
-        AnthropicProvider::cloud_descriptor("claude-test", "Claude test", None),
+        AnthropicProvider::cloud_descriptor("anthropic", "claude-test", "Claude test", None),
         credential(),
         Arc::new(FixedSecret("synthetic-key".to_owned())),
     )
@@ -267,7 +275,8 @@ async fn a_plain_http_endpoint_that_is_not_loopback_is_refused() {
 async fn a_cloud_descriptor_says_it_is_cloud() {
     // Not cosmetic: the router treats a cloud location as a prohibition under
     // Local Only, and the release boundary requires a disclosure for it.
-    let descriptor = AnthropicProvider::cloud_descriptor("claude-test", "Claude test", None);
+    let descriptor =
+        AnthropicProvider::cloud_descriptor("anthropic", "claude-test", "Claude test", None);
     assert_eq!(
         descriptor.location,
         tramontana_core::contracts::ModelLocation::Cloud

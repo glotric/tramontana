@@ -5055,9 +5055,22 @@ dependencies = [
  "tempfile",
  "tokio",
  "tramontana-adapters-tools",
+ "tramontana-composition",
  "tramontana-core",
  "tramontana-persistence",
  "tramontana-platform",
+]
+
+[[package]]
+name = "tramontana-composition"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tramontana-adapters-local",
+ "tramontana-adapters-model",
+ "tramontana-core",
 ]
 
 [[package]]
@@ -5090,6 +5103,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tramontana-adapters-tools",
+ "tramontana-composition",
  "tramontana-core",
  "tramontana-persistence",
  "tramontana-platform",

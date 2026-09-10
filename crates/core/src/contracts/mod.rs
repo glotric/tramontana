@@ -26,6 +26,7 @@ mod message;
 mod model;
 mod permission;
 mod primitives;
+mod provider;
 mod records;
 mod release;
 mod routing;
@@ -76,6 +77,7 @@ pub use primitives::{
     DataClass, ExecutionLocation, RiskClass, RoutingMode, SecretRef, SecretStore, SideEffect,
     Visibility,
 };
+pub use provider::{ProviderConfig, ProviderEndpoint};
 pub use records::{ConversationRecord, ProjectRecord, TaskRecord};
 pub use release::{
     ContextReleasePlan, ReleaseAuthorization, ReleaseExclusion, ReleasedCategory,

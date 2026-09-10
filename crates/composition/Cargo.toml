@@ -1,0 +1,23 @@
+[package]
+name = "tramontana-composition"
+description = "Turns configured endpoints into live providers. The only place that knows every adapter."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+tramontana-core = { workspace = true }
+tramontana-adapters-model = { workspace = true }
+tramontana-adapters-local = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

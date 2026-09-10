@@ -3,11 +3,12 @@ use sqlx::Row;
 use tramontana_core::contracts::{
     CheckpointId, ConfigurationDiagnostic, ConfigurationKind, ConfigurationSource, ConversationId,
     ConversationRecord, DiagnosticSeverity, EffectiveConfiguration, EventEnvelope, ProjectId,
-    ProjectRecord, TaskCheckpoint, TaskEventKind, TaskId, TaskRecord, TaskState, Timestamp,
+    ProjectRecord, ProviderEndpoint, SCHEMA_VERSION, TaskCheckpoint, TaskEventKind, TaskId,
+    TaskRecord, TaskState, Timestamp,
 };
 use tramontana_core::ports::{
     CheckpointRepository, ConfigurationRepository, ConversationRepository, ProjectRepository,
-    RepositoryError, TaskRepository,
+    ProviderSettingsRepository, RepositoryError, TaskRepository,
 };
 
 use crate::Database;
@@ -995,5 +996,89 @@ impl CheckpointRepository for SqliteCheckpointRepository {
         .iter()
         .map(Self::decode)
         .collect()
+    }
+}
+
+/// Model providers configured on this machine.
+#[derive(Debug, Clone)]
+pub struct SqliteProviderSettingsRepository {
+    database: Database,
+}
+
+impl SqliteProviderSettingsRepository {
+    /// Wrap an open, migrated database.
+    #[must_use]
+    pub fn new(database: Database) -> Self {
+        Self { database }
+    }
+}
+
+#[async_trait]
+impl ProviderSettingsRepository for SqliteProviderSettingsRepository {
+    async fn list(&self) -> Result<Vec<ProviderEndpoint>, RepositoryError> {
+        let rows = sqlx::query(
+            "SELECT endpoint_id, display_name, enabled, config, created_at, schema_version
+             FROM provider_endpoint
+             ORDER BY created_at, endpoint_id",
+        )
+        .fetch_all(self.database.pool())
+        .await
+        .map_err(|error| unavailable(&error))?;
+
+        let mut endpoints = Vec::with_capacity(rows.len());
+        for row in rows {
+            let config: String = row.try_get("config").map_err(|e| unavailable(&e))?;
+            let schema_version: i64 = row.try_get("schema_version").map_err(|e| unavailable(&e))?;
+            endpoints.push(ProviderEndpoint {
+                schema_version: u32::try_from(schema_version).unwrap_or(SCHEMA_VERSION),
+                endpoint_id: row.try_get("endpoint_id").map_err(|e| unavailable(&e))?,
+                display_name: row.try_get("display_name").map_err(|e| unavailable(&e))?,
+                enabled: row
+                    .try_get::<bool, _>("enabled")
+                    .map_err(|e| unavailable(&e))?,
+                config: parse_json(&config, "provider configuration")?,
+                created_at: Timestamp::new(
+                    row.try_get::<String, _>("created_at")
+                        .map_err(|e| unavailable(&e))?,
+                ),
+            });
+        }
+        Ok(endpoints)
+    }
+
+    async fn save(&self, endpoint: &ProviderEndpoint) -> Result<(), RepositoryError> {
+        // Replace rather than insert-or-fail: editing an endpoint is the
+        // normal case, and making the caller delete first would leave a
+        // window with no configuration.
+        sqlx::query(
+            "INSERT INTO provider_endpoint (
+                 endpoint_id, display_name, enabled, kind, config, created_at, schema_version
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(endpoint_id) DO UPDATE SET
+                 display_name = excluded.display_name,
+                 enabled = excluded.enabled,
+                 kind = excluded.kind,
+                 config = excluded.config",
+        )
+        .bind(&endpoint.endpoint_id)
+        .bind(&endpoint.display_name)
+        .bind(endpoint.enabled)
+        .bind(endpoint.config.kind())
+        .bind(to_json(&endpoint.config, "provider configuration")?)
+        .bind(endpoint.created_at.as_str())
+        .bind(i64::from(endpoint.schema_version))
+        .execute(self.database.pool())
+        .await
+        .map_err(|error| unavailable(&error))?;
+        Ok(())
+    }
+
+    async fn delete(&self, endpoint_id: &str) -> Result<bool, RepositoryError> {
+        let result = sqlx::query("DELETE FROM provider_endpoint WHERE endpoint_id = ?")
+            .bind(endpoint_id)
+            .execute(self.database.pool())
+            .await
+            .map_err(|error| unavailable(&error))?;
+        Ok(result.rows_affected() > 0)
     }
 }

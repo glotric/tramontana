@@ -443,7 +443,7 @@ async fn a_credential_pasted_into_a_goal_reaches_nothing() {
             checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
         },
         Providers {
-            model: endpoint.clone(),
+            models: vec![endpoint.clone()],
             tools,
             permissions,
             releases,
@@ -592,7 +592,7 @@ async fn run_to_completion(
             checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
         },
         Providers {
-            model: endpoint,
+            models: vec![endpoint],
             tools,
             permissions,
             releases,

@@ -77,6 +77,7 @@ impl AnthropicProvider {
     /// credential in the clear, or [`ErrorCode::Internal`] when an HTTP client
     /// cannot be built.
     pub fn new(
+        provider_id: impl Into<String>,
         base_url: impl Into<String>,
         descriptor: ModelDescriptor,
         credential: SecretRef,
@@ -96,7 +97,10 @@ impl AnthropicProvider {
             })?;
 
         Ok(Self {
-            provider_id: ProviderId::new("anthropic"),
+            // The configured endpoint's identifier, not a fixed vendor name:
+            // two Anthropic endpoints in one profile are two providers, and a
+            // routing decision has to be able to name which one it chose.
+            provider_id: ProviderId::new(provider_id),
             base_url,
             descriptor,
             credential,
@@ -112,12 +116,13 @@ impl AnthropicProvider {
     /// approval before anything reaches it.
     #[must_use]
     pub fn cloud_descriptor(
+        provider_id: &str,
         model_id: impl Into<String>,
         display_name: impl Into<String>,
         context_limit: Option<u64>,
     ) -> ModelDescriptor {
         ModelDescriptor {
-            provider_id: "anthropic".to_owned(),
+            provider_id: provider_id.to_owned(),
             model_id: model_id.into(),
             display_name: display_name.into(),
             location: ModelLocation::Cloud,

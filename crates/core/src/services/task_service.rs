@@ -79,8 +79,14 @@ impl std::fmt::Debug for Repositories {
 /// The providers a task runs against.
 #[derive(Clone)]
 pub struct Providers {
-    /// Inference.
-    pub model: Arc<dyn ModelProvider>,
+    /// Inference, one entry per configured endpoint.
+    ///
+    /// A list rather than a single provider because the router has always
+    /// reasoned over *many* models from an availability snapshot; one
+    /// provider was a placeholder for the milestones before endpoints could
+    /// be configured. The driver dispatches to the one the routing decision
+    /// named, so the record and the execution cannot come apart.
+    pub models: Vec<Arc<dyn ModelProvider>>,
     /// Where tools are found. Registration grants nothing.
     pub tools: Arc<ToolRegistry>,
     /// What decides whether a tool may run.

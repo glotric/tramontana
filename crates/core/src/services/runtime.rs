@@ -244,7 +244,7 @@ impl TaskDriver {
         };
         let host = BrokeredHost {
             journal: self.journal.clone(),
-            model: Arc::clone(&self.providers.model),
+            models: self.providers.models.clone(),
             releases: Arc::clone(&self.providers.releases),
             // The assembled context and the decision that chose a destination,
             // held whole rather than by identifier: the release plan is
@@ -328,7 +328,13 @@ impl TaskDriver {
     ) -> Result<RoutingDecision, ErrorEnvelope> {
         let snapshot = AvailabilitySnapshot {
             snapshot_id: self.journal.next_id("availability"),
-            models: self.providers.model.list_models().await,
+            models: {
+                let mut available = Vec::new();
+                for provider in &self.providers.models {
+                    available.extend(provider.list_models().await);
+                }
+                available
+            },
             taken_at: self.clock.now(),
         };
 
@@ -484,8 +490,9 @@ impl TaskDriver {
 /// and nothing about the worker has to change.
 struct BrokeredHost {
     journal: TaskJournal,
-    model: Arc<dyn ModelProvider>,
     tools: ToolBroker,
+    /// Every configured way to reach a model.
+    models: Vec<Arc<dyn ModelProvider>>,
     /// What decides whether a payload may reach the destination.
     releases: Arc<ReleaseManager>,
     /// The context assembled for this task.
@@ -658,7 +665,27 @@ impl WorkerHost for BrokeredHost {
             ))
             .await?;
 
-        let mut stream = self.model.stream(authorized, cancel.clone()).await?;
+        // The provider the decision named, not "the" provider. Failing
+        // closed here keeps the audit record and the execution from coming
+        // apart: a stream served by something other than the model the
+        // release plan discloses would make the disclosure describe a
+        // different act.
+        let provider = self
+            .models
+            .iter()
+            .find(|provider| provider.id().to_string() == decision.model.provider_id)
+            .ok_or_else(|| {
+                ErrorEnvelope::new(
+                    ErrorCode::ProviderUnavailable,
+                    format!(
+                        "no configured provider offers {:?}; the routing decision named one that is gone",
+                        decision.model.provider_id
+                    ),
+                    self.journal.correlation_id().clone(),
+                )
+            })?;
+
+        let mut stream = provider.stream(authorized, cancel.clone()).await?;
 
         // Deltas are coalesced here and committed once. Persisting every token
         // would make the durable stream enormous and tell the reader nothing

@@ -98,10 +98,10 @@ fn service(chunk_delay_ms: u64) -> Result<Arc<TaskService>> {
             checkpoints: Arc::new(tramontana_core::testing::InMemoryCheckpointRepository::new()),
         },
         Providers {
-            model: Arc::new(FakeModelProvider::streaming_paced(
+            models: vec![Arc::new(FakeModelProvider::streaming_paced(
                 ["Hello", ", ", "world"],
                 chunk_delay_ms,
-            )),
+            ))],
             tools: registry,
             permissions,
             releases,

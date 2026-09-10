@@ -294,27 +294,44 @@ fn a_fallback_never_crosses_a_boundary_the_mode_forbids() {
     );
 }
 
-/// A provider that fails the test if it is ever asked to run anything.
+/// A provider that counts every time it is asked to run something.
 ///
-/// The network sink `BUILD_ORDER.md` §14 asks for. It stands in for a cloud
-/// endpoint: if Local Only is a preference rather than a prohibition, this
+/// Two of these stand in for a configured cloud endpoint and a configured
+/// local one. The cloud instance is the network sink `BUILD_ORDER.md` §14
+/// asks for: if Local Only is a preference rather than a prohibition, it
 /// records a call and the test says so.
-#[derive(Debug, Default)]
-struct CloudSink {
+///
+/// One provider offering models under two different provider ids — which an
+/// earlier version of this fixture did — is exactly what the shared contract
+/// suite forbids ("a model claims a provider other than the one offering
+/// it"), and the driver now refuses to dispatch on it.
+#[derive(Debug)]
+struct CountingProvider {
+    provider_id: &'static str,
+    model_id: &'static str,
+    location: ModelLocation,
     reached: AtomicUsize,
 }
 
+impl CountingProvider {
+    fn new(provider_id: &'static str, model_id: &'static str, location: ModelLocation) -> Self {
+        Self {
+            provider_id,
+            model_id,
+            location,
+            reached: AtomicUsize::new(0),
+        }
+    }
+}
+
 #[async_trait]
-impl ModelProvider for CloudSink {
+impl ModelProvider for CountingProvider {
     fn id(&self) -> ProviderId {
-        ProviderId::new("cloud")
+        ProviderId::new(self.provider_id)
     }
 
     async fn list_models(&self) -> Vec<ModelDescriptor> {
-        vec![
-            model("cloud", "remote", ModelLocation::Cloud),
-            model("local", "on-device", ModelLocation::Local),
-        ]
+        vec![model(self.provider_id, self.model_id, self.location)]
     }
 
     async fn stream(
@@ -350,7 +367,17 @@ impl ModelProvider for CloudSink {
 async fn under_local_only_a_task_never_reaches_a_cloud_endpoint() {
     let events: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
     let ids = Arc::new(SequentialIdSource::new());
-    let sink = Arc::new(CloudSink::default());
+    // Two configured endpoints, as a profile with both would have.
+    let sink = Arc::new(CountingProvider::new(
+        "cloud",
+        "remote",
+        ModelLocation::Cloud,
+    ));
+    let on_device = Arc::new(CountingProvider::new(
+        "local",
+        "on-device",
+        ModelLocation::Local,
+    ));
     let (tools, permissions, releases) = assemble_tool_plane(
         vec![Arc::new(FakeToolProvider::new())],
         Arc::new(InMemoryApprovalStore::new()),
@@ -369,7 +396,7 @@ async fn under_local_only_a_task_never_reaches_a_cloud_endpoint() {
             checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
         },
         Providers {
-            model: sink.clone(),
+            models: vec![sink.clone(), on_device.clone()],
             tools,
             permissions,
             releases,
@@ -405,11 +432,17 @@ async fn under_local_only_a_task_never_reaches_a_cloud_endpoint() {
     .await
     .expect("the task never settled");
 
-    // The model provider was called — this is not a test that nothing ran.
+    // A model ran — this is not a test that nothing happened — and it was
+    // the one on this device.
     assert_eq!(
-        sink.reached.load(Ordering::SeqCst),
+        on_device.reached.load(Ordering::SeqCst),
         1,
         "the task did not run a model at all, so this proves nothing"
+    );
+    assert_eq!(
+        sink.reached.load(Ordering::SeqCst),
+        0,
+        "Local Only reached a cloud endpoint"
     );
 
     // And the recorded decision kept it on the device, with no cloud fallback
@@ -479,7 +512,7 @@ async fn a_task_with_no_eligible_model_fails_with_the_reason() {
             checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
         },
         Providers {
-            model: Arc::new(NoModels),
+            models: vec![Arc::new(NoModels)],
             tools,
             permissions,
             releases,

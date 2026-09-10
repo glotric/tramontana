@@ -150,7 +150,7 @@ impl Harness {
         Self {
             repos,
             providers: Providers {
-                model: Arc::new(FakeModelProvider::streaming(["answer"])),
+                models: vec![Arc::new(FakeModelProvider::streaming(["answer"]))],
                 tools,
                 permissions,
                 releases,

@@ -548,3 +548,70 @@ pub(crate) async fn revoke_project_grant(
         ))
     }
 }
+
+/// One configured endpoint, as the interface sees it.
+///
+/// Deliberately not the stored `ProviderEndpoint`: what a window needs is
+/// "can I use this, and if not why", and sending the whole configuration —
+/// including a credential *reference* — to a webview would be handing out
+/// more than the question needs.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelEndpointStatus {
+    /// The endpoint identifier, which routing decisions also name.
+    pub(crate) endpoint_id: String,
+    /// The models it offers.
+    pub(crate) models: Vec<String>,
+    /// Whether work sent here leaves the device. Derived, never declared.
+    pub(crate) leaves_the_device: bool,
+    /// Whether it came up.
+    pub(crate) available: bool,
+    /// Why it did not, when it did not. Already normalized and secret-free.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) unavailable_reason: Option<String>,
+}
+
+/// Report every configured model endpoint and whether it is usable.
+///
+/// The "list, health" half of the models/providers surface
+/// (`ARCHITECTURE.md` §416). Configuring an endpoint is `tramontana provider`
+/// for now; this window can show what is configured but not yet change it.
+///
+/// # Errors
+///
+/// Never fails: an endpoint that could not be brought up is reported as
+/// unavailable rather than turning the whole list into an error.
+#[tauri::command]
+pub(crate) async fn list_model_endpoints(
+    state: State<'_, AppState>,
+) -> Result<Vec<ModelEndpointStatus>, ErrorEnvelope> {
+    let plane = state.models.lock().await;
+    let mut statuses = Vec::new();
+
+    for provider in &plane.providers {
+        let models = provider.list_models().await;
+        statuses.push(ModelEndpointStatus {
+            endpoint_id: provider.id().to_string(),
+            leaves_the_device: models
+                .iter()
+                .any(|model| model.location == tramontana_core::contracts::ModelLocation::Cloud),
+            models: models.into_iter().map(|model| model.model_id).collect(),
+            available: true,
+            unavailable_reason: None,
+        });
+    }
+
+    for failure in &plane.failures {
+        statuses.push(ModelEndpointStatus {
+            endpoint_id: failure.endpoint_id.clone(),
+            models: Vec::new(),
+            // Unknown, and false is the safe answer to show next to
+            // "unavailable": nothing was sent anywhere.
+            leaves_the_device: false,
+            available: false,
+            unavailable_reason: Some(failure.error.message.clone()),
+        });
+    }
+
+    Ok(statuses)
+}

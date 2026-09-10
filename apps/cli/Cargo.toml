@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 tramontana-core = { workspace = true }
+tramontana-composition = { workspace = true }
 tramontana-adapters-tools = { workspace = true }
 tramontana-persistence = { workspace = true }
 tramontana-platform = { workspace = true }

@@ -8,9 +8,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tramontana_adapters_tools::{FilesystemTools, GitTools};
+use tramontana_composition::{ModelPlane, Supervision, assemble_models};
 use tramontana_core::ports::AgentProvider;
 use tramontana_core::ports::EventStore;
-use tramontana_core::ports::{ApprovalStore, Approver, ToolProvider};
+use tramontana_core::ports::{
+    ApprovalStore, Approver, ModelProvider, ProviderSettingsRepository, SecretResolver,
+    ToolProvider,
+};
 use tramontana_core::services::{Providers, Repositories, TaskService};
 use tramontana_core::testing::{
     FakeModelProvider, FakeWorker, InMemoryApprovalStore, ReceivingWorker, assemble_tool_plane,
@@ -19,9 +23,9 @@ use tramontana_core::testing::{
 use crate::approval::TerminalApprover;
 use tramontana_persistence::{
     Database, SqliteConfigurationRepository, SqliteConversationRepository, SqliteEventStore,
-    SqliteProjectRepository, SqliteTaskRepository,
+    SqliteProjectRepository, SqliteProviderSettingsRepository, SqliteTaskRepository,
 };
-use tramontana_platform::{SystemClock, UuidIdSource};
+use tramontana_platform::{PlatformSecretVault, SystemClock, UuidIdSource};
 
 /// Where a development profile keeps its database.
 ///
@@ -52,7 +56,36 @@ pub(crate) fn profile_path(explicit: Option<PathBuf>) -> PathBuf {
 /// # Errors
 ///
 /// Returns a message describing what could not be opened.
+/// Open a profile for a command that never runs a task.
+///
+/// Supervised runtimes are not started: listing projects must not load a
+/// model. Endpoints that are already listening still come up, so a task
+/// started from such a command would still route to them.
 pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskService>, String> {
+    // Nothing supervised, so there is no runtime to keep alive and the plane
+    // can be dropped here.
+    open_with(path, chunk_delay_ms, Supervision::Skip)
+        .await
+        .map(|(service, _plane)| service)
+}
+
+/// Open a profile for a command that will actually run a model.
+///
+/// Returns the plane as well: it owns any runtime this process started, and
+/// dropping it stops them. The caller has to hold it for as long as the task
+/// runs, which is why this cannot simply return the service.
+pub(crate) async fn open_running(
+    path: &Path,
+    chunk_delay_ms: u64,
+) -> Result<(Arc<TaskService>, ModelPlane), String> {
+    open_with(path, chunk_delay_ms, Supervision::Start).await
+}
+
+async fn open_with(
+    path: &Path,
+    chunk_delay_ms: u64,
+    supervision: Supervision,
+) -> Result<(Arc<TaskService>, ModelPlane), String> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -85,6 +118,48 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
         .map_err(|error| format!("could not acquire runtime profile lease: {error}"))?
         .map(|lease| Arc::new(lease) as Arc<dyn Send + Sync>);
     let events = Arc::new(SqliteEventStore::new(database.clone())) as Arc<dyn EventStore>;
+
+    // Real providers, from what the user configured. Credentials are resolved
+    // per request out of the platform store; only opaque references are in
+    // the database (ADR 0008).
+    let settings = SqliteProviderSettingsRepository::new(database.clone());
+    let configured = settings
+        .list()
+        .await
+        .map_err(|error| format!("could not read provider settings: {error}"))?;
+    let resolver = Arc::new(PlatformSecretVault::new()) as Arc<dyn SecretResolver>;
+    let plane = assemble_models(&configured, &resolver, supervision).await;
+
+    for failure in &plane.failures {
+        eprintln!(
+            "warning: endpoint {:?} ({}) is unavailable: {}",
+            failure.display_name, failure.endpoint_id, failure.error.message
+        );
+    }
+
+    // Falling back to the fake keeps the walking skeleton usable on a profile
+    // with nothing configured, and it says so every time: an interface that
+    // let a deterministic stub pass for a model would be lying about the one
+    // thing this project is built to be honest about.
+    let models: Vec<Arc<dyn ModelProvider>> = if plane.providers.is_empty() {
+        if !plane.skipped.is_empty() {
+            eprintln!(
+                "note: {} supervised runtime(s) were not started for this command",
+                plane.skipped.len()
+            );
+        }
+        eprintln!(
+            "note: no model endpoint is configured, so this profile is using the \
+             deterministic fake. Add one with `tramontana provider add`."
+        );
+        vec![Arc::new(FakeModelProvider::streaming_paced(
+            ["Hello", ", ", "world"],
+            chunk_delay_ms,
+        ))]
+    } else {
+        plane.providers.clone()
+    };
+
     let service = TaskService::new(
         Repositories {
             projects: Arc::new(SqliteProjectRepository::new(database.clone())),
@@ -97,12 +172,7 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
             configuration: Arc::new(SqliteConfigurationRepository::new(database)),
         },
         Providers {
-            // M4 onward replaces these with real adapters behind the same
-            // ports; nothing in this function changes shape.
-            model: Arc::new(FakeModelProvider::streaming_paced(
-                ["Hello", ", ", "world"],
-                chunk_delay_ms,
-            )),
+            models,
             tools: Arc::clone(&registry),
             permissions: Arc::clone(&permissions),
             releases: Arc::clone(&releases),
@@ -131,7 +201,7 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
         eprintln!("recovered {repaired} task projection(s) from the event stream");
     }
 
-    Ok(Arc::new(service))
+    Ok((Arc::new(service), plane))
 }
 
 /// Workers a task can be handed to by name.

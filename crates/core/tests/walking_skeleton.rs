@@ -50,7 +50,9 @@ fn service_with_store() -> (Arc<TaskService>, Arc<InMemoryEventStore>) {
             checkpoints: Arc::new(tramontana_core::testing::InMemoryCheckpointRepository::new()),
         },
         Providers {
-            model: Arc::new(FakeModelProvider::streaming(["Hello", ", ", "world"])),
+            models: vec![Arc::new(FakeModelProvider::streaming([
+                "Hello", ", ", "world",
+            ]))],
             tools: registry,
             permissions,
             releases,

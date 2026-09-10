@@ -55,6 +55,10 @@ tramontana bundle export  ./out --project-id <PROJECT>
 tramontana bundle inspect ./out                          # validates, writes nothing
 tramontana bundle import  ./out                          # into a clean profile
 
+tramontana provider add-openai local --base-url http://127.0.0.1:8080 --model llama3
+tramontana provider add-anthropic claude --model claude-sonnet-4-5 --credential anthropic.apiKey
+tramontana provider list                                 # shows local vs CLOUD, derived not declared
+
 tramontana secret set    openai.apiKey < key.txt         # stdin only, never an argument
 tramontana secret status openai.apiKey                   # configured or not; never the value
 tramontana secret forget openai.apiKey
@@ -97,6 +101,7 @@ crates/platform/    Paths, clock, identifiers, profile lease, bundle files
 crates/adapters-tools/  Read-only filesystem and Git tools
 crates/adapters-model/  Model provider adapters: chat-completions and Anthropic
 crates/adapters-local/  Supervised local model runtimes (llama.cpp)
+crates/composition/     Configured endpoints turned into live providers
 packages/shared/    Generated schemas and TypeScript client types
 xtask/              Repository build tooling; not shipped
 scripts/            Repository checks that are not tests

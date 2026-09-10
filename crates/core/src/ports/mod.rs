@@ -28,7 +28,7 @@ pub use permission::{
 };
 pub use repository::{
     CheckpointRepository, ConfigurationRepository, ConversationRepository, ProjectRepository,
-    RepositoryError, TaskRepository,
+    ProviderSettingsRepository, RepositoryError, TaskRepository,
 };
 pub use secret::{SecretResolver, SecretVault};
 pub use tool::{ToolInvocation, ToolOutcome, ToolProvider};
