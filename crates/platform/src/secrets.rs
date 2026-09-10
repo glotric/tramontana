@@ -71,12 +71,18 @@ impl PlatformSecretVault {
         }
     }
 
-    /// Whether a credential store is reachable at all.
+    /// Whether a credential store answers at all.
     ///
-    /// Answered by attempting one read of a name nothing uses. A headless
-    /// Linux session has no Secret Service provider and a CI runner has no
-    /// desktop session, so a test that needs a real store has to be able to
-    /// find out rather than fail with a confusing error.
+    /// A **read** probe, deliberately: this is called to decide whether to
+    /// show "credential store: unavailable", and a status check that wrote to
+    /// the user's keychain to find out would be a poor trade.
+    ///
+    /// Reachable is not the same as usable, and the difference is not
+    /// hypothetical. A Secret Service with no unlocked collection answers
+    /// reads with "no such credential" and refuses every write — this returns
+    /// `true` there. Anything that needs to know whether a credential can
+    /// actually be *stored* has to try storing one; the contract test does
+    /// exactly that before it decides whether to run.
     #[must_use]
     pub fn is_available(&self) -> bool {
         match keyring::Entry::new(&self.service, "availability.probe") {

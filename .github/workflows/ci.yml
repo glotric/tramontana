@@ -92,7 +92,8 @@ jobs:
             libssl-dev \
             patchelf \
             gnome-keyring \
-            dbus-x11
+            dbus-x11 \
+            libsecret-tools
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -143,28 +144,56 @@ jobs:
         run: cargo test --workspace
 
       # Linux needs both halves: a session bus, and a Secret Service provider
-      # on it. `gnome-keyring-daemon` reads the (empty) unlock password from
-      # standard input, and `--replace` keeps a second run from colliding with
-      # a daemon the image already started.
+      # on it that will actually accept a credential.
+      #
+      # The unlock password must be **non-empty**. With an empty one
+      # `gnome-keyring-daemon` cannot create the login keyring on its own; it
+      # tries to raise a GUI prompt, which fails with "cannot open display",
+      # and every write is refused while reads still answer. Reproduced in an
+      # `ubuntu:24.04` container: empty password fails, non-empty succeeds,
+      # and pre-creating the keyring directory makes no difference either way.
+      #
+      # `--replace` keeps a second run from colliding with a daemon the image
+      # already started.
       - name: Test (with a Secret Service on a session bus)
         if: runner.os == 'Linux'
         env:
           TRAMONTANA_REQUIRE_PLATFORM_SECRETS: "1"
         run: |
           dbus-run-session -- bash -c '
-            echo -n "" | gnome-keyring-daemon --unlock --replace --components=secrets &
-            # The daemon owns its bus name asynchronously. Wait for it rather
-            # than sleeping a guessed interval, so a slow runner does not turn
-            # into an intermittent failure.
+            # Two steps, because the second must not race the first.
+            # `--daemonize --login` returns only once the login keyring exists
+            # and is unlocked, so by the time `--start` brings up the secrets
+            # component there is a collection to write to. Backgrounding a
+            # single `--unlock` instead leaves the probe below racing the
+            # daemon: it measured the same in the end, but only by observation
+            # rather than by construction.
+            eval "$(printf "tramontana-ci\n" | \
+              gnome-keyring-daemon --daemonize --login 2>/dev/null)"
+            export GNOME_KEYRING_CONTROL SSH_AUTH_SOCK
+            eval "$(gnome-keyring-daemon --start --components=secrets 2>/dev/null)"
+
+            # Wait for a real credential to be storable, not for the bus name
+            # to be owned. The name is owned well before a collection exists,
+            # so the earlier version of this check went green against a store
+            # that refused every write — and the failure surfaced as an
+            # assertion inside a Rust test instead of here, where it belongs.
+            ready=no
             for _ in $(seq 1 50); do
-              if dbus-send --session --dest=org.freedesktop.DBus --print-reply \
-                   /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner \
-                   string:org.freedesktop.secrets 2>/dev/null | grep -q "boolean true"; then
-                echo "Secret Service is on the bus"
+              if printf %s probe | secret-tool store --label=ci-probe \
+                   tramontana ci-readiness 2>/dev/null; then
+                secret-tool clear tramontana ci-readiness 2>/dev/null || true
+                ready=yes
                 break
               fi
               sleep 0.2
             done
+            if [ "$ready" != yes ]; then
+              echo "::error::the Secret Service never accepted a credential"
+              exit 1
+            fi
+            echo "Secret Service accepted and removed a probe credential"
+
             cargo test --workspace
           '
 
