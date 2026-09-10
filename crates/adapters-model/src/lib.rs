@@ -10,7 +10,10 @@
 //! Every adapter here passes the same `model_provider_contract` suite the
 //! in-process fake passes, over a real socket.
 
+mod anthropic;
 mod openai;
 mod sse;
+mod transport;
 
+pub use anthropic::AnthropicProvider;
 pub use openai::{OpenAiCompatibleProvider, ProviderAuth};

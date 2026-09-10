@@ -18,17 +18,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures_util::StreamExt as _;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tramontana_core::contracts::{
-    AuthorizedModelRequest, CorrelationId, ErrorCode, ErrorEnvelope, Health, ModelCapability,
-    ModelDescriptor, ModelEvent, ModelLocation, ModelRequest, ProviderId, SecretRef, StopReason,
-    Usage,
+    AuthorizedModelRequest, ErrorCode, ErrorEnvelope, Health, ModelCapability, ModelDescriptor,
+    ModelEvent, ModelLocation, ModelRequest, ProviderId, SecretRef, StopReason, Usage,
 };
 use tramontana_core::ports::{ModelProvider, SecretResolver};
 
-use crate::sse::EventStreamDecoder;
+use crate::transport::{Signal, WireFormat, check_endpoint, error, pump};
 
 /// How a request authenticates, when it must.
 ///
@@ -205,90 +203,6 @@ fn role_of(role: tramontana_core::contracts::MessageRole) -> &'static str {
     }
 }
 
-/// Build a normalized error.
-/// Refuse an endpoint that would send a credential in the clear.
-///
-/// Plain HTTP is allowed only to loopback. Everything else must be `https://`.
-/// Before TLS existed the restriction was implicit — there was no way to reach
-/// a remote host at all — and now that it exists it has to be enforced rather
-/// than assumed: a key sent to a remote host over plain HTTP is disclosed to
-/// every hop between here and there, and a typo in a configuration field
-/// should not be able to do that quietly
-/// (`docs/decisions/0009-tls-for-cloud-adapters.md`).
-///
-/// # Errors
-///
-/// [`ErrorCode::InvalidRequest`] for a scheme that is neither, or for plain
-/// HTTP to anything but loopback.
-pub(crate) fn check_endpoint(base_url: &str) -> Result<(), ErrorEnvelope> {
-    if base_url.starts_with("https://") {
-        return Ok(());
-    }
-    let Some(rest) = base_url.strip_prefix("http://") else {
-        return Err(error(
-            ErrorCode::InvalidRequest,
-            format!("model endpoint must be an http or https URL, got {base_url:?}"),
-        ));
-    };
-    let host = host_of(rest);
-    if matches!(host, "localhost" | "127.0.0.1" | "::1") {
-        return Ok(());
-    }
-    Err(error(
-        ErrorCode::InvalidRequest,
-        format!(
-            "plain http is allowed only to loopback; use https for {host:?} so \
-             the credential is not sent in the clear"
-        ),
-    ))
-}
-
-/// The host in an authority, with any userinfo, port, and IPv6 brackets gone.
-///
-/// Written out step by step rather than as one expression, because this is the
-/// check that decides whether a credential may travel unencrypted. A parser
-/// that is hard to read is hard to be sure of, and the interesting inputs here
-/// are the adversarial ones: `http://evil.test/@localhost` and
-/// `http://localhost@evil.test/` must not both be read as loopback.
-fn host_of(after_scheme: &str) -> &str {
-    // The authority ends at the first `/`, `?`, or `#`. Anything after that is
-    // path or query and cannot change which host is contacted.
-    let authority = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default();
-    // Userinfo comes *before* the last `@` in the authority.
-    let host_port = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
-    // An IPv6 literal is bracketed, and only a colon after the closing bracket
-    // is a port separator.
-    if let Some(rest) = host_port.strip_prefix('[') {
-        return rest.split(']').next().unwrap_or_default();
-    }
-    // A bare host has at most one colon, and it introduces the port.
-    host_port.split(':').next().unwrap_or_default()
-}
-
-fn error(code: ErrorCode, message: impl Into<String>) -> ErrorEnvelope {
-    ErrorEnvelope::new(code, message, CorrelationId::new("model.openai"))
-}
-
-/// Map an HTTP status onto the normalized taxonomy.
-///
-/// The distinction that matters to a caller is whether retrying could help and
-/// whether the user has to do something. A 401 is a configuration problem, a
-/// 429 is a wait, a 5xx is the provider's.
-fn code_for_status(status: u16) -> ErrorCode {
-    match status {
-        401 | 403 => ErrorCode::ProviderAuthentication,
-        408 => ErrorCode::Timeout,
-        429 => ErrorCode::ProviderRateLimited,
-        400..=499 => ErrorCode::InvalidRequest,
-        _ => ErrorCode::ProviderUnavailable,
-    }
-}
-
 #[async_trait]
 impl ModelProvider for OpenAiCompatibleProvider {
     fn id(&self) -> ProviderId {
@@ -331,7 +245,15 @@ impl ModelProvider for OpenAiCompatibleProvider {
         let (sender, receiver) = mpsc::channel(32);
 
         tokio::spawn(async move {
-            let outcome = pump(builder, &stream_id, deadline, &cancel, &sender).await;
+            let outcome = pump(
+                builder,
+                &ChatCompletions,
+                &stream_id,
+                deadline,
+                &cancel,
+                &sender,
+            )
+            .await;
             // Exactly one terminal event, whatever happened above — including
             // when the consumer has already gone away, in which case the send
             // fails harmlessly.
@@ -342,345 +264,117 @@ impl ModelProvider for OpenAiCompatibleProvider {
     }
 }
 
-/// Run the request and forward its events, returning the terminal one.
+/// The chat-completions frame format.
 ///
-/// Written to have a single exit that produces the terminal event, so no
-/// branch can end the stream without one.
-async fn pump(
-    builder: reqwest::RequestBuilder,
-    stream_id: &str,
-    deadline: Duration,
-    cancel: &CancellationToken,
-    sender: &mpsc::Sender<ModelEvent>,
-) -> ModelEvent {
-    let cancelled = ModelEvent::Completed {
-        stop_reason: StopReason::Cancelled,
-    };
+/// A pure translation from one decoded `data:` payload to events. Keeping it
+/// free of IO is what lets a frame shape be tested directly, and it keeps the
+/// cancellation and terminal-event rules in exactly one place
+/// (`crate::transport`).
+pub(crate) struct ChatCompletions;
 
-    let response = tokio::select! {
-        () = cancel.cancelled() => return cancelled,
-        () = tokio::time::sleep(deadline) => {
-            return ModelEvent::Failed {
-                error: error(ErrorCode::Timeout, "the model did not respond within the deadline"),
-            };
+impl WireFormat for ChatCompletions {
+    fn decode(
+        &self,
+        payload: &str,
+        stream_id: &str,
+        offset: &mut u64,
+    ) -> (Vec<ModelEvent>, Signal) {
+        let mut events = Vec::new();
+
+        if payload.trim() == "[DONE]" {
+            return (events, Signal::Done);
         }
-        result = builder.send() => result,
-    };
 
-    let response = match response {
-        Ok(response) => response,
-        Err(failure) => {
-            return ModelEvent::Failed {
-                // The URL is deliberately not interpolated: a base URL can
-                // carry a query string a user pasted from a provider console.
-                error: error(
-                    ErrorCode::ProviderUnavailable,
-                    format!(
-                        "could not reach the model endpoint: {}",
-                        transport_reason(&failure)
-                    ),
-                ),
-            };
-        }
-    };
-
-    let status = response.status();
-    if !status.is_success() {
-        return ModelEvent::Failed {
-            error: error(
-                code_for_status(status.as_u16()),
-                format!("the model endpoint returned {status}"),
-            ),
-        };
-    }
-
-    let mut decoder = EventStreamDecoder::new();
-    let mut body = response.bytes_stream();
-    let mut offset = 0u64;
-    let mut stop_reason = StopReason::Stop;
-    let started = tokio::time::Instant::now();
-
-    loop {
-        let chunk = tokio::select! {
-            () = cancel.cancelled() => return cancelled,
-            () = tokio::time::sleep_until(started + deadline) => {
-                return ModelEvent::Failed {
-                    error: error(
-                        ErrorCode::Timeout,
-                        "the model stream did not finish within the deadline",
-                    ),
-                };
-            }
-            next = body.next() => next,
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
+            // A frame that is not JSON is a provider bug, not the user's
+            // problem, and dropping it is better than failing an answer that
+            // is otherwise arriving. It is visible in a diagnostic, not in the
+            // answer.
+            tracing::debug!(stream_id, "ignoring a model frame that is not JSON");
+            return (events, Signal::Continue);
         };
 
-        let Some(chunk) = chunk else { break };
-        let chunk = match chunk {
-            Ok(chunk) => chunk,
-            Err(failure) => {
-                return ModelEvent::Failed {
-                    error: error(
-                        ErrorCode::ProviderUnavailable,
-                        format!(
-                            "the model stream ended early: {}",
-                            transport_reason(&failure)
-                        ),
-                    ),
-                };
-            }
+        if let Some(usage) = value.get("usage").filter(|usage| !usage.is_null()) {
+            events.push(ModelEvent::Usage {
+                usage: Usage {
+                    input_tokens: usage
+                        .get("prompt_tokens")
+                        .and_then(serde_json::Value::as_u64),
+                    output_tokens: usage
+                        .get("completion_tokens")
+                        .and_then(serde_json::Value::as_u64),
+                    // Counted by the provider, not approximated here.
+                    estimated: false,
+                },
+            });
+        }
+
+        let Some(choice) = value.get("choices").and_then(|choices| choices.get(0)) else {
+            return (events, Signal::Continue);
         };
 
-        for payload in decoder.push(&chunk) {
-            match forward(&payload, stream_id, &mut offset, sender).await {
-                Forwarded::Continue => {}
-                Forwarded::Stopped(reason) => stop_reason = reason,
-                Forwarded::Done => return ModelEvent::Completed { stop_reason },
-                Forwarded::ConsumerGone => return cancelled,
-            }
-        }
-    }
-
-    if let Some(payload) = decoder.finish() {
-        match forward(&payload, stream_id, &mut offset, sender).await {
-            Forwarded::Stopped(reason) => stop_reason = reason,
-            Forwarded::ConsumerGone => return cancelled,
-            _ => {}
-        }
-    }
-
-    ModelEvent::Completed { stop_reason }
-}
-
-/// What happened to one decoded payload.
-enum Forwarded {
-    /// Nothing that ends the stream.
-    Continue,
-    /// The provider reported why generation stopped.
-    Stopped(StopReason),
-    /// The provider signalled end of stream.
-    Done,
-    /// Nobody is listening any more.
-    ConsumerGone,
-}
-
-/// Translate one wire payload into events and send them.
-async fn forward(
-    payload: &str,
-    stream_id: &str,
-    offset: &mut u64,
-    sender: &mpsc::Sender<ModelEvent>,
-) -> Forwarded {
-    if payload.trim() == "[DONE]" {
-        return Forwarded::Done;
-    }
-
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
-        // A frame that is not JSON is a provider bug, not the user's problem,
-        // and dropping it is better than failing an answer that is otherwise
-        // arriving. It is visible in a diagnostic, not in the answer.
-        tracing::debug!(stream_id, "ignoring a model frame that is not JSON");
-        return Forwarded::Continue;
-    };
-
-    let mut result = Forwarded::Continue;
-
-    if let Some(usage) = value.get("usage").filter(|usage| !usage.is_null()) {
-        let event = ModelEvent::Usage {
-            usage: Usage {
-                input_tokens: usage
-                    .get("prompt_tokens")
-                    .and_then(serde_json::Value::as_u64),
-                output_tokens: usage
-                    .get("completion_tokens")
-                    .and_then(serde_json::Value::as_u64),
-                // Counted by the provider, not approximated here.
-                estimated: false,
-            },
-        };
-        if sender.send(event).await.is_err() {
-            return Forwarded::ConsumerGone;
-        }
-    }
-
-    let Some(choice) = value.get("choices").and_then(|c| c.get(0)) else {
-        return result;
-    };
-
-    if let Some(delta) = choice.get("delta") {
-        if let Some(text) = delta.get("content").and_then(serde_json::Value::as_str)
-            && !text.is_empty()
-        {
-            let event = ModelEvent::TextDelta {
-                stream_id: stream_id.to_owned(),
-                offset: *offset,
-                text: text.to_owned(),
-            };
-            *offset += 1;
-            if sender.send(event).await.is_err() {
-                return Forwarded::ConsumerGone;
-            }
-        }
-
-        if let Some(calls) = delta
-            .get("tool_calls")
-            .and_then(serde_json::Value::as_array)
-        {
-            for call in calls {
-                let Some(arguments) = call
-                    .get("function")
-                    .and_then(|function| function.get("arguments"))
-                    .and_then(serde_json::Value::as_str)
-                else {
-                    continue;
-                };
-                let call_id = call
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .map_or_else(
-                        || {
-                            // Providers omit the id on continuation frames and
-                            // identify the call by its index instead.
-                            call.get("index")
-                                .and_then(serde_json::Value::as_u64)
-                                .map_or_else(
-                                    || "call-0".to_owned(),
-                                    |index| format!("call-{index}"),
-                                )
-                        },
-                        str::to_owned,
-                    );
-                let event = ModelEvent::ToolCallDelta {
+        if let Some(delta) = choice.get("delta") {
+            if let Some(text) = delta.get("content").and_then(serde_json::Value::as_str)
+                && !text.is_empty()
+            {
+                events.push(ModelEvent::TextDelta {
                     stream_id: stream_id.to_owned(),
                     offset: *offset,
-                    call_id,
-                    delta: arguments.to_owned(),
-                };
+                    text: text.to_owned(),
+                });
                 *offset += 1;
-                if sender.send(event).await.is_err() {
-                    return Forwarded::ConsumerGone;
+            }
+
+            if let Some(calls) = delta
+                .get("tool_calls")
+                .and_then(serde_json::Value::as_array)
+            {
+                for call in calls {
+                    let Some(arguments) = call
+                        .get("function")
+                        .and_then(|function| function.get("arguments"))
+                        .and_then(serde_json::Value::as_str)
+                    else {
+                        continue;
+                    };
+                    let call_id = call
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map_or_else(
+                            || {
+                                // Providers omit the id on continuation frames
+                                // and identify the call by its index instead.
+                                call.get("index")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .map_or_else(
+                                        || "call-0".to_owned(),
+                                        |index| format!("call-{index}"),
+                                    )
+                            },
+                            str::to_owned,
+                        );
+                    events.push(ModelEvent::ToolCallDelta {
+                        stream_id: stream_id.to_owned(),
+                        offset: *offset,
+                        call_id,
+                        delta: arguments.to_owned(),
+                    });
+                    *offset += 1;
                 }
             }
         }
-    }
 
-    if let Some(reason) = choice
-        .get("finish_reason")
-        .and_then(serde_json::Value::as_str)
-    {
-        result = Forwarded::Stopped(match reason {
-            "length" => StopReason::Length,
-            "tool_calls" | "function_call" => StopReason::ToolCall,
-            _ => StopReason::Stop,
-        });
-    }
+        let signal = choice
+            .get("finish_reason")
+            .and_then(serde_json::Value::as_str)
+            .map_or(Signal::Continue, |reason| {
+                Signal::Stopped(match reason {
+                    "length" => StopReason::Length,
+                    "tool_calls" | "function_call" => StopReason::ToolCall,
+                    _ => StopReason::Stop,
+                })
+            });
 
-    result
-}
-
-/// A transport failure described without echoing the URL.
-///
-/// A base URL can carry a query string a user pasted from a provider console,
-/// and `reqwest`'s own `Display` includes the URL.
-fn transport_reason(failure: &reqwest::Error) -> &'static str {
-    if failure.is_timeout() {
-        "timed out"
-    } else if failure.is_connect() {
-        "could not connect"
-    } else if failure.is_decode() {
-        "sent a response that could not be decoded"
-    } else if failure.is_body() {
-        "sent a truncated body"
-    } else {
-        "failed"
-    }
-}
-
-#[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "tests assert on known-good literals; a panic is the failure report"
-)]
-mod endpoint_tests {
-    use super::*;
-
-    #[test]
-    fn loopback_may_be_plain_http() {
-        for allowed in [
-            "http://localhost:8080",
-            "http://127.0.0.1:11434",
-            "http://[::1]:1234",
-            "http://localhost",
-            "http://127.0.0.1/v1",
-        ] {
-            assert!(
-                check_endpoint(allowed).is_ok(),
-                "refused loopback: {allowed}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_remote_host_over_plain_http_is_refused() {
-        // The whole point: a credential must not be sent in the clear because
-        // a configuration field had the wrong scheme in it.
-        for refused in [
-            "http://api.openai.com",
-            "http://192.168.1.10:8080",
-            "http://example.test/v1",
-        ] {
-            let error = check_endpoint(refused).unwrap_err();
-            assert_eq!(error.code, ErrorCode::InvalidRequest, "for {refused}");
-            assert!(error.message.contains("loopback"), "{}", error.message);
-        }
-    }
-
-    #[test]
-    fn a_hostname_that_merely_contains_loopback_is_not_loopback() {
-        // `localhost.evil.test` and friends. A `contains` check would pass
-        // these, which is why the host is parsed rather than searched.
-        for refused in [
-            "http://localhost.evil.test",
-            "http://notlocalhost",
-            "http://127.0.0.1.evil.test",
-            "http://evil.test/localhost",
-            "http://evil.test/?h=127.0.0.1",
-            "http://evil.test#localhost",
-        ] {
-            assert!(
-                check_endpoint(refused).is_err(),
-                "accepted a non-loopback host: {refused}"
-            );
-        }
-    }
-
-    #[test]
-    fn userinfo_cannot_disguise_a_remote_host_as_loopback() {
-        // `http://localhost@evil.test/` contacts evil.test. Reading the host
-        // as the text before the `@` would get this exactly backwards.
-        assert!(check_endpoint("http://localhost@evil.test/").is_err());
-        assert!(check_endpoint("http://127.0.0.1:80@evil.test/").is_err());
-        // And the mirror image is genuinely loopback.
-        assert!(check_endpoint("http://user@localhost:8080/").is_ok());
-        assert!(check_endpoint("http://user@evil.test@localhost/").is_ok());
-    }
-
-    #[test]
-    fn https_is_accepted_for_any_host() {
-        assert!(check_endpoint("https://api.anthropic.com").is_ok());
-        assert!(check_endpoint("https://localhost:8443").is_ok());
-    }
-
-    #[test]
-    fn a_scheme_that_is_neither_is_refused() {
-        for refused in [
-            "ftp://example.test",
-            "file:///etc/passwd",
-            "example.test",
-            "",
-        ] {
-            let error = check_endpoint(refused).unwrap_err();
-            assert_eq!(error.code, ErrorCode::InvalidRequest, "for {refused}");
-        }
+        (events, signal)
     }
 }

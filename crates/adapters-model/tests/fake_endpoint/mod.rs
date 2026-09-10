@@ -36,6 +36,12 @@ pub enum Behavior {
     Truncated,
     /// Send exactly these raw event payloads, verbatim.
     Raw(Vec<String>),
+    /// Stream these chunks in Anthropic's Messages frame shape.
+    ///
+    /// A separate arm rather than a flag, because the two formats differ in
+    /// more than field names: usage arrives split across two frames, and the
+    /// stream ends with `message_stop` instead of a `[DONE]` sentinel.
+    StreamsAnthropic(Vec<String>),
 }
 
 /// What one request carried.
@@ -209,6 +215,53 @@ async fn respond(socket: &mut tokio::net::TcpStream, behavior: &Behavior) {
                 let _ = socket.flush().await;
             }
             let _ = socket.shutdown().await;
+        }
+        Behavior::StreamsAnthropic(chunks) => {
+            let start = serde_json::json!({
+                "type": "message_start",
+                "message": { "usage": { "input_tokens": 11 } }
+            });
+            if socket
+                .write_all(format!("event: message_start\ndata: {start}\n\n").as_bytes())
+                .await
+                .is_err()
+            {
+                return;
+            }
+            // A keep-alive, which a decoder must ignore rather than treat as
+            // content.
+            let _ = socket
+                .write_all(b"event: ping\ndata: {\"type\":\"ping\"}\n\n")
+                .await;
+            for chunk in chunks {
+                let frame = serde_json::json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": { "type": "text_delta", "text": chunk }
+                });
+                if socket
+                    .write_all(format!("event: content_block_delta\ndata: {frame}\n\n").as_bytes())
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                let _ = socket.flush().await;
+            }
+            let delta = serde_json::json!({
+                "type": "message_delta",
+                "delta": { "stop_reason": "end_turn" },
+                "usage": { "output_tokens": 3 }
+            });
+            let stop = serde_json::json!({ "type": "message_stop" });
+            let _ = socket
+                .write_all(
+                    format!(
+                        "event: message_delta\ndata: {delta}\n\nevent: message_stop\ndata: {stop}\n\n"
+                    )
+                    .as_bytes(),
+                )
+                .await;
         }
         Behavior::Streams(chunks) => {
             for chunk in chunks {
