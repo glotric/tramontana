@@ -16,6 +16,9 @@ mod journal;
 mod permission_manager;
 mod preparation;
 mod projection;
+mod redaction;
+mod release;
+mod routing;
 mod runtime;
 mod task_export;
 mod task_recovery;
@@ -32,8 +35,15 @@ pub use export::{
 pub use handoff::build_handoff;
 pub use journal::{JournalPorts, TaskJournal};
 pub use permission_manager::PermissionManager;
-pub use preparation::{assemble_context, choose_route};
+pub use preparation::assemble_context;
 pub use projection::TaskProjectionWriter;
+pub use redaction::{
+    PLACEHOLDER, Redacted, carries_credential, reason as redaction_reason, redact, redacted_hash,
+};
+pub use release::{RELEASE_CAPABILITY, ReleaseContext, ReleaseError, ReleaseManager};
+pub use routing::{
+    AvailabilitySnapshot, NoEligibleRoute, RoutingInput, route, route_after_failure,
+};
 pub use task_export::ImportSummary;
 pub use task_service::{Providers, Repositories, StartTaskRequest, TaskService};
 pub use tool_registry::{RegisteredTool, RegistryError, ToolRegistry};

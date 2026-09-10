@@ -11,8 +11,10 @@ mod bundle;
 mod configuration;
 mod conversation;
 mod project;
+mod provider;
 mod render;
 mod run;
+mod secret;
 mod wiring;
 
 use clap::{Parser, Subcommand};
@@ -41,6 +43,10 @@ enum Command {
     Bundle(bundle::BundleArgs),
     /// Resolve and inspect project-authored configuration.
     Configuration(configuration::ConfigurationArgs),
+    /// Configure where models can be reached.
+    Provider(provider::ProviderArgs),
+    /// Store, inspect, and remove credentials in the operating system store.
+    Secret(secret::SecretArgs),
     /// Run one task against the fake providers and stream its activity.
     ///
     /// M1's walking skeleton: the same application service the desktop shell
@@ -80,6 +86,8 @@ async fn execute(command: Command) -> std::process::ExitCode {
         Command::Conversation(args) => conversation::execute(args).await,
         Command::Bundle(args) => bundle::execute(args).await,
         Command::Configuration(args) => configuration::execute(args).await,
+        Command::Provider(args) => provider::execute(args).await,
+        Command::Secret(args) => secret::execute(args).await,
         Command::Task(args) => run::execute(args).await,
         Command::Info => std::process::ExitCode::SUCCESS,
     }
@@ -99,6 +107,38 @@ fn print_info() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_credential_cannot_be_passed_as_a_process_argument() {
+        // A command line is visible to every other process on the machine and
+        // lands in shell history. There is no flag that takes a value, and
+        // this asserts it rather than trusting that nobody adds one.
+        assert!(Cli::try_parse_from(["tramontana", "secret", "set", "openai.apiKey"]).is_ok());
+        for rejected in [
+            vec![
+                "tramontana",
+                "secret",
+                "set",
+                "openai.apiKey",
+                "--value",
+                "sk-x",
+            ],
+            vec!["tramontana", "secret", "set", "openai.apiKey", "sk-x"],
+            vec![
+                "tramontana",
+                "secret",
+                "set",
+                "openai.apiKey",
+                "--password",
+                "sk-x",
+            ],
+        ] {
+            assert!(
+                Cli::try_parse_from(&rejected).is_err(),
+                "the CLI accepted a credential as an argument: {rejected:?}"
+            );
+        }
+    }
 
     #[test]
     fn m2_management_commands_parse() {

@@ -42,6 +42,8 @@ pub enum TaskEventKind {
     ContextPrepared,
     /// A model and location were chosen.
     RoutingDecided,
+    /// A payload was released to a destination.
+    ContextReleased,
     /// A worker was selected.
     WorkerSelected,
     /// A worker session started.
@@ -130,6 +132,21 @@ pub enum EventPayload {
     ContextPrepared {
         /// What was assembled, and what was withheld.
         manifest: super::ContextManifest,
+    },
+    /// A payload was released to a destination, on a recorded authority.
+    ///
+    /// Separate from `contextPrepared` because assembling is not sending. One
+    /// assembly can produce several releases — a fallback that crosses to a
+    /// different destination is a second one — and each has its own
+    /// disclosure and its own approval (`SECURITY_AND_PERMISSIONS.md` §8).
+    #[serde(rename_all = "camelCase")]
+    ContextReleased {
+        /// What went, where, and on whose authority.
+        ///
+        /// Boxed because it is by far the largest payload, and every event in
+        /// the system is moved by value: without the indirection each of the
+        /// twenty-odd other variants would carry its footprint.
+        plan: Box<super::ContextReleasePlan>,
     },
     /// A model and a location were chosen.
     #[serde(rename_all = "camelCase")]

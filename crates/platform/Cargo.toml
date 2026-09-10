@@ -14,9 +14,40 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync"] }
+
+# The platform credential store. Declared per target so no platform pays for
+# another's stack: the Linux Secret Service client is 106 crates that a macOS
+# or Windows build never compiles. See `docs/decisions/0008-platform-credential-store.md`.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "4.2.0", default-features = false, features = [
+  "v1",
+  "apple-native-keyring-store",
+] }
+# The classic login Keychain, not the data-protection one: `protected` requires
+# the application to be signed with a keychain-access-group entitlement, which
+# a development build does not have, so choosing it would make credentials work
+# only in a packaged build.
+apple-native-keyring-store = { version = "1.0.2", default-features = false, features = [
+  "keychain",
+] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "4.2.0", default-features = false, features = [
+  "v1",
+  "windows-native-keyring-store",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "4.2.0", default-features = false, features = [
+  "v1",
+  "zbus-secret-service-keyring-store",
+] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

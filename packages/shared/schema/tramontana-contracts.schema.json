@@ -57,6 +57,10 @@
       ],
       "type": "object"
     },
+    "ApprovalId": {
+      "description": "One approval request and its decision.",
+      "type": "string"
+    },
     "BundleEntry": {
       "description": "One file in a bundle, with what a reader needs to trust it.",
       "properties": {
@@ -243,13 +247,13 @@
           "type": "boolean"
         },
         "byteCount": {
-          "description": "Size in bytes.",
+          "description": "Size in bytes of the releasable text.\n\nOf the redacted text, for the same reason `content_hash` is: the\nnumber answers \"how much of this could be sent\", which is what a\ncontext manifest and a release plan are counting.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "contentHash": {
-          "description": "SHA-256 of the file's bytes, for reproducibility.",
+          "description": "SHA-256 of the source's releasable text, for reproducibility.\n\nOf the *redacted* text, not the bytes on disk. A hash naming content\nthat may not be released would let a later prompt assembly send the\noriginal and still satisfy every record that describes it\n(`SECURITY_AND_PERMISSIONS.md` §7). A file with no credential in it\nhashes identically either way.",
           "type": "string"
         },
         "declaredId": {
@@ -278,6 +282,13 @@
           "description": "Author-defined rule priority. Higher values apply first within the\nnative rule layer.",
           "format": "int64",
           "type": "integer"
+        },
+        "redactions": {
+          "description": "Stable codes for credentials removed from this source at ingestion.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "relativePath": {
           "description": "Project-relative path. Never absolute: an absolute path names a machine.",
@@ -426,6 +437,139 @@
       ],
       "type": "object"
     },
+    "ContextReleasePlan": {
+      "description": "Everything one request releases to one destination.\n\nBuilt by `services::release`, never by hand: the totals and categories are\nderived from the payload, so a plan cannot describe a request other than\nthe one it accompanies.",
+      "properties": {
+        "authorization": {
+          "$ref": "#/$defs/ReleaseAuthorization",
+          "description": "On whose authority it proceeded. Absent while the plan is a proposal."
+        },
+        "contextManifestId": {
+          "description": "The assembled context this payload was drawn from.",
+          "type": "string"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the plan was made."
+        },
+        "dataClasses": {
+          "description": "Data classes actually carried, strongest first.",
+          "items": {
+            "$ref": "#/$defs/DataClass"
+          },
+          "type": "array"
+        },
+        "decisionId": {
+          "description": "The routing decision that chose the destination.",
+          "type": "string"
+        },
+        "destination": {
+          "$ref": "#/$defs/RoutedModel",
+          "description": "The model it is going to."
+        },
+        "exclusions": {
+          "description": "Sources assembled for this task that this request did not carry.",
+          "items": {
+            "$ref": "#/$defs/ReleaseExclusion"
+          },
+          "type": "array"
+        },
+        "location": {
+          "$ref": "#/$defs/ExecutionLocation",
+          "description": "Where that model runs."
+        },
+        "messageIds": {
+          "description": "The messages carried, in payload order.",
+          "items": {
+            "$ref": "#/$defs/MessageId"
+          },
+          "type": "array"
+        },
+        "reasonCodes": {
+          "description": "Why the destination was chosen, in the router's deterministic order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "redactions": {
+          "description": "Stable codes for redactions applied before release.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "releaseId": {
+          "description": "Stable identifier for this release.",
+          "type": "string"
+        },
+        "released": {
+          "description": "What was carried, by category and data class.",
+          "items": {
+            "$ref": "#/$defs/ReleasedCategory"
+          },
+          "type": "array"
+        },
+        "requestId": {
+          "description": "The request it accompanies.",
+          "type": "string"
+        },
+        "requiresDisclosure": {
+          "description": "Whether this release leaves the device.\n\nDerived from `location`, like `RoutingDecision::requires_disclosure`\nand for the same reason: whether data left the device is a fact about\nwhere it went, not a judgement a caller should be able to get wrong.",
+          "type": "boolean"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "taskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "The task it belongs to."
+        },
+        "toolsOffered": {
+          "description": "Tools the model is allowed to call, by name.\n\nOffering a tool to a cloud model discloses that the tool exists and\nwhat it takes, which is part of the release and not an implementation\ndetail (`SECURITY_AND_PERMISSIONS.md` §8).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "totalBytes": {
+          "description": "Total bytes carried.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "totalTokenEstimate": {
+          "description": "Approximate total token cost, when one was estimated.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "releaseId",
+        "taskId",
+        "requestId",
+        "decisionId",
+        "contextManifestId",
+        "destination",
+        "location",
+        "requiresDisclosure",
+        "reasonCodes",
+        "messageIds",
+        "released",
+        "dataClasses",
+        "totalBytes",
+        "redactions",
+        "exclusions",
+        "toolsOffered",
+        "createdAt"
+      ],
+      "type": "object"
+    },
     "ContextSource": {
       "description": "One thing that was considered for a context bundle.",
       "properties": {
@@ -454,6 +598,13 @@
         "included": {
           "description": "Whether it was actually sent.",
           "type": "boolean"
+        },
+        "redactions": {
+          "description": "Stable codes for credentials removed from this source at ingestion.\n\nPer source rather than only on the manifest, so a release plan can\nreport the redactions that apply to what it actually carried instead\nof every redaction the task ever made.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "sourceId": {
           "description": "Stable identifier for this source within the task.",
@@ -659,6 +810,11 @@
         {
           "const": "capabilityUnsupported",
           "description": "The selected model or worker cannot do what was asked.",
+          "type": "string"
+        },
+        {
+          "const": "credentialMissing",
+          "description": "No credential is stored for the reference that was asked for.\n\nDistinct from [`Self::ProviderAuthentication`], which is a credential\nthat exists and was refused, and from\n[`Self::ProviderUnavailable`], which is a credential store that could\nnot be reached. Collapsing the three would make \"you need to sign in\nagain\" the answer to a locked Keychain\n(`SECURITY_AND_PERMISSIONS.md` §7).",
           "type": "string"
         },
         {
@@ -951,6 +1107,24 @@
           "required": [
             "kind",
             "manifest"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A payload was released to a destination, on a recorded authority.\n\nSeparate from `contextPrepared` because assembling is not sending. One\nassembly can produce several releases — a fallback that crosses to a\ndifferent destination is a second one — and each has its own\ndisclosure and its own approval (`SECURITY_AND_PERMISSIONS.md` §8).",
+          "properties": {
+            "kind": {
+              "const": "contextReleased",
+              "type": "string"
+            },
+            "plan": {
+              "$ref": "#/$defs/ContextReleasePlan",
+              "description": "What went, where, and on whose authority.\n\nBoxed because it is by far the largest payload, and every event in\nthe system is moved by value: without the indirection each of the\ntwenty-odd other variants would carry its footprint."
+            }
+          },
+          "required": [
+            "kind",
+            "plan"
           ],
           "type": "object"
         },
@@ -1895,6 +2069,151 @@
       ],
       "type": "object"
     },
+    "ModelEvent": {
+      "description": "One item from a model stream.\n\nExactly one [`ModelEvent::Completed`] or [`ModelEvent::Failed`] ends a\nstream, even when cancellation arrives while the underlying request is\nstill in flight (`CORE_CONTRACTS.md` §8). The shared provider contract\nsuite checks that for every adapter.",
+      "oneOf": [
+        {
+          "description": "Incremental text.",
+          "properties": {
+            "kind": {
+              "const": "textDelta",
+              "type": "string"
+            },
+            "offset": {
+              "description": "Position within this stream.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "streamId": {
+              "description": "The stream this belongs to.",
+              "type": "string"
+            },
+            "text": {
+              "description": "The text produced.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "streamId",
+            "offset",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Incremental arguments for a tool call the model is assembling.",
+          "properties": {
+            "callId": {
+              "description": "Identifies the call being assembled across deltas.",
+              "type": "string"
+            },
+            "delta": {
+              "description": "The fragment.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "toolCallDelta",
+              "type": "string"
+            },
+            "offset": {
+              "description": "Position within this stream.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "streamId": {
+              "description": "The stream this belongs to.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "streamId",
+            "offset",
+            "callId",
+            "delta"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "What the request cost.",
+          "properties": {
+            "kind": {
+              "const": "usage",
+              "type": "string"
+            },
+            "usage": {
+              "$ref": "#/$defs/Usage",
+              "description": "The counts."
+            }
+          },
+          "required": [
+            "kind",
+            "usage"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The stream ended normally.",
+          "properties": {
+            "kind": {
+              "const": "completed",
+              "type": "string"
+            },
+            "stopReason": {
+              "$ref": "#/$defs/StopReason",
+              "description": "Why it ended."
+            }
+          },
+          "required": [
+            "kind",
+            "stopReason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The stream ended in failure.",
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/ErrorEnvelope",
+              "description": "Normalized, already-redacted error."
+            },
+            "kind": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "error"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ModelLimits": {
+      "description": "Bounds on one request.\n\n`deadlineMs` is required rather than optional: a request with no deadline\nis one that can hang a task forever, and every provider has to honour the\nsame bound for cancellation to mean the same thing everywhere.",
+      "properties": {
+        "deadlineMs": {
+          "description": "How long the whole request may take.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxOutputTokens": {
+          "description": "Cap on generated tokens, when one applies.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "deadlineMs"
+      ],
+      "type": "object"
+    },
     "ModelLocation": {
       "description": "Whether a model runs on this device.",
       "oneOf": [
@@ -1909,6 +2228,74 @@
           "type": "string"
         }
       ]
+    },
+    "ModelRequest": {
+      "description": "A normalized request for inference.",
+      "properties": {
+        "contextManifestId": {
+          "description": "The context release this request was built from.",
+          "type": "string"
+        },
+        "dataClasses": {
+          "description": "How sensitive the content is, for routing and disclosure.",
+          "items": {
+            "$ref": "#/$defs/DataClass"
+          },
+          "type": "array"
+        },
+        "limits": {
+          "$ref": "#/$defs/ModelLimits",
+          "description": "Bounds on the request."
+        },
+        "messages": {
+          "description": "The conversation so far, already normalized and redacted.",
+          "items": {
+            "$ref": "#/$defs/NormalizedMessage"
+          },
+          "type": "array"
+        },
+        "requestId": {
+          "description": "Correlates this request with its `modelStarted` event and its stream.",
+          "type": "string"
+        },
+        "requiredCapabilities": {
+          "description": "Capabilities a model must have to serve this request.\n\nThe router matches these; a provider that cannot meet them is not a\nfallback, it is ineligible.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "responseFormat": {
+          "$ref": "#/$defs/ResponseFormat",
+          "description": "What shape of answer was asked for."
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "taskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "The task on whose behalf it is made."
+        },
+        "tools": {
+          "description": "Tools the model may call, as the model sees them.",
+          "items": {
+            "$ref": "#/$defs/NormalizedToolDefinition"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "requestId",
+        "taskId",
+        "messages",
+        "contextManifestId",
+        "limits"
+      ],
+      "type": "object"
     },
     "NetworkControl": {
       "description": "What a worker can do on the network.",
@@ -1983,6 +2370,28 @@
         "createdAt",
         "status",
         "parts"
+      ],
+      "type": "object"
+    },
+    "NormalizedToolDefinition": {
+      "description": "A tool as a model is told about it.\n\nDeliberately not [`ToolDescriptor`](super::ToolDescriptor): that type\ncarries the risk class, capability, and cancellation facts Tramontana uses\nto *govern* a call. A model needs the name, the purpose, and the argument\nshape, and nothing else.",
+      "properties": {
+        "description": {
+          "description": "What it does, in the words the model sees.",
+          "type": "string"
+        },
+        "inputSchema": {
+          "description": "JSON Schema for the arguments."
+        },
+        "name": {
+          "description": "Namespaced tool identifier, as the model should call it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "inputSchema"
       ],
       "type": "object"
     },
@@ -2195,6 +2604,83 @@
       ],
       "type": "object"
     },
+    "ReleaseAuthorization": {
+      "description": "On whose authority a release proceeded.",
+      "properties": {
+        "approvalId": {
+          "$ref": "#/$defs/ApprovalId",
+          "description": "The approval that permitted it, when a user was asked."
+        },
+        "mode": {
+          "$ref": "#/$defs/RoutingMode",
+          "description": "The routing mode in force, which is the standing policy that applied."
+        },
+        "reasonCode": {
+          "description": "Stable reason, from [`reason`].",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reasonCode",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "ReleaseExclusion": {
+      "description": "A source that was assembled and did not go.",
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/ContextCategory",
+          "description": "What kind of source it is."
+        },
+        "reasonCode": {
+          "description": "Stable reason it did not go.",
+          "type": "string"
+        },
+        "sourceId": {
+          "description": "Which source.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sourceId",
+        "category",
+        "reasonCode"
+      ],
+      "type": "object"
+    },
+    "ReleasedCategory": {
+      "description": "One category of content actually carried by a request.\n\nSummarized by category and data class rather than listed source by source:\nthe disclosure has to be readable before a person decides, and\n`PHASE_1_ACCEPTANCE_CRITERIA.md` §12 asks for categories, classes, and a\nsize estimate — not a file listing.",
+      "properties": {
+        "byteCount": {
+          "description": "How many bytes of them were carried.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "category": {
+          "$ref": "#/$defs/ContextCategory",
+          "description": "What kind of source it is."
+        },
+        "dataClass": {
+          "$ref": "#/$defs/DataClass",
+          "description": "How sensitive the content is."
+        },
+        "sourceCount": {
+          "description": "How many sources of this kind were carried.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "category",
+        "dataClass",
+        "sourceCount",
+        "byteCount"
+      ],
+      "type": "object"
+    },
     "ReplaySafety": {
       "description": "Whether repeating an action is safe.\n\nThis is a statement about *effects*, not about whether the action would\nsucceed. Reading a file twice is safe; writing one twice may not be, and a\ntool whose effects are not known is treated as though they are not.",
       "oneOf": [
@@ -2212,6 +2698,41 @@
           "const": "unknown",
           "description": "Not determinable from the record. Treated as [`ReplaySafety::Unsafe`].",
           "type": "string"
+        }
+      ]
+    },
+    "ResponseFormat": {
+      "description": "What shape of answer was asked for.",
+      "oneOf": [
+        {
+          "description": "Prose.",
+          "properties": {
+            "kind": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A document matching a schema.",
+          "properties": {
+            "kind": {
+              "const": "jsonSchema",
+              "type": "string"
+            },
+            "schema": {
+              "description": "The schema the answer must satisfy."
+            }
+          },
+          "required": [
+            "kind",
+            "schema"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -2451,6 +2972,31 @@
         }
       ]
     },
+    "StopReason": {
+      "description": "Why a model stream ended.",
+      "oneOf": [
+        {
+          "const": "stop",
+          "description": "The model finished normally.",
+          "type": "string"
+        },
+        {
+          "const": "length",
+          "description": "An output limit was reached.",
+          "type": "string"
+        },
+        {
+          "const": "toolCall",
+          "description": "The model asked to call a tool.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "The request was cancelled.",
+          "type": "string"
+        }
+      ]
+    },
     "StreamFrame": {
       "description": "One frame of an in-flight model stream.\n\nExplicitly **not** an [`EventEnvelope`]: frames are transport, are never\npersisted, and carry no sequence in the durable stream. A reconnecting\ninterface rebuilds from durable events plus, optionally, the current\nstream snapshot.",
       "properties": {
@@ -2573,6 +3119,11 @@
         {
           "const": "routingDecided",
           "description": "A model and location were chosen.",
+          "type": "string"
+        },
+        {
+          "const": "contextReleased",
+          "description": "A payload was released to a destination.",
           "type": "string"
         },
         {
@@ -2936,6 +3487,31 @@
         "sideEffect",
         "capability",
         "supportsCancellation"
+      ],
+      "type": "object"
+    },
+    "Usage": {
+      "description": "Token counts for one request.",
+      "properties": {
+        "estimated": {
+          "description": "Whether these are counted or approximated.\n\nRecorded rather than hidden: a cost shown to a user as exact when it was\nestimated is a number they will make decisions on.",
+          "type": "boolean"
+        },
+        "inputTokens": {
+          "description": "Tokens consumed by the request.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outputTokens": {
+          "description": "Tokens produced.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "estimated"
       ],
       "type": "object"
     },

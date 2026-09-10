@@ -175,7 +175,7 @@ pub(crate) async fn execute(mut args: TaskArgs) -> ExitCode {
 
 async fn run(args: TaskArgs) -> ExitCode {
     let profile = wiring::profile_path(args.profile);
-    let service = match wiring::open(&profile, args.chunk_delay_ms).await {
+    let (service, mut models) = match wiring::open_running(&profile, args.chunk_delay_ms).await {
         Ok(service) => service,
         Err(message) => {
             eprintln!("error: {message}");
@@ -219,7 +219,12 @@ async fn run(args: TaskArgs) -> ExitCode {
         }
     };
 
-    stream_task(service, task_id, args.json, args.cancel_after_ms, 0).await
+    let outcome = stream_task(service, task_id, args.json, args.cancel_after_ms, 0).await;
+    // The graceful path. Every early return above drops the plane instead,
+    // which stops the same runtimes without the grace period — correct, and
+    // the reason cleanup lives in `Drop` as well as in a method.
+    models.shutdown().await;
+    outcome
 }
 
 async fn stream_task(
@@ -377,7 +382,13 @@ async fn checkpoint_command(args: TaskShowArgs, operation: &str) -> ExitCode {
 }
 
 async fn resume(args: TaskResumeArgs) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), args.chunk_delay_ms).await
+    // Held for the whole command: dropping it stops any runtime this process
+    // started, and dropping it early would stop the model mid-answer.
+    let (service, _models) = match wiring::open_running(
+        &wiring::profile_path(args.profile),
+        args.chunk_delay_ms,
+    )
+    .await
     {
         Ok(service) => service,
         Err(message) => {
@@ -465,7 +476,13 @@ fn emit_event(event: &tramontana_core::contracts::EventEnvelope, json: bool) {
 /// second worker is given. A separate "preview" would be a different artifact
 /// and would prove nothing about the one that matters.
 async fn handoff(args: HandoffArgs) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), args.chunk_delay_ms).await
+    // Held for the whole command: dropping it stops any runtime this process
+    // started, and dropping it early would stop the model mid-answer.
+    let (service, _models) = match wiring::open_running(
+        &wiring::profile_path(args.profile),
+        args.chunk_delay_ms,
+    )
+    .await
     {
         Ok(service) => service,
         Err(message) => {

@@ -14,20 +14,22 @@ mod ids;
 mod model;
 mod permission;
 mod repository;
+mod secret;
 mod tool;
 mod worker;
 
 pub use clock::Clock;
 pub use event_store::{EventStore, EventStoreError};
 pub use ids::IdSource;
-pub use model::{ModelEvent, ModelProvider, ModelRequest, StopReason};
+pub use model::ModelProvider;
 pub use permission::{
     ApprovalStore, Approver, PermissionError, PermissionOutcome, PermissionPolicy, PermissionQuery,
     reason,
 };
 pub use repository::{
     CheckpointRepository, ConfigurationRepository, ConversationRepository, ProjectRepository,
-    RepositoryError, TaskRepository,
+    ProviderSettingsRepository, RepositoryError, TaskRepository,
 };
+pub use secret::{SecretResolver, SecretVault};
 pub use tool::{ToolInvocation, ToolOutcome, ToolProvider};
 pub use worker::{AgentProvider, WorkerHost, WorkerOutcome, WorkerRequest};

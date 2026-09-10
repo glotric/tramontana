@@ -8,7 +8,8 @@ use crate::config::{ConfigurationSelection, RawSource, resolve_with_selection};
 use crate::contracts::{
     CapabilityScope, ConversationId, ConversationRecord, CorrelationId, EffectiveConfiguration,
     ErrorCode, ErrorEnvelope, EventDraft, EventEnvelope, EventId, EventPayload, ProjectId,
-    ProjectRecord, SCHEMA_VERSION, TaskEventKind, TaskId, TaskRecord, TaskSnapshot, TaskUpdate,
+    ProjectRecord, RoutingMode, SCHEMA_VERSION, TaskEventKind, TaskId, TaskRecord, TaskSnapshot,
+    TaskUpdate,
 };
 use crate::ports::{
     AgentProvider, CheckpointRepository, Clock, ConfigurationRepository, ConversationRepository,
@@ -78,12 +79,21 @@ impl std::fmt::Debug for Repositories {
 /// The providers a task runs against.
 #[derive(Clone)]
 pub struct Providers {
-    /// Inference.
-    pub model: Arc<dyn ModelProvider>,
+    /// Inference, one entry per configured endpoint.
+    ///
+    /// A list rather than a single provider because the router has always
+    /// reasoned over *many* models from an availability snapshot; one
+    /// provider was a placeholder for the milestones before endpoints could
+    /// be configured. The driver dispatches to the one the routing decision
+    /// named, so the record and the execution cannot come apart.
+    pub models: Vec<Arc<dyn ModelProvider>>,
     /// Where tools are found. Registration grants nothing.
     pub tools: Arc<ToolRegistry>,
     /// What decides whether a tool may run.
     pub permissions: Arc<PermissionManager>,
+    /// What decides whether a payload may reach a destination, and records
+    /// what it disclosed.
+    pub releases: Arc<crate::services::ReleaseManager>,
     /// The worker.
     pub worker: Arc<dyn AgentProvider>,
 }
@@ -106,6 +116,11 @@ pub struct TaskService {
     pub(super) ids: Arc<dyn IdSource>,
     pub(super) live: LiveTasks,
     pub(super) lifecycle: tokio::sync::Mutex<()>,
+    /// The routing mode every task in this profile starts under.
+    ///
+    /// Behind a lock because `setRoutingMode` (`CORE_CONTRACTS.md` §13) changes
+    /// it while tasks are running, and a task reads it once when it routes.
+    pub(super) routing_mode: Mutex<RoutingMode>,
     pub(super) execution_allowed: bool,
     pub(super) execution_guard: Option<Arc<dyn Send + Sync>>,
 }
@@ -132,9 +147,39 @@ impl TaskService {
             ids,
             live: Arc::new(Mutex::new(HashMap::new())),
             lifecycle: tokio::sync::Mutex::new(()),
+            // Local-first by default: work stays on the device until someone
+            // chooses otherwise.
+            routing_mode: Mutex::new(RoutingMode::Automatic),
             execution_allowed: true,
             execution_guard: None,
         }
+    }
+
+    /// Start every task under `mode`.
+    #[must_use]
+    pub fn with_routing_mode(self, mode: RoutingMode) -> Self {
+        self.set_routing_mode(mode);
+        self
+    }
+
+    /// Change the routing mode. `setRoutingMode` in `CORE_CONTRACTS.md` §13.
+    ///
+    /// Takes effect for tasks that route after this returns; a task already
+    /// past its routing decision keeps the destination it was given, because
+    /// the record must say where the work actually went.
+    pub fn set_routing_mode(&self, mode: RoutingMode) {
+        match self.routing_mode.lock() {
+            Ok(mut current) => *current = mode,
+            Err(poisoned) => *poisoned.into_inner() = mode,
+        }
+    }
+
+    /// The routing mode in force.
+    #[must_use]
+    pub fn routing_mode(&self) -> RoutingMode {
+        self.routing_mode
+            .lock()
+            .map_or(RoutingMode::Automatic, |mode| *mode)
     }
 
     /// Bind production execution to an adapter-owned exclusive profile lease.
@@ -463,12 +508,20 @@ impl TaskService {
             },
         };
 
+        // Redacted here, at the one point a goal enters the system, and not
+        // on the way out. Redacting at output means the durable event, the
+        // task record, the checkpoint, and the export bundle all held the
+        // credential first, and every consumer that forgets is a leak. From
+        // here on there is only the redacted text
+        // (`SECURITY_AND_PERMISSIONS.md` §7).
+        let goal = crate::services::redact(&request.goal);
+
         let created_at = self.clock.now();
         let mut record = TaskRecord::new(
             task_id.clone(),
             request.conversation_id.clone(),
             project_id,
-            request.goal.clone(),
+            goal.text.clone(),
             created_at,
         );
         if let Some(configuration) = &configuration {
@@ -479,7 +532,7 @@ impl TaskService {
             EventDraft::user(
                 TaskEventKind::TaskCreated,
                 EventPayload::TaskCreated {
-                    goal_summary: request.goal.clone(),
+                    goal_summary: goal.text.clone(),
                     conversation_id: request.conversation_id.clone(),
                 },
             )
@@ -562,9 +615,13 @@ impl TaskService {
             scope,
             Arc::clone(&self.clock),
         )
+        .with_routing_mode(self.routing_mode())
         .with_configuration(resolved_configuration)
+        .with_goal_redactions(goal.reason_codes.clone())
         .continuing(None, super::ResumePlan::default(), interrupt);
-        let goal = request.goal;
+        // The redacted text, not `request.goal`. The worker, the manifest, and
+        // the model payload all see the same thing the record does.
+        let goal = goal.text;
         let execution_guard = self.execution_guard.clone();
         tokio::spawn(async move {
             let _execution_guard = execution_guard;

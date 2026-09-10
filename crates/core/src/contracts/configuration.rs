@@ -134,10 +134,23 @@ pub struct ConfigurationSource {
     pub active: bool,
     /// Precedence rank; lower wins.
     pub precedence: u32,
-    /// SHA-256 of the file's bytes, for reproducibility.
+    /// SHA-256 of the source's releasable text, for reproducibility.
+    ///
+    /// Of the *redacted* text, not the bytes on disk. A hash naming content
+    /// that may not be released would let a later prompt assembly send the
+    /// original and still satisfy every record that describes it
+    /// (`SECURITY_AND_PERMISSIONS.md` §7). A file with no credential in it
+    /// hashes identically either way.
     pub content_hash: String,
-    /// Size in bytes.
+    /// Size in bytes of the releasable text.
+    ///
+    /// Of the redacted text, for the same reason `content_hash` is: the
+    /// number answers "how much of this could be sent", which is what a
+    /// context manifest and a release plan are counting.
     pub byte_count: u64,
+    /// Stable codes for credentials removed from this source at ingestion.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub redactions: Vec<String>,
     /// Front matter keys this build does not recognize.
     ///
     /// Preserved rather than dropped, so a file authored for a newer version
@@ -264,6 +277,7 @@ mod tests {
             precedence: kind.precedence(),
             content_hash: hash.to_owned(),
             byte_count: 0,
+            redactions: Vec::new(),
             unknown_keys: Vec::new(),
         }
     }

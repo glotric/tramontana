@@ -1,0 +1,36 @@
+[package]
+name = "tramontana-adapters-model"
+description = "Model provider adapters. Talks HTTP; owns no domain rules."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+tramontana-core = { workspace = true }
+async-trait = { workspace = true }
+# TLS through the platform's own implementation: Security.framework on macOS,
+# SChannel on Windows, system OpenSSL on Linux. The `rustls` alternatives both
+# put a C crypto build on all three platforms — `aws-lc-sys` by default, and
+# `ring` compiles C and assembly even though it has no `-sys` crate. See
+# `docs/decisions/0009-tls-for-cloud-adapters.md`, which settles what
+# `0007-http-client-and-tls.md` deferred.
+reqwest = { version = "0.13.4", default-features = false, features = [
+  "json",
+  "stream",
+  "native-tls",
+] }
+futures-util = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "time", "sync"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
+
+[lints]
+workspace = true

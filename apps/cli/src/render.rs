@@ -67,6 +67,45 @@ pub(crate) fn event_line(event: &EventEnvelope) -> String {
                 ""
             }
         ),
+        EventPayload::ContextReleased { plan } => {
+            let classes: Vec<String> = plan
+                .data_classes
+                .iter()
+                .map(|class| format!("{class:?}").to_lowercase())
+                .collect();
+            format!(
+                "{} byte(s) of {} context to {} ({}){}{} — {}",
+                plan.total_bytes,
+                classes.join(", "),
+                plan.destination.model_id,
+                plan.destination.provider_id,
+                if plan.requires_disclosure {
+                    " — LEFT THE DEVICE"
+                } else {
+                    ""
+                },
+                {
+                    // A redaction is the visible half of "your key did not
+                    // go". Counting it silently would be the same as not
+                    // doing it, from the reader's side.
+                    let mut notes = Vec::new();
+                    if !plan.exclusions.is_empty() {
+                        notes.push(format!("{} withheld", plan.exclusions.len()));
+                    }
+                    if !plan.redactions.is_empty() {
+                        notes.push(format!("redacted: {}", plan.redactions.join(", ")));
+                    }
+                    if notes.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {}", notes.join(", "))
+                    }
+                },
+                plan.authorization
+                    .as_ref()
+                    .map_or("proposed", |authority| authority.reason_code.as_str()),
+            )
+        }
         EventPayload::CheckpointSaved {
             checkpoint_id,
             completed_step_count,

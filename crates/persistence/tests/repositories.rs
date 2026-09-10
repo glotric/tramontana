@@ -394,6 +394,56 @@ async fn task_and_initial_events_commit_as_one_transaction() {
 }
 
 #[tokio::test]
+async fn what_was_redacted_from_an_instruction_file_survives_a_round_trip() {
+    // The hash and byte count in this table describe the *redacted* text. The
+    // codes say which rules fired, and a manifest that lost them on the way to
+    // storage would leave a hash that quietly differs from the file on disk
+    // with nothing to explain why. Synthetic value.
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(&directory, "redactions").await;
+    let projects = SqliteProjectRepository::new(db.clone());
+    let configurations = SqliteConfigurationRepository::new(db);
+    let project_id = ProjectId::new("p1");
+    projects
+        .create(&ProjectRecord::new(
+            project_id.clone(),
+            "p1",
+            vec!["/projects/p1".to_owned()],
+            at(0),
+        ))
+        .await
+        .unwrap();
+
+    let raw = b"# Rules\n\nclient_secret: s3cr3t-value\n";
+    let manifest = tramontana_core::config::resolve(
+        vec![tramontana_core::config::RawSource {
+            relative_path: "AGENTS.md".to_owned(),
+            kind: ConfigurationKind::RootAgents,
+            content: raw.to_vec(),
+        }],
+        at(1),
+    );
+    assert!(
+        !manifest.sources[0].redactions.is_empty(),
+        "nothing redacted"
+    );
+
+    configurations.save(&project_id, &manifest).await.unwrap();
+    let loaded = configurations.latest(&project_id).await.unwrap().unwrap();
+
+    assert_eq!(loaded.sources[0].redactions, manifest.sources[0].redactions);
+    assert_eq!(
+        loaded.sources[0].content_hash,
+        manifest.sources[0].content_hash
+    );
+    assert_eq!(loaded.sources[0].byte_count, manifest.sources[0].byte_count);
+    assert!(
+        loaded.sources[0].byte_count < raw.len() as u64,
+        "the stored byte count describes the file rather than what may be released"
+    );
+}
+
+#[tokio::test]
 async fn configuration_manifests_round_trip_and_are_scoped_by_project() {
     let directory = tempfile::tempdir().unwrap();
     let db = database(&directory, "configuration").await;
@@ -443,4 +493,95 @@ async fn configuration_manifests_round_trip_and_are_scoped_by_project() {
         configurations.latest(&ProjectId::new("p2")).await.unwrap(),
         Some(manifest)
     );
+}
+
+#[tokio::test]
+async fn provider_endpoints_round_trip_and_never_hold_a_credential() {
+    use tramontana_core::contracts::{
+        ModelLocation, ProviderConfig, ProviderEndpoint, SecretRef, SecretStore,
+    };
+    use tramontana_core::ports::ProviderSettingsRepository;
+    use tramontana_persistence::SqliteProviderSettingsRepository;
+
+    let directory = tempfile::tempdir().unwrap();
+    let settings = SqliteProviderSettingsRepository::new(database(&directory, "providers").await);
+
+    assert!(settings.list().await.unwrap().is_empty());
+
+    let local = ProviderEndpoint::new(
+        "local-llama",
+        "Local llama",
+        ProviderConfig::LlamaServer {
+            binary_path: "/opt/llama-server".to_owned(),
+            model_path: "/models/m.gguf".to_owned(),
+            model_id: "m".to_owned(),
+            extra_args: vec!["--ctx-size".to_owned(), "8192".to_owned()],
+        },
+        at(1),
+    );
+    let cloud = ProviderEndpoint::new(
+        "anthropic",
+        "Anthropic",
+        ProviderConfig::Anthropic {
+            base_url: "https://api.anthropic.com".to_owned(),
+            model_id: "claude-test".to_owned(),
+            credential: SecretRef {
+                key: "anthropic.apiKey".to_owned(),
+                store: SecretStore::Platform,
+            },
+        },
+        at(2),
+    );
+    settings.save(&local).await.unwrap();
+    settings.save(&cloud).await.unwrap();
+
+    // Ordered, so two runs show the same thing.
+    let listed = settings.list().await.unwrap();
+    assert_eq!(listed, vec![local.clone(), cloud.clone()]);
+
+    // Location is derived on the way out, not stored and read back.
+    assert_eq!(listed[0].location(), ModelLocation::Local);
+    assert_eq!(listed[1].location(), ModelLocation::Cloud);
+
+    // Saving the same identifier edits rather than duplicates.
+    let mut edited = cloud.clone();
+    edited.enabled = false;
+    edited.display_name = "Anthropic (off)".to_owned();
+    settings.save(&edited).await.unwrap();
+    let listed = settings.list().await.unwrap();
+    assert_eq!(listed.len(), 2);
+    assert!(!listed[1].enabled);
+    assert_eq!(listed[1].display_name, "Anthropic (off)");
+
+    // Only the reference is on disk, never a value — there is nowhere in the
+    // type for one, and this asserts the row agrees.
+    // Read the file directly rather than through the repository, so this
+    // asserts what is on disk rather than what the type round-trips. The
+    // pool stays private: a test is not a reason to widen an interface.
+    // Every file the database spans, not just the main one: in WAL mode a
+    // recent write lives in `-wal` and reading only `.sqlite` would find
+    // nothing and pass an "is the secret absent?" check for the wrong reason.
+    let mut on_disk = String::new();
+    for entry in std::fs::read_dir(directory.path()).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("providers.sqlite"))
+        {
+            on_disk.push_str(&String::from_utf8_lossy(&std::fs::read(&path).unwrap()));
+        }
+    }
+    assert!(
+        on_disk.contains("anthropic.apiKey"),
+        "the reference is not stored"
+    );
+    assert!(
+        !on_disk.contains("sk-ant-"),
+        "a credential value reached the database file"
+    );
+
+    assert!(settings.delete("anthropic").await.unwrap());
+    assert!(!settings.delete("anthropic").await.unwrap());
+    assert_eq!(settings.list().await.unwrap().len(), 1);
 }

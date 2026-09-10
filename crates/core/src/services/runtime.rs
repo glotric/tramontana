@@ -4,21 +4,21 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::contracts::{
-    AuthorizedToolRequest, CancellationOrigin, CapabilityScope, EffectiveConfiguration, ErrorCode,
-    ErrorEnvelope, EventDraft, EventPayload, HandoffBundle, InvocationId, MessageId, MessageRole,
-    MessageStatus, NormalizedMessage, PermissionOrigin, ReplaySafety, RiskClass, SideEffect,
-    StreamFrame, TaskCheckpoint, TaskEventKind, TaskState,
+    AuthorizedToolRequest, CancellationOrigin, CapabilityScope, ContextManifest, DataClass,
+    EffectiveConfiguration, ErrorCode, ErrorEnvelope, EventDraft, EventPayload, HandoffBundle,
+    InvocationId, MessageId, MessageRole, MessageStatus, ModelEvent, ModelRequest,
+    NormalizedMessage, PermissionOrigin, ReplaySafety, RiskClass, RoutingDecision, RoutingMode,
+    SideEffect, StopReason, StreamFrame, TaskCheckpoint, TaskEventKind, TaskState,
 };
-use crate::ports::{
-    AgentProvider, ModelEvent, ModelProvider, ModelRequest, StopReason, WorkerHost, WorkerOutcome,
-    WorkerRequest,
-};
+use crate::ports::{AgentProvider, ModelProvider, WorkerHost, WorkerOutcome, WorkerRequest};
 use crate::ports::{Clock, PermissionQuery};
 use crate::services::PermissionManager;
 use crate::services::ToolRegistry;
 use crate::services::checkpoint::ResumePlan;
 use crate::services::journal::TaskJournal;
-use crate::services::preparation::{assemble_context, choose_route};
+use crate::services::preparation::assemble_context;
+use crate::services::release::{ReleaseContext, ReleaseError, ReleaseManager};
+use crate::services::routing::{AvailabilitySnapshot, RoutingInput, route};
 use crate::services::task_service::Providers;
 
 /// Drives one task through its state machine.
@@ -36,11 +36,19 @@ pub(crate) struct TaskDriver {
     scope: CapabilityScope,
     /// Source of decision timestamps.
     clock: Arc<dyn Clock>,
+    /// The routing mode in force for this task.
+    routing_mode: RoutingMode,
     /// The effective configuration this task started under, when it has one.
     ///
     /// Held so the context manifest can name the instruction sources in force
     /// rather than only their combined hash.
     configuration: Option<EffectiveConfiguration>,
+    /// What was removed from the goal when the task was created.
+    ///
+    /// Carried rather than recomputed: the goal the driver receives is already
+    /// redacted, so asking it again would find nothing and the manifest would
+    /// claim no credential was ever there.
+    goal_redactions: Vec<String>,
     checkpoint: Option<TaskCheckpoint>,
     /// The canonical record handed to a *different* worker taking over.
     handoff: Option<HandoffBundle>,
@@ -64,13 +72,27 @@ impl TaskDriver {
             providers,
             scope,
             clock,
+            routing_mode: RoutingMode::Automatic,
             configuration: None,
+            goal_redactions: Vec::new(),
             checkpoint: None,
             handoff: None,
             worker: None,
             resume: ResumePlan::default(),
             interrupt: CancellationToken::new(),
         }
+    }
+
+    /// Run this task under `mode`.
+    pub(crate) fn with_routing_mode(mut self, mode: RoutingMode) -> Self {
+        self.routing_mode = mode;
+        self
+    }
+
+    /// Record what was redacted out of the goal at ingestion.
+    pub(crate) fn with_goal_redactions(mut self, redactions: Vec<String>) -> Self {
+        self.goal_redactions = redactions;
+        self
     }
 
     /// Attach the effective configuration this task resolved at start.
@@ -126,7 +148,8 @@ impl TaskDriver {
         // earlier attempt assembled: the project may have changed while the
         // task was interrupted, and routing against a stale manifest would
         // describe a release that did not happen.
-        let mut context_manifest_id: Option<String> = None;
+        let mut context: Option<ContextManifest> = None;
+        let mut route: Option<RoutingDecision> = None;
 
         // Each step checks cancellation first. A cancel that arrives before the
         // task really starts still produces a proper Cancelling -> Cancelled
@@ -167,13 +190,19 @@ impl TaskDriver {
 
             let recorded = match state {
                 TaskState::Preparing => match self.record_context(&goal).await {
-                    Ok(manifest_id) => {
-                        context_manifest_id = Some(manifest_id);
+                    Ok(manifest) => {
+                        context = Some(manifest);
                         Ok(())
                     }
                     Err(error) => Err(error),
                 },
-                TaskState::Routing => self.record_route(context_manifest_id.as_deref()).await,
+                TaskState::Routing => match self.record_route(context.as_ref()).await {
+                    Ok(decision) => {
+                        route = Some(decision);
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                },
                 _ => Ok(()),
             };
             if let Err(error) = recorded {
@@ -215,7 +244,16 @@ impl TaskDriver {
         };
         let host = BrokeredHost {
             journal: self.journal.clone(),
-            model: Arc::clone(&self.providers.model),
+            models: self.providers.models.clone(),
+            releases: Arc::clone(&self.providers.releases),
+            // The assembled context and the decision that chose a destination,
+            // held whole rather than by identifier: the release plan is
+            // derived from both, and a host that carried only an identifier
+            // would have to look them up to say what it was sending.
+            context: context.clone(),
+            route: route.clone(),
+            routing_mode: self.routing_mode,
+            scope: self.scope.clone(),
             tools: ToolBroker {
                 registry: Arc::clone(&self.providers.tools),
                 permissions: Arc::clone(&self.providers.permissions),
@@ -253,50 +291,83 @@ impl TaskDriver {
 
     /// Assemble the context for this task and record what it holds.
     ///
-    /// Returns the manifest identifier so the routing decision can name the
-    /// context it released — the link that makes a disclosure traceable to
-    /// what was actually sent.
-    async fn record_context(&self, goal: &str) -> Result<String, ErrorEnvelope> {
+    /// Returns the manifest so routing can name the release it is deciding
+    /// about, and can see what data classes it would be sending — the link
+    /// that makes a disclosure traceable to what was actually assembled.
+    async fn record_context(
+        &self,
+        goal: &str,
+    ) -> Result<crate::contracts::ContextManifest, ErrorEnvelope> {
         let manifest = assemble_context(
             self.journal.next_id("context"),
             self.journal.task_id().clone(),
             goal,
+            self.goal_redactions.clone(),
             self.configuration.as_ref(),
             self.clock.now(),
         );
-        let manifest_id = manifest.context_manifest_id.clone();
 
         self.record(EventDraft::user(
             TaskEventKind::ContextPrepared,
-            EventPayload::ContextPrepared { manifest },
+            EventPayload::ContextPrepared {
+                manifest: manifest.clone(),
+            },
         ))
         .await?;
-        Ok(manifest_id)
+        Ok(manifest)
     }
 
     /// Choose a route for the context just prepared and record why.
     ///
-    /// A task with no model available records no decision rather than an
-    /// invented one; the failure surfaces when the worker asks for inference.
-    async fn record_route(&self, context_manifest_id: Option<&str>) -> Result<(), ErrorEnvelope> {
-        let available = self.providers.model.list_models().await;
-        let Some(decision) = choose_route(
-            self.journal.next_id("decision"),
-            &available,
-            // Absent only when preparation recorded no manifest, which is a
-            // state the loop above does not reach. Named rather than empty so
-            // a reader is never left wondering what an empty string meant.
-            context_manifest_id.unwrap_or("context.unavailable"),
-            self.journal.next_id("availability"),
-        ) else {
-            return Ok(());
+    /// A refusal is recorded as a task failure rather than silently skipped:
+    /// "no model could serve this" is something the user has to be told, and
+    /// the reasons are the same vocabulary a successful decision uses.
+    async fn record_route(
+        &self,
+        context: Option<&ContextManifest>,
+    ) -> Result<RoutingDecision, ErrorEnvelope> {
+        let snapshot = AvailabilitySnapshot {
+            snapshot_id: self.journal.next_id("availability"),
+            models: {
+                let mut available = Vec::new();
+                for provider in &self.providers.models {
+                    available.extend(provider.list_models().await);
+                }
+                available
+            },
+            taken_at: self.clock.now(),
         };
+
+        let mut input = RoutingInput::new(
+            self.routing_mode,
+            snapshot,
+            context.map_or("context.unavailable", |manifest| {
+                manifest.context_manifest_id.as_str()
+            }),
+        );
+        input.carries_private_data = context.is_some_and(|manifest| {
+            manifest
+                .released_data_classes()
+                .iter()
+                .any(|class| *class != DataClass::Public)
+        });
+
+        let decision = route(self.journal.next_id("decision"), &input).map_err(|refusal| {
+            ErrorEnvelope::new(
+                ErrorCode::ProviderUnavailable,
+                format!("no model could serve this task: {refusal}"),
+                self.journal.correlation_id().clone(),
+            )
+        })?;
 
         self.record(EventDraft::user(
             TaskEventKind::RoutingDecided,
-            EventPayload::RoutingDecided { decision },
+            EventPayload::RoutingDecided {
+                decision: decision.clone(),
+            },
         ))
-        .await
+        .await?;
+        Ok(decision)
     }
 
     /// Validate and journal a state change.
@@ -419,8 +490,38 @@ impl TaskDriver {
 /// and nothing about the worker has to change.
 struct BrokeredHost {
     journal: TaskJournal,
-    model: Arc<dyn ModelProvider>,
     tools: ToolBroker,
+    /// Every configured way to reach a model.
+    models: Vec<Arc<dyn ModelProvider>>,
+    /// What decides whether a payload may reach the destination.
+    releases: Arc<ReleaseManager>,
+    /// The context assembled for this task.
+    context: Option<ContextManifest>,
+    /// The decision that chose where it goes.
+    route: Option<RoutingDecision>,
+    /// The standing policy in force.
+    routing_mode: RoutingMode,
+    /// The limits this task runs under.
+    scope: CapabilityScope,
+}
+
+impl BrokeredHost {
+    /// Turn a refused release into the error a worker sees.
+    ///
+    /// A refusal is a permission outcome, not a provider fault: the model was
+    /// reachable and the user said no. Reporting it as anything else would
+    /// invite a retry against a decision that was already made.
+    fn release_refused(&self, error: &ReleaseError) -> ErrorEnvelope {
+        let code = match error {
+            ReleaseError::Denied { .. } => ErrorCode::PermissionDenied,
+            _ => ErrorCode::Internal,
+        };
+        ErrorEnvelope::new(
+            code,
+            error.to_string(),
+            self.journal.correlation_id().clone(),
+        )
+    }
 }
 
 /// Everything needed to turn a worker's tool request into an audited action.
@@ -454,20 +555,19 @@ impl std::fmt::Debug for ToolBroker {
 #[async_trait]
 impl WorkerHost for BrokeredHost {
     async fn emit(&self, draft: EventDraft) -> Result<(), ErrorEnvelope> {
-        // Workers cannot forge lifecycle, approval, or completion ledger entries.
+        // Workers cannot forge lifecycle, approval, release, or completion
+        // ledger entries. What is left is an observation about the worker's
+        // own conduct, which is the only thing it is the authority on.
         if !matches!(
             (&draft.kind, &draft.payload),
             (
-                TaskEventKind::ModelStarted,
-                EventPayload::ModelStarted { .. }
-            ) | (
                 TaskEventKind::DiagnosticRecorded,
                 EventPayload::DiagnosticRecorded { .. }
             )
         ) {
             return Err(ErrorEnvelope::new(
                 ErrorCode::PermissionDenied,
-                "Workers may emit only model-start and diagnostic observations",
+                "Workers may emit only diagnostic observations",
                 self.journal.correlation_id().clone(),
             ));
         }
@@ -483,11 +583,109 @@ impl WorkerHost for BrokeredHost {
         prompt: &str,
         cancel: &CancellationToken,
     ) -> Result<String, ErrorEnvelope> {
-        let request = ModelRequest {
-            request_id: format!("request-{}", self.journal.task_id()),
-            prompt: prompt.to_owned(),
+        // One identifier for the request, the stream, and the frames it
+        // publishes, so a delta can be tied back to the `modelStarted` event
+        // without anyone inventing a second name for the same thing.
+        let stream_id = format!("stream-{}", self.journal.task_id());
+
+        // Fail closed. A model call with no assembled context and no routing
+        // decision is one that cannot be disclosed, so it does not happen.
+        let (Some(manifest), Some(decision)) = (self.context.as_ref(), self.route.as_ref()) else {
+            return Err(ErrorEnvelope::new(
+                ErrorCode::PermissionDenied,
+                "a model request needs an assembled context and a routing decision",
+                self.journal.correlation_id().clone(),
+            ));
         };
-        let mut stream = self.model.stream(request, cancel.clone()).await?;
+
+        let mut request = ModelRequest::new(
+            stream_id.clone(),
+            self.journal.task_id().clone(),
+            vec![NormalizedMessage::text(
+                MessageId::new(self.journal.next_id("message")),
+                self.journal.conversation_id().cloned(),
+                MessageRole::User,
+                self.journal.now(),
+                prompt,
+            )],
+            // The release this request was built from. There is no fallback
+            // value: a request that cannot name the context it came from is
+            // one nobody can describe, and describing it is the whole job of
+            // the boundary below. A resumed run that skipped preparation used
+            // to reach here and record `context.unavailable`; now it cannot
+            // reach here at all.
+            manifest.context_manifest_id.clone(),
+        );
+        // What is being sent, for routing and disclosure. Everything a task
+        // carries today is derived from an opened project.
+        request.data_classes = vec![DataClass::Project];
+
+        // Nothing reaches a provider without a release decision. For a local
+        // destination that costs a record and no question; for a cloud one it
+        // is the disclosure and the approval
+        // (`SECURITY_AND_PERMISSIONS.md` §8).
+        let authorized = self
+            .releases
+            .authorize(
+                self.journal.next_id("release"),
+                request,
+                &ReleaseContext {
+                    manifest,
+                    decision,
+                    mode: self.routing_mode,
+                    scope: &self.scope,
+                },
+                self.journal.now(),
+            )
+            .await
+            .map_err(|error| self.release_refused(&error))?;
+
+        // Recorded before the request goes, not after: if the process dies
+        // mid-stream the record still says what left the device.
+        self.journal
+            .append(EventDraft::user(
+                TaskEventKind::ContextReleased,
+                EventPayload::ContextReleased {
+                    plan: Box::new(authorized.plan().clone()),
+                },
+            ))
+            .await?;
+
+        // Only now is it true that a model request has started. Emitted by the
+        // host rather than the worker, and after the release rather than
+        // before it, so a refused release cannot leave a record saying a model
+        // ran (`CORE_CONTRACTS.md` §5.1).
+        self.journal
+            .append(EventDraft::user(
+                TaskEventKind::ModelStarted,
+                EventPayload::ModelStarted {
+                    stream_id: stream_id.clone(),
+                    model_id: decision.model.model_id.clone(),
+                },
+            ))
+            .await?;
+
+        // The provider the decision named, not "the" provider. Failing
+        // closed here keeps the audit record and the execution from coming
+        // apart: a stream served by something other than the model the
+        // release plan discloses would make the disclosure describe a
+        // different act.
+        let provider = self
+            .models
+            .iter()
+            .find(|provider| provider.id().to_string() == decision.model.provider_id)
+            .ok_or_else(|| {
+                ErrorEnvelope::new(
+                    ErrorCode::ProviderUnavailable,
+                    format!(
+                        "no configured provider offers {:?}; the routing decision named one that is gone",
+                        decision.model.provider_id
+                    ),
+                    self.journal.correlation_id().clone(),
+                )
+            })?;
+
+        let mut stream = provider.stream(authorized, cancel.clone()).await?;
 
         // Deltas are coalesced here and committed once. Persisting every token
         // would make the durable stream enormous and tell the reader nothing
@@ -499,12 +697,16 @@ impl WorkerHost for BrokeredHost {
             match event {
                 ModelEvent::TextDelta { text, .. } => {
                     self.journal.publish_frame(StreamFrame {
-                        stream_id: format!("stream-{}", self.journal.task_id()),
+                        stream_id: stream_id.clone(),
                         offset: answer.len() as u64,
                         text: text.clone(),
                     });
                     answer.push_str(&text);
                 }
+                // A tool call assembled by the model, and what the request
+                // cost, are M6's to act on. Ignored rather than treated as
+                // text, which would put JSON fragments in the answer.
+                ModelEvent::ToolCallDelta { .. } | ModelEvent::Usage { .. } => {}
                 ModelEvent::Completed {
                     stop_reason: reason,
                 } => {

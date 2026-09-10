@@ -11,12 +11,17 @@
 
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::contracts::{
     CheckpointId, CorrelationId, EventDraft, EventEnvelope, EventId, EventPayload, PendingAction,
     PendingActionKind, ReplaySafety, ResumeEligibility, TaskCheckpoint, TaskEventKind, TaskId,
     TaskState, Timestamp,
 };
-use crate::ports::{CheckpointRepository, EventStore, EventStoreError, RepositoryError};
+use crate::contracts::{ModelEvent, ModelRequest, SecretRef, SecretStore, StopReason};
+use crate::ports::{
+    CheckpointRepository, EventStore, EventStoreError, ModelProvider, RepositoryError, SecretVault,
+};
 
 /// Build an event for `task_id` at `sequence`.
 #[must_use]
@@ -313,5 +318,354 @@ where
     match repository.get(&CheckpointId::new("absent")).await {
         Err(RepositoryError::NotFound { kind, .. }) => assert_eq!(kind, "checkpoint"),
         other => panic!("expected NotFound, got {other:?}"),
+    }
+}
+
+/// What a provider should be configured to do for one contract case.
+///
+/// The suite has to drive an adapter that talks to a real endpoint as well as
+/// an in-process fake, so it asks for a *behavior* rather than constructing a
+/// provider itself. A harness translates each scenario into whatever its
+/// implementation needs — a script for a fake, a stubbed response for an HTTP
+/// adapter.
+///
+/// Deliberately *not* `#[non_exhaustive]`: adding a case should break every
+/// harness until it says what its implementation does, because a scenario
+/// silently unhandled is a provider silently untested.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderScenario {
+    /// Stream these chunks in order, then finish normally.
+    Streams(Vec<String>),
+    /// Fail without producing any content.
+    Fails,
+    /// Produce content slowly enough that a cancellation lands mid-stream.
+    Slow,
+}
+
+/// The request the suite sends. Providers must not depend on its content.
+#[must_use]
+pub fn model_request(request_id: &str) -> ModelRequest {
+    use crate::contracts::{MessageId, MessageRole, NormalizedMessage, TaskId, Timestamp};
+
+    ModelRequest::new(
+        request_id,
+        TaskId::new("task-1"),
+        vec![NormalizedMessage::text(
+            MessageId::new("message-1"),
+            None,
+            MessageRole::User,
+            Timestamp::new("2026-01-01T00:00:00.000Z"),
+            "Say hello",
+        )],
+        "context-1",
+    )
+}
+
+/// Drain a stream, returning everything it produced.
+async fn drain(receiver: &mut tokio::sync::mpsc::Receiver<ModelEvent>) -> Vec<ModelEvent> {
+    let mut events = Vec::new();
+    while let Some(event) = receiver.recv().await {
+        events.push(event);
+    }
+    events
+}
+
+/// Assert that `build` produces a provider obeying the `ModelProvider` contract.
+///
+/// `CORE_CONTRACTS.md` §8. The property that matters most is the last one:
+/// **exactly one terminal event ends a stream**, including when cancellation
+/// arrives while the underlying request is still in flight. A provider that
+/// drops its stream on cancel, or emits both a `completed` and a `failed`,
+/// leaves the core unable to say what happened — and the core commits the
+/// coalesced answer on that signal.
+///
+/// # Panics
+///
+/// Panics with the failing expectation, which is how a test reports.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "this is a test suite; a panic is the failure report"
+)]
+pub async fn model_provider_contract<F, Fut>(build: F)
+where
+    F: Fn(ProviderScenario) -> Fut,
+    Fut: Future<Output = Arc<dyn ModelProvider>>,
+{
+    // A provider reports models under its own identity, so a routing decision
+    // naming a provider can be resolved back to one.
+    let provider = build(ProviderScenario::Streams(vec!["hi".into()])).await;
+    let models = provider.list_models().await;
+    assert!(
+        !models.is_empty(),
+        "a provider must offer at least one model"
+    );
+    for model in &models {
+        assert_eq!(
+            model.provider_id,
+            provider.id().to_string(),
+            "a model claims a provider other than the one offering it"
+        );
+        assert!(!model.model_id.is_empty());
+    }
+
+    // A successful stream: content, then exactly one terminal event, then the
+    // receiver closes.
+    let provider = build(ProviderScenario::Streams(vec![
+        "Hello".into(),
+        ", ".into(),
+        "world".into(),
+    ]))
+    .await;
+    let mut stream = provider
+        .stream(
+            crate::testing::release::locally_authorized(model_request("request-1")),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("a scripted success must start");
+    let events = drain(&mut stream).await;
+
+    let terminal: Vec<&ModelEvent> = events.iter().filter(|event| event.is_terminal()).collect();
+    assert_eq!(
+        terminal.len(),
+        1,
+        "a stream must end with exactly one terminal event, got {events:?}"
+    );
+    assert!(
+        events.last().is_some_and(ModelEvent::is_terminal),
+        "the terminal event must be last"
+    );
+    assert!(
+        matches!(
+            terminal[0],
+            ModelEvent::Completed {
+                stop_reason: StopReason::Stop
+            }
+        ),
+        "a scripted success must complete with `stop`, got {:?}",
+        terminal[0]
+    );
+
+    let text: String = events
+        .iter()
+        .filter_map(|event| match event {
+            ModelEvent::TextDelta { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        text, "Hello, world",
+        "the content did not survive streaming"
+    );
+
+    // Every delta names the stream it belongs to, and offsets never go
+    // backwards — a subscriber orders on them.
+    let mut previous: Option<u64> = None;
+    for event in &events {
+        if let ModelEvent::TextDelta {
+            stream_id, offset, ..
+        } = event
+        {
+            assert_eq!(stream_id, "request-1", "a delta named a different stream");
+            if let Some(previous) = previous {
+                assert!(*offset > previous, "offsets went backwards: {events:?}");
+            }
+            previous = Some(*offset);
+        }
+    }
+
+    // A failure is a normalized envelope, either as a terminal event or as a
+    // refusal to start. Both are legitimate; producing neither is not.
+    let provider = build(ProviderScenario::Fails).await;
+    match provider
+        .stream(
+            crate::testing::release::locally_authorized(model_request("request-2")),
+            CancellationToken::new(),
+        )
+        .await
+    {
+        Ok(mut stream) => {
+            let events = drain(&mut stream).await;
+            let terminal: Vec<&ModelEvent> =
+                events.iter().filter(|event| event.is_terminal()).collect();
+            assert_eq!(terminal.len(), 1, "a failing stream must still end once");
+            assert!(
+                matches!(terminal[0], ModelEvent::Failed { .. }),
+                "a scripted failure ended as {:?}",
+                terminal[0]
+            );
+        }
+        Err(error) => assert!(
+            !error.message.is_empty(),
+            "a refusal must say something a person can act on"
+        ),
+    }
+
+    // Cancellation mid-stream converges to exactly one terminal event rather
+    // than the stream simply stopping.
+    let provider = build(ProviderScenario::Slow).await;
+    let cancel = CancellationToken::new();
+    let mut stream = provider
+        .stream(
+            crate::testing::release::locally_authorized(model_request("request-3")),
+            cancel.clone(),
+        )
+        .await
+        .expect("a slow stream must start");
+    cancel.cancel();
+
+    let events = tokio::time::timeout(std::time::Duration::from_secs(10), drain(&mut stream))
+        .await
+        .expect("a cancelled stream must converge, not hang");
+    let terminal: Vec<&ModelEvent> = events.iter().filter(|event| event.is_terminal()).collect();
+    assert_eq!(
+        terminal.len(),
+        1,
+        "a cancelled stream must end with exactly one terminal event, got {events:?}"
+    );
+
+    // Cancelled before anything was requested: still one terminal event.
+    let provider = build(ProviderScenario::Slow).await;
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    if let Ok(mut stream) = provider
+        .stream(
+            crate::testing::release::locally_authorized(model_request("request-4")),
+            cancel,
+        )
+        .await
+    {
+        let events = tokio::time::timeout(std::time::Duration::from_secs(10), drain(&mut stream))
+            .await
+            .expect("a pre-cancelled stream must converge, not hang");
+        assert_eq!(
+            events.iter().filter(|event| event.is_terminal()).count(),
+            1,
+            "a pre-cancelled stream must still end exactly once, got {events:?}"
+        );
+    }
+}
+
+/// A reference a contract run uses, namespaced so a real store can be swept.
+///
+/// Every key a test writes begins with the same prefix, so a run against a
+/// developer's actual Keychain leaves nothing that cannot be identified and
+/// removed — and cannot collide with a credential the user put there.
+#[must_use]
+pub fn test_secret_ref(name: &str) -> SecretRef {
+    SecretRef {
+        key: format!("tramontana.test.{name}"),
+        store: SecretStore::Platform,
+    }
+}
+
+/// Assert that `vault` obeys the full [`SecretVault`] contract.
+///
+/// Run against the in-memory fake and against the real platform store, so a
+/// divergence is a defect in one of them rather than a difference in what was
+/// tested (`TESTING_STRATEGY.md` §4).
+///
+/// The vault must start with none of the contract's keys present. Every key it
+/// writes is removed before returning, including on the paths that assert
+/// failure, so a run against a real credential store leaves the machine as it
+/// found it.
+///
+/// # Panics
+///
+/// Panics with the failing expectation, which is how a test reports.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "this is a test suite; a panic is the failure report"
+)]
+pub async fn secret_vault_contract(vault: &dyn SecretVault) {
+    let reference = test_secret_ref("contract");
+    let other = test_secret_ref("contract.other");
+
+    // Start clean, whatever an earlier run left behind.
+    vault.delete(&reference).await.unwrap();
+    vault.delete(&other).await.unwrap();
+
+    // An absent credential is missing, not empty. A store that answered with
+    // an empty string would be indistinguishable from one holding "".
+    assert!(!vault.contains(&reference).await.unwrap());
+    let missing = vault.resolve(&reference).await.unwrap_err();
+    assert_eq!(
+        missing.code,
+        crate::contracts::ErrorCode::CredentialMissing,
+        "an absent credential reported {:?}",
+        missing.code
+    );
+
+    // Stored, then resolved as itself.
+    vault.store(&reference, "value-one").await.unwrap();
+    assert!(vault.contains(&reference).await.unwrap());
+    assert_eq!(vault.resolve(&reference).await.unwrap(), "value-one");
+
+    // Replacement, which is what a rotated key is. No delete-then-store
+    // window where the credential is absent.
+    vault.store(&reference, "value-two").await.unwrap();
+    assert_eq!(vault.resolve(&reference).await.unwrap(), "value-two");
+
+    // References are independent: one key's value is not another's.
+    vault.store(&other, "different").await.unwrap();
+    assert_eq!(vault.resolve(&reference).await.unwrap(), "value-two");
+    assert_eq!(vault.resolve(&other).await.unwrap(), "different");
+
+    // A value that is not ASCII, and one that is long, both survive intact.
+    // A store that silently truncated or re-encoded would hand back a
+    // credential that fails to authenticate for no visible reason.
+    let awkward = format!("ключ-{}-🔑", "x".repeat(512));
+    vault.store(&other, &awkward).await.unwrap();
+    assert_eq!(vault.resolve(&other).await.unwrap(), awkward);
+
+    // Deleting reports whether anything was there, and deleting again is not
+    // an error: the caller asked for it to be gone, and it is gone.
+    assert!(vault.delete(&reference).await.unwrap());
+    assert!(!vault.delete(&reference).await.unwrap());
+    assert!(!vault.contains(&reference).await.unwrap());
+
+    // The error for a deleted credential is the same as for one never stored.
+    let after_delete = vault.resolve(&reference).await.unwrap_err();
+    assert_eq!(
+        after_delete.code,
+        crate::contracts::ErrorCode::CredentialMissing
+    );
+
+    // Nothing this suite wrote is left behind.
+    vault.delete(&other).await.unwrap();
+    assert!(!vault.contains(&other).await.unwrap());
+}
+
+/// Assert that an unreachable store is distinguishable from an empty one.
+///
+/// A store that cannot be reached reporting "no credential" is the failure
+/// that makes a user re-enter a key that was already there
+/// (`SECURITY_AND_PERMISSIONS.md` §7).
+///
+/// # Panics
+///
+/// Panics with the failing expectation.
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "this is a test suite; a panic is the failure report"
+)]
+pub async fn unavailable_store_contract(vault: &dyn SecretVault) {
+    let reference = test_secret_ref("unavailable");
+    for code in [
+        vault.resolve(&reference).await.unwrap_err().code,
+        vault.contains(&reference).await.unwrap_err().code,
+        vault.store(&reference, "x").await.unwrap_err().code,
+        vault.delete(&reference).await.unwrap_err().code,
+    ] {
+        assert_ne!(
+            code,
+            crate::contracts::ErrorCode::CredentialMissing,
+            "an unreachable store reported a missing credential"
+        );
     }
 }

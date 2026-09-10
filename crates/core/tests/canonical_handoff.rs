@@ -139,7 +139,7 @@ impl Harness {
         };
         let ids = Arc::new(SequentialIdSource::new());
         let tool = Arc::new(BlockingTool::default());
-        let (tools, permissions) = assemble_tool_plane(
+        let (tools, permissions, releases) = assemble_tool_plane(
             vec![tool.clone()],
             Arc::new(InMemoryApprovalStore::new()),
             Arc::new(ScriptedApprover::unavailable()),
@@ -150,9 +150,10 @@ impl Harness {
         Self {
             repos,
             providers: Providers {
-                model: Arc::new(FakeModelProvider::streaming(["answer"])),
+                models: vec![Arc::new(FakeModelProvider::streaming(["answer"]))],
                 tools,
                 permissions,
+                releases,
                 worker: Arc::new(StartingWorker {
                     checkpoint_support: support,
                     first_step_value: first_step_value.to_owned(),

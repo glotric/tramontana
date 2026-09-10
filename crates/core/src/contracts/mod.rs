@@ -23,9 +23,12 @@ mod event;
 mod export;
 mod ids;
 mod message;
+mod model;
 mod permission;
 mod primitives;
+mod provider;
 mod records;
+mod release;
 mod routing;
 mod task;
 mod time;
@@ -61,6 +64,10 @@ pub use ids::{
     InvocationId, MessageId, ModelId, ProjectId, ProviderId, TaskId, WorkerSessionId,
 };
 pub use message::{MessagePart, MessageRole, MessageStatus, NormalizedMessage};
+pub use model::{
+    AuthorizedModelRequest, ModelEvent, ModelLimits, ModelRequest, NormalizedToolDefinition,
+    ResponseFormat, StopReason, Usage,
+};
 pub use permission::{
     ApprovalDecision, ApprovalDecisionKind, ApprovalDetail, ApprovalRequest, AuthorizedToolRequest,
     Capability, CapabilityScope, GrantKind, ProjectGrant,
@@ -70,7 +77,12 @@ pub use primitives::{
     DataClass, ExecutionLocation, RiskClass, RoutingMode, SecretRef, SecretStore, SideEffect,
     Visibility,
 };
+pub use provider::{ProviderConfig, ProviderEndpoint};
 pub use records::{ConversationRecord, ProjectRecord, TaskRecord};
+pub use release::{
+    ContextReleasePlan, ReleaseAuthorization, ReleaseExclusion, ReleasedCategory,
+    reason as release_reason,
+};
 pub use routing::{RoutedModel, RoutingDecision, RoutingFallback, reason as routing_reason};
 pub use task::{InvalidTransition, TaskSnapshot, TaskState};
 pub use time::Timestamp;

@@ -1,22 +1,20 @@
-//! Assembling context and choosing a route.
+//! Assembling the context a task runs against.
 //!
-//! Both are *fakes with real shapes* in M4, which is deliberate:
+//! A fake with a real shape, which is deliberate:
 //! `BUILD_ORDER.md` §12 puts checkpoint and export here precisely so that the
 //! context manifest and routing decision records — the most expensive shapes
 //! in the system to change late — are exercised by the durable stream, the
 //! checkpoint, and the export bundle before eight more milestones depend on
-//! them. M5 replaces the bodies of these two functions with real context
-//! assembly and real routing; nothing that reads their output changes.
+//! them. M5 replaced the routing half with a real deterministic router
+//! (`services::routing`); real context assembly — selected files, repository
+//! metadata, token budgets — arrives with the work that produces them.
 //!
-//! What is honest about them today: the context genuinely describes what the
-//! worker is given, and the routing decision genuinely names the only model
-//! the process has. Neither invents a source or a provider that does not
-//! exist.
+//! What is honest about it today: the manifest genuinely describes what the
+//! worker is given. It does not invent a source that does not exist.
 
 use crate::contracts::{
     ContextCategory, ContextManifest, ContextSource, DataClass, DestinationClass,
-    EffectiveConfiguration, ExecutionLocation, ModelDescriptor, ModelLocation, RoutedModel,
-    RoutingDecision, RoutingMode, TaskId, Timestamp, routing_reason,
+    EffectiveConfiguration, TaskId, Timestamp,
 };
 
 /// Assemble the context a task will run against.
@@ -29,14 +27,25 @@ pub fn assemble_context(
     context_manifest_id: impl Into<String>,
     task_id: TaskId,
     goal: &str,
+    goal_redactions: Vec<String>,
     configuration: Option<&EffectiveConfiguration>,
     created_at: Timestamp,
 ) -> ContextManifest {
-    let mut sources = vec![ContextSource::included(
+    // `goal` is already redacted — `TaskService::start_task` does it, so no
+    // durable record ever held the original. The codes travel separately
+    // because redacting twice would report nothing: the second pass has
+    // nothing left to find, and the manifest would say a credential-free goal
+    // had always been credential-free.
+    debug_assert!(
+        !crate::services::carries_credential(goal),
+        "the goal reached context assembly without being redacted at ingestion"
+    );
+    let mut sources = vec![ContextSource::redacted(
         "conversation.goal",
         ContextCategory::Conversation,
         DataClass::Project,
         goal,
+        goal_redactions,
     )];
 
     if let Some(configuration) = configuration {
@@ -55,6 +64,12 @@ pub fn assemble_context(
                 // An inactive source was gathered and deliberately not used;
                 // saying so is the difference between a manifest and a list.
                 exclusion_reason: (!source.active).then(|| "context.notActive".to_owned()),
+                // Carried from resolution, where the file was redacted
+                // before it was hashed. The hash below therefore names text
+                // that may be released, and prompt assembly in M6 cannot send
+                // the original and still match the record that describes it —
+                // the release boundary refuses content no source accounts for.
+                redactions: source.redactions.clone(),
             });
         }
     }
@@ -69,50 +84,6 @@ pub fn assemble_context(
     )
 }
 
-/// Choose a model and a location for an assembled context.
-///
-/// With one provider there is nothing to weigh, and the decision says so
-/// rather than inventing a preference it did not exercise.
-#[must_use]
-pub fn choose_route(
-    decision_id: impl Into<String>,
-    available: &[ModelDescriptor],
-    context_manifest_id: &str,
-    availability_snapshot_id: impl Into<String>,
-) -> Option<RoutingDecision> {
-    let chosen = available.first()?;
-    let mut reasons = vec![routing_reason::SOLE_ELIGIBLE_ROUTE.to_owned()];
-    if available.len() > 1 {
-        // More than one was eligible and the first was taken. Until M5 weighs
-        // them, saying "sole eligible route" would be false.
-        reasons = vec![routing_reason::USER_SELECTED.to_owned()];
-    }
-
-    let mut decision = RoutingDecision::new(
-        decision_id,
-        RoutingMode::Automatic,
-        RoutedModel {
-            provider_id: chosen.provider_id.clone(),
-            model_id: chosen.model_id.clone(),
-        },
-        location_of(chosen),
-        availability_snapshot_id,
-        reasons,
-        context_manifest_id,
-    );
-    decision.fallback_order = available
-        .iter()
-        .skip(1)
-        .map(|model| crate::contracts::RoutingFallback {
-            provider_id: model.provider_id.clone(),
-            model_id: model.model_id.clone(),
-            location: location_of(model),
-        })
-        .collect();
-
-    Some(decision)
-}
-
 /// Which context category a configuration source belongs to.
 ///
 /// Skills are their own category in `CORE_CONTRACTS.md` §10; everything else
@@ -124,55 +95,55 @@ fn category_of(kind: crate::contracts::ConfigurationKind) -> ContextCategory {
     }
 }
 
-/// Where a model runs, in the form a routing decision records.
-fn location_of(model: &ModelDescriptor) -> ExecutionLocation {
-    match model.location {
-        ModelLocation::Local => ExecutionLocation::Local {
-            target_id: "this-device".to_owned(),
-            display_name: "This device".to_owned(),
-        },
-        ModelLocation::Cloud => ExecutionLocation::Cloud {
-            provider_id: model.provider_id.clone(),
-            region: None,
-        },
-    }
-}
-
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
     reason = "tests assert on known-good literals; a panic is the failure report"
 )]
 mod tests {
-    use crate::contracts::{Health, ModelCapability};
-
     use super::*;
 
     fn at() -> Timestamp {
         Timestamp::new("2026-01-01T00:00:00.000Z")
     }
 
-    fn model(model_id: &str, location: ModelLocation) -> ModelDescriptor {
-        ModelDescriptor {
-            provider_id: "fake".to_owned(),
-            model_id: model_id.to_owned(),
-            display_name: model_id.to_owned(),
-            location,
-            capabilities: vec![ModelCapability::Text],
-            context_limit: None,
-            health: Health::Available,
-            health_reason_code: None,
-        }
-    }
-
     #[test]
     fn the_goal_is_always_a_source() {
-        let manifest =
-            assemble_context("context-1", TaskId::new("task-1"), "say hello", None, at());
+        let manifest = assemble_context(
+            "context-1",
+            TaskId::new("task-1"),
+            "say hello",
+            Vec::new(),
+            None,
+            at(),
+        );
         assert_eq!(manifest.sources.len(), 1);
         assert_eq!(manifest.sources[0].category, ContextCategory::Conversation);
         assert!(manifest.sources[0].included);
         assert_eq!(manifest.total_bytes, "say hello".len() as u64);
+    }
+
+    #[test]
+    fn what_was_redacted_from_the_goal_reaches_the_manifest() {
+        // The codes travel with the already-redacted text. Recomputing them
+        // here would find nothing, and the manifest would report that a goal
+        // which did carry a credential never had one.
+        let manifest = assemble_context(
+            "context-1",
+            TaskId::new("task-1"),
+            "call with [redacted]",
+            vec![crate::services::redaction_reason::PROVIDER_API_KEY.to_owned()],
+            None,
+            at(),
+        );
+        assert_eq!(
+            manifest.redactions,
+            vec![crate::services::redaction_reason::PROVIDER_API_KEY]
+        );
+        assert_eq!(
+            manifest.sources[0].redactions,
+            vec![crate::services::redaction_reason::PROVIDER_API_KEY]
+        );
     }
 
     #[test]
@@ -191,6 +162,7 @@ mod tests {
             "context-1",
             TaskId::new("task-1"),
             "say hello",
+            Vec::new(),
             Some(&configuration),
             at(),
         );
@@ -205,62 +177,5 @@ mod tests {
                 .iter()
                 .any(|source| source.source_id == "AGENTS.md")
         );
-    }
-
-    #[test]
-    fn one_eligible_model_is_recorded_as_having_no_choice_to_make() {
-        let decision = choose_route(
-            "decision-1",
-            &[model("a", ModelLocation::Local)],
-            "context-1",
-            "snap-1",
-        )
-        .unwrap();
-        assert_eq!(
-            decision.reason_codes,
-            vec![routing_reason::SOLE_ELIGIBLE_ROUTE]
-        );
-        assert!(decision.fallback_order.is_empty());
-        assert!(!decision.requires_disclosure);
-    }
-
-    #[test]
-    fn a_second_model_becomes_a_fallback_and_changes_the_reason() {
-        // Claiming "sole eligible route" with two models available would be
-        // false, and a reason code nobody can trust is worse than none.
-        let decision = choose_route(
-            "decision-1",
-            &[
-                model("a", ModelLocation::Local),
-                model("b", ModelLocation::Cloud),
-            ],
-            "context-1",
-            "snap-1",
-        )
-        .unwrap();
-        assert_ne!(
-            decision.reason_codes,
-            vec![routing_reason::SOLE_ELIGIBLE_ROUTE]
-        );
-        assert_eq!(decision.fallback_order.len(), 1);
-        assert_eq!(decision.fallback_order[0].model_id, "b");
-    }
-
-    #[test]
-    fn a_cloud_route_requires_disclosure() {
-        let decision = choose_route(
-            "decision-1",
-            &[model("a", ModelLocation::Cloud)],
-            "context-1",
-            "snap-1",
-        )
-        .unwrap();
-        assert!(decision.requires_disclosure);
-        assert!(decision.leaves_the_device());
-    }
-
-    #[test]
-    fn no_models_is_no_decision_rather_than_an_invented_one() {
-        assert!(choose_route("decision-1", &[], "context-1", "snap-1").is_none());
     }
 }

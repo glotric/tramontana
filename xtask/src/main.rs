@@ -17,14 +17,16 @@ use anyhow::{Context, Result, bail};
 use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings};
 use tramontana_core::contracts::{
     AgentDescriptor, BundleEntry, CheckpointWorker, ConfigurationDiagnostic, ConfigurationKind,
-    ConfigurationSource, ContextCategory, ContextManifest, ContextSource, ConversationRecord,
-    DataClass, DestinationClass, DiagnosticSeverity, EffectiveConfiguration, ErrorCode,
-    ErrorEnvelope, EventEnvelope, EventPayload, ExecutionLocation, ExportManifest, ExportOptions,
-    ExportedConfiguration, HandoffBundle, HandoffEntry, ModelDescriptor, NormalizedMessage,
-    Omission, OmissionCategory, PendingAction, PendingActionKind, ProjectRecord, ReplaySafety,
-    ResumeEligibility, ResumeMode, RiskClass, RoutedModel, RoutingDecision, RoutingFallback,
-    RoutingMode, SecretRef, SecretStore, SideEffect, StreamFrame, TaskCheckpoint, TaskEventKind,
-    TaskRecord, TaskSnapshot, TaskState, TaskUpdate, ToolDescriptor, Visibility,
+    ConfigurationSource, ContextCategory, ContextManifest, ContextReleasePlan, ContextSource,
+    ConversationRecord, DataClass, DestinationClass, DiagnosticSeverity, EffectiveConfiguration,
+    ErrorCode, ErrorEnvelope, EventEnvelope, EventPayload, ExecutionLocation, ExportManifest,
+    ExportOptions, ExportedConfiguration, HandoffBundle, HandoffEntry, ModelDescriptor, ModelEvent,
+    ModelLimits, ModelRequest, NormalizedMessage, NormalizedToolDefinition, Omission,
+    OmissionCategory, PendingAction, PendingActionKind, ProjectRecord, ReleaseAuthorization,
+    ReleaseExclusion, ReleasedCategory, ReplaySafety, ResponseFormat, ResumeEligibility,
+    ResumeMode, RiskClass, RoutedModel, RoutingDecision, RoutingFallback, RoutingMode, SecretRef,
+    SecretStore, SideEffect, StopReason, StreamFrame, TaskCheckpoint, TaskEventKind, TaskRecord,
+    TaskSnapshot, TaskState, TaskUpdate, ToolDescriptor, Usage, Visibility,
 };
 
 /// Filename of the single bundled contract schema.
@@ -107,6 +109,13 @@ fn emit_schema(dir: &Path) -> Result<PathBuf> {
     register::<TaskUpdate>(&mut generator);
     register::<NormalizedMessage>(&mut generator);
     register::<ModelDescriptor>(&mut generator);
+    register::<NormalizedToolDefinition>(&mut generator);
+    register::<ResponseFormat>(&mut generator);
+    register::<ModelLimits>(&mut generator);
+    register::<ModelRequest>(&mut generator);
+    register::<Usage>(&mut generator);
+    register::<StopReason>(&mut generator);
+    register::<ModelEvent>(&mut generator);
     register::<AgentDescriptor>(&mut generator);
     register::<ToolDescriptor>(&mut generator);
     register::<ProjectRecord>(&mut generator);
@@ -119,6 +128,10 @@ fn emit_schema(dir: &Path) -> Result<PathBuf> {
     register::<RoutedModel>(&mut generator);
     register::<RoutingFallback>(&mut generator);
     register::<RoutingDecision>(&mut generator);
+    register::<ReleasedCategory>(&mut generator);
+    register::<ReleaseExclusion>(&mut generator);
+    register::<ReleaseAuthorization>(&mut generator);
+    register::<ContextReleasePlan>(&mut generator);
     register::<PendingActionKind>(&mut generator);
     register::<ReplaySafety>(&mut generator);
     register::<PendingAction>(&mut generator);
@@ -286,6 +299,13 @@ mod tests {
             "TaskUpdate",
             "NormalizedMessage",
             "ModelDescriptor",
+            "NormalizedToolDefinition",
+            "ResponseFormat",
+            "ModelLimits",
+            "ModelRequest",
+            "Usage",
+            "StopReason",
+            "ModelEvent",
             "AgentDescriptor",
             "ToolDescriptor",
             "ProjectRecord",
@@ -298,6 +318,10 @@ mod tests {
             "RoutedModel",
             "RoutingFallback",
             "RoutingDecision",
+            "ReleasedCategory",
+            "ReleaseExclusion",
+            "ReleaseAuthorization",
+            "ContextReleasePlan",
             "PendingActionKind",
             "ReplaySafety",
             "PendingAction",

@@ -80,8 +80,21 @@ fn interpret(
     raw: RawSource,
     diagnostics: &mut Vec<ConfigurationDiagnostic>,
 ) -> ConfigurationSource {
-    let byte_count = raw.content.len() as u64;
-    let content_hash = crate::contracts::configuration_hex(&Sha256::digest(&raw.content));
+    // Redacted before it is hashed or measured, so every record downstream
+    // names content that may actually be released. A file with no credential
+    // in it is byte-identical and hashes the same as it always did.
+    //
+    // A file that is not valid UTF-8 cannot be redacted, so it is hashed as
+    // bytes — and it is also disabled below, so nothing will send it.
+    let redacted = std::str::from_utf8(&raw.content)
+        .ok()
+        .map(crate::services::redact);
+    let (releasable, redactions) = match &redacted {
+        Some(result) => (result.text.as_bytes(), result.reason_codes.clone()),
+        None => (raw.content.as_slice(), Vec::new()),
+    };
+    let byte_count = releasable.len() as u64;
+    let content_hash = crate::contracts::configuration_hex(&Sha256::digest(releasable));
 
     let mut source = ConfigurationSource {
         source_id: raw.relative_path.clone(),
@@ -98,6 +111,7 @@ fn interpret(
         precedence: raw.kind.precedence(),
         content_hash,
         byte_count,
+        redactions,
         unknown_keys: Vec::new(),
     };
 
@@ -112,13 +126,16 @@ fn interpret(
 
     // Instruction files are text. Invalid UTF-8 means the file is not what it
     // claims to be, so it is disabled rather than lossily decoded.
-    let Ok(text) = std::str::from_utf8(&raw.content) else {
+    let Some(redacted) = redacted else {
         diagnostics.push(error(&raw.relative_path, "file is not valid UTF-8"));
         source.enabled = false;
         return source;
     };
 
-    match split_front_matter(text) {
+    // Front matter is parsed from the redacted text, which is what any later
+    // reader will see. Parsing the original would let a declared id or scope
+    // differ from the one in the file that actually gets used.
+    match split_front_matter(&redacted.text) {
         Ok((matter, _body)) => {
             source.declared_id = matter.id.clone();
             source.declared_name = matter.name.clone();
@@ -675,6 +692,68 @@ mod tests {
             resolved.diagnostics[0].severity,
             DiagnosticSeverity::Warning
         );
+    }
+
+    #[test]
+    fn a_credential_in_an_instruction_file_is_redacted_before_it_is_hashed() {
+        // The hash is what a context manifest records and what the release
+        // boundary checks a payload against. If it named the original, a later
+        // prompt assembly could send the credential and still satisfy every
+        // record describing the release. Synthetic value.
+        // Two shapes on purpose. The prose line is caught only by the key
+        // prefix — the assignment rule requires a name with no whitespace, and
+        // "Use OPENAI_API_KEY" is a sentence, not an assignment. The env line
+        // is caught by both. That the narrow rule declines the prose is the
+        // backstop behaving, not a miss.
+        let raw = "# Rules\n\nUse OPENAI_API_KEY=sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4 for calls.\n\
+                   client_secret: s3cr3t-value\n";
+        let resolved = resolve(
+            vec![RawSource {
+                relative_path: "AGENTS.md".to_owned(),
+                kind: ConfigurationKind::RootAgents,
+                content: raw.as_bytes().to_vec(),
+            }],
+            Timestamp::new("2026-01-01T00:00:00.000Z"),
+        );
+
+        let source = &resolved.sources[0];
+        assert_eq!(
+            source.redactions,
+            vec![
+                crate::services::redaction_reason::CREDENTIAL_ASSIGNMENT,
+                crate::services::redaction_reason::PROVIDER_API_KEY,
+            ]
+        );
+        // Not the hash of the file on disk.
+        let raw_hash = crate::contracts::configuration_hex(&Sha256::digest(raw.as_bytes()));
+        assert_ne!(source.content_hash, raw_hash);
+        // But exactly the hash of what may be released.
+        let releasable = crate::services::redact(raw).text;
+        assert_eq!(
+            source.content_hash,
+            crate::contracts::configuration_hex(&Sha256::digest(releasable.as_bytes()))
+        );
+        assert_eq!(source.byte_count, releasable.len() as u64);
+    }
+
+    #[test]
+    fn a_file_with_no_credential_hashes_exactly_as_it_always_did() {
+        // Redaction must not churn every hash in every existing record.
+        let raw = b"# Rules\n\nBe careful.\n";
+        let resolved = resolve(
+            vec![RawSource {
+                relative_path: "AGENTS.md".to_owned(),
+                kind: ConfigurationKind::RootAgents,
+                content: raw.to_vec(),
+            }],
+            Timestamp::new("2026-01-01T00:00:00.000Z"),
+        );
+        assert_eq!(
+            resolved.sources[0].content_hash,
+            crate::contracts::configuration_hex(&Sha256::digest(raw))
+        );
+        assert!(resolved.sources[0].redactions.is_empty());
+        assert_eq!(resolved.sources[0].byte_count, raw.len() as u64);
     }
 
     #[test]

@@ -2,7 +2,8 @@ use async_trait::async_trait;
 
 use crate::contracts::{
     CheckpointId, ConversationId, ConversationRecord, EffectiveConfiguration, EventEnvelope,
-    ProjectId, ProjectRecord, TaskCheckpoint, TaskId, TaskRecord, TaskState, Timestamp,
+    ProjectId, ProjectRecord, ProviderEndpoint, TaskCheckpoint, TaskId, TaskRecord, TaskState,
+    Timestamp,
 };
 
 /// Why a repository call failed.
@@ -182,6 +183,44 @@ pub trait TaskRepository: Send + Sync {
 /// Markdown bodies stay in the project-authored plane. This repository stores
 /// only the hashes and metadata needed to explain which configuration a task
 /// used after the files change.
+/// Where a profile keeps the model providers the user configured.
+///
+/// Profile-scoped, not project-scoped, and deliberately so.
+/// `CONFIGURATION.md` §153 forbids project-authored Markdown from hard-coding
+/// a cloud provider or embedding credentials: which endpoints exist is a
+/// property of *this machine and this person*, not of a repository that gets
+/// shared. A project that could name its own provider would carry a routing
+/// decision into every checkout of it.
+#[async_trait]
+pub trait ProviderSettingsRepository: Send + Sync {
+    /// Every configured endpoint, in a stable order.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn list(&self) -> Result<Vec<ProviderEndpoint>, RepositoryError>;
+
+    /// Store an endpoint, replacing any with the same identifier.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn save(&self, endpoint: &ProviderEndpoint) -> Result<(), RepositoryError>;
+
+    /// Remove an endpoint. Returns whether one was there.
+    ///
+    /// Removing the configuration does **not** remove the credential: that
+    /// lives in the operating system store and is the user's to delete, with
+    /// `tramontana secret forget` or their platform's own tool. Deleting it
+    /// here would silently destroy something shared with other applications
+    /// (ADR 0008).
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn delete(&self, endpoint_id: &str) -> Result<bool, RepositoryError>;
+}
+
 #[async_trait]
 pub trait ConfigurationRepository: Send + Sync {
     /// Save or refresh a resolved manifest for a project.

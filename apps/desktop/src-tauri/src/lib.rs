@@ -63,6 +63,7 @@ pub fn run() {
             commands::resolve_approval,
             commands::list_project_grants,
             commands::revoke_project_grant,
+            commands::list_model_endpoints,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the Tramontana desktop shell");

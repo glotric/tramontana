@@ -6,18 +6,22 @@ use std::sync::Arc;
 use tauri::AppHandle;
 use tramontana_adapters_tools::{FilesystemTools, GitTools};
 use tramontana_core::ports::EventStore;
-use tramontana_core::ports::{ApprovalStore, Approver, ToolProvider};
+use tramontana_core::ports::{
+    ApprovalStore, Approver, ModelProvider, ProviderSettingsRepository, SecretResolver,
+    ToolProvider,
+};
 use tramontana_core::services::{Providers, Repositories, TaskService};
 use tramontana_core::testing::{
     FakeModelProvider, FakeWorker, InMemoryApprovalStore, assemble_tool_plane,
 };
 
 use crate::approval::DesktopApprover;
+use tramontana_composition::{ModelPlane, Supervision, assemble_models};
 use tramontana_persistence::{
     Database, SqliteConfigurationRepository, SqliteConversationRepository, SqliteEventStore,
-    SqliteProjectRepository, SqliteTaskRepository,
+    SqliteProjectRepository, SqliteProviderSettingsRepository, SqliteTaskRepository,
 };
-use tramontana_platform::{SystemClock, UuidIdSource};
+use tramontana_platform::{PlatformSecretVault, SystemClock, UuidIdSource};
 
 /// What the Tauri layer manages.
 ///
@@ -31,14 +35,22 @@ pub(crate) struct AppState {
     pub(crate) approver: Arc<DesktopApprover>,
     /// Where grants live, so they can be listed and revoked.
     pub(crate) approvals: Arc<InMemoryApprovalStore>,
+    /// Runtimes this process started, held for the life of the window.
+    ///
+    /// Dropping it stops them, which is why the desktop keeps it rather than
+    /// letting assembly go out of scope: a model runtime that outlived the
+    /// application would hold gigabytes with nothing to stop it.
+    pub(crate) models: Arc<tokio::sync::Mutex<ModelPlane>>,
 }
 
 impl AppState {
-    /// Assemble the desktop service over the durable M2 profile.
+    /// Assemble the desktop service over the durable profile.
     ///
-    /// Providers remain deterministic fakes until their later milestones, but
-    /// task, project, conversation, event, and configuration records use the
-    /// same SQLite repositories as the CLI.
+    /// Model providers come from the endpoints configured in this profile,
+    /// through the same composition the CLI uses, so the two cannot drift
+    /// into reaching different models under different policy. A profile with
+    /// nothing configured falls back to the deterministic fake, and the
+    /// interface says so rather than letting a stub pass for a model.
     pub(crate) async fn open(path: &Path, app: AppHandle) -> Result<Self, String> {
         Self::open_with_chunk_delay(path, 220, Arc::new(DesktopApprover::new(app))).await
     }
@@ -62,7 +74,7 @@ impl AppState {
         // assembles the identical set, so the two adapters cannot drift into
         // offering different tools under different policy.
         let approvals = Arc::new(InMemoryApprovalStore::new());
-        let (registry, permissions) = assemble_tool_plane(
+        let (registry, permissions, releases) = assemble_tool_plane(
             vec![
                 Arc::new(FilesystemTools::new()) as Arc<dyn ToolProvider>,
                 Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
@@ -77,6 +89,33 @@ impl AppState {
             .map_err(|error| format!("could not acquire runtime profile lease: {error}"))?
             .map(|lease| Arc::new(lease) as Arc<dyn Send + Sync>);
         let store: Arc<dyn EventStore> = Arc::new(SqliteEventStore::new(database.clone()));
+        // The endpoints the user configured, through the same composition the
+        // CLI uses. Supervised runtimes are started here because the desktop
+        // is long-lived; the plane below owns them and stops them on close.
+        let settings = SqliteProviderSettingsRepository::new(database.clone());
+        let configured = settings
+            .list()
+            .await
+            .map_err(|error| format!("could not read provider settings: {error}"))?;
+        let resolver = Arc::new(PlatformSecretVault::new()) as Arc<dyn SecretResolver>;
+        let plane = assemble_models(&configured, &resolver, Supervision::Start).await;
+        for failure in &plane.failures {
+            tracing::warn!(
+                endpoint = failure.endpoint_id,
+                "a configured model endpoint is unavailable: {}",
+                failure.error.message
+            );
+        }
+        let models: Vec<Arc<dyn ModelProvider>> = if plane.providers.is_empty() {
+            // Labelled explicitly in the interface, not silently substituted.
+            vec![Arc::new(FakeModelProvider::streaming_paced(
+                ["Hello", ", ", "world", " from ", "Tramontana"],
+                chunk_delay_ms,
+            ))]
+        } else {
+            plane.providers.clone()
+        };
+
         let service = TaskService::new(
             Repositories {
                 projects: Arc::new(SqliteProjectRepository::new(database.clone())),
@@ -86,15 +125,13 @@ impl AppState {
                 checkpoints: Arc::new(tramontana_persistence::SqliteCheckpointRepository::new(
                     database.clone(),
                 )),
-                configuration: Arc::new(SqliteConfigurationRepository::new(database)),
+                configuration: Arc::new(SqliteConfigurationRepository::new(database.clone())),
             },
             Providers {
-                model: Arc::new(FakeModelProvider::streaming_paced(
-                    ["Hello", ", ", "world", " from ", "Tramontana"],
-                    chunk_delay_ms,
-                )),
+                models,
                 tools: Arc::clone(&registry),
                 permissions: Arc::clone(&permissions),
+                releases: Arc::clone(&releases),
                 // Points the reference worker at a genuine read-only tool, so the
                 // skeleton exercises the real permission and containment path
                 // rather than a fake that cannot be refused.
@@ -115,6 +152,7 @@ impl AppState {
             service: Arc::new(service),
             approver,
             approvals,
+            models: Arc::new(tokio::sync::Mutex::new(plane)),
         })
     }
 }

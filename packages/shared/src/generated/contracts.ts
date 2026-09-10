@@ -55,6 +55,11 @@ export interface AgentDescriptor {
 }
 
 /**
+ * One approval request and its decision.
+ */
+export type ApprovalId = string;
+
+/**
  * One file in a bundle, with what a reader needs to trust it.
  */
 export interface BundleEntry {
@@ -177,11 +182,21 @@ export interface ConfigurationSource {
    */
   active: boolean;
   /**
-   * Size in bytes.
+   * Size in bytes of the releasable text.
+   *
+   * Of the redacted text, for the same reason `content_hash` is: the
+   * number answers "how much of this could be sent", which is what a
+   * context manifest and a release plan are counting.
    */
   byteCount: number;
   /**
-   * SHA-256 of the file's bytes, for reproducibility.
+   * SHA-256 of the source's releasable text, for reproducibility.
+   *
+   * Of the *redacted* text, not the bytes on disk. A hash naming content
+   * that may not be released would let a later prompt assembly send the
+   * original and still satisfy every record that describes it
+   * (`SECURITY_AND_PERMISSIONS.md` §7). A file with no credential in it
+   * hashes identically either way.
    */
   contentHash: string;
   /**
@@ -219,6 +234,10 @@ export interface ConfigurationSource {
    * native rule layer.
    */
   priority?: number;
+  /**
+   * Stable codes for credentials removed from this source at ingestion.
+   */
+  redactions?: string[];
   /**
    * Project-relative path. Never absolute: an absolute path names a machine.
    */
@@ -303,6 +322,120 @@ export interface ContextManifest {
 }
 
 /**
+ * Everything one request releases to one destination.
+ *
+ * Built by `services::release`, never by hand: the totals and categories are
+ * derived from the payload, so a plan cannot describe a request other than
+ * the one it accompanies.
+ */
+export interface ContextReleasePlan {
+  authorization?: ReleaseAuthorization;
+  /**
+   * The assembled context this payload was drawn from.
+   */
+  contextManifestId: string;
+  /**
+   * When the plan was made.
+   */
+  createdAt: string;
+  /**
+   * Data classes actually carried, strongest first.
+   */
+  dataClasses: DataClass[];
+  /**
+   * The routing decision that chose the destination.
+   */
+  decisionId: string;
+  destination: RoutedModel;
+  /**
+   * Sources assembled for this task that this request did not carry.
+   */
+  exclusions: ReleaseExclusion[];
+  /**
+   * Where that model runs.
+   */
+  location:
+    | {
+        /**
+         * Human-readable name for the interface.
+         */
+        displayName: string;
+        kind: "local";
+        /**
+         * Stable identifier for the compute target.
+         */
+        targetId: string;
+      }
+    | {
+        kind: "cloud";
+        /**
+         * Stable provider identifier.
+         */
+        providerId: string;
+        /**
+         * Provider region, when the provider exposes one.
+         */
+        region?: string;
+      };
+  /**
+   * The messages carried, in payload order.
+   */
+  messageIds: MessageId[];
+  /**
+   * Why the destination was chosen, in the router's deterministic order.
+   */
+  reasonCodes: string[];
+  /**
+   * Stable codes for redactions applied before release.
+   */
+  redactions: string[];
+  /**
+   * Stable identifier for this release.
+   */
+  releaseId: string;
+  /**
+   * What was carried, by category and data class.
+   */
+  released: ReleasedCategory[];
+  /**
+   * The request it accompanies.
+   */
+  requestId: string;
+  /**
+   * Whether this release leaves the device.
+   *
+   * Derived from `location`, like `RoutingDecision::requires_disclosure`
+   * and for the same reason: whether data left the device is a fact about
+   * where it went, not a judgement a caller should be able to get wrong.
+   */
+  requiresDisclosure: boolean;
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  /**
+   * The task it belongs to.
+   */
+  taskId: string;
+  /**
+   * Tools the model is allowed to call, by name.
+   *
+   * Offering a tool to a cloud model discloses that the tool exists and
+   * what it takes, which is part of the release and not an implementation
+   * detail (`SECURITY_AND_PERMISSIONS.md` §8).
+   */
+  toolsOffered: string[];
+  /**
+   * Total bytes carried.
+   */
+  totalBytes: number;
+  /**
+   * Approximate total token cost, when one was estimated.
+   */
+  totalTokenEstimate?: number;
+}
+
+/**
  * One thing that was considered for a context bundle.
  */
 export interface ContextSource {
@@ -330,6 +463,14 @@ export interface ContextSource {
    * Whether it was actually sent.
    */
   included: boolean;
+  /**
+   * Stable codes for credentials removed from this source at ingestion.
+   *
+   * Per source rather than only on the manifest, so a release plan can
+   * report the redactions that apply to what it actually carried instead
+   * of every redaction the task ever made.
+   */
+  redactions?: string[];
   /**
    * Stable identifier for this source within the task.
    */
@@ -445,6 +586,7 @@ export type ErrorCode =
   | "approvalRequired"
   | "policyBlocked"
   | "capabilityUnsupported"
+  | "credentialMissing"
   | "providerAuthentication"
   | "providerRateLimited"
   | "providerUnavailable"
@@ -474,6 +616,7 @@ export interface ErrorEnvelope {
     | "approvalRequired"
     | "policyBlocked"
     | "capabilityUnsupported"
+    | "credentialMissing"
     | "providerAuthentication"
     | "providerRateLimited"
     | "providerUnavailable"
@@ -543,6 +686,7 @@ export interface EventEnvelope {
     | "configurationResolved"
     | "contextPrepared"
     | "routingDecided"
+    | "contextReleased"
     | "workerSelected"
     | "workerStarted"
     | "modelStarted"
@@ -636,6 +780,10 @@ export interface EventEnvelope {
     | {
         kind: "contextPrepared";
         manifest: ContextManifest;
+      }
+    | {
+        kind: "contextReleased";
+        plan: ContextReleasePlan;
       }
     | {
         decision: RoutingDecision;
@@ -911,6 +1059,10 @@ export type EventPayload =
   | {
       kind: "contextPrepared";
       manifest: ContextManifest;
+    }
+  | {
+      kind: "contextReleased";
+      plan: ContextReleasePlan;
     }
   | {
       decision: RoutingDecision;
@@ -1407,9 +1559,144 @@ export interface ModelDescriptor {
 }
 
 /**
+ * One item from a model stream.
+ *
+ * Exactly one [`ModelEvent::Completed`] or [`ModelEvent::Failed`] ends a
+ * stream, even when cancellation arrives while the underlying request is
+ * still in flight (`CORE_CONTRACTS.md` §8). The shared provider contract
+ * suite checks that for every adapter.
+ */
+export type ModelEvent =
+  | {
+      kind: "textDelta";
+      /**
+       * Position within this stream.
+       */
+      offset: number;
+      /**
+       * The stream this belongs to.
+       */
+      streamId: string;
+      /**
+       * The text produced.
+       */
+      text: string;
+    }
+  | {
+      /**
+       * Identifies the call being assembled across deltas.
+       */
+      callId: string;
+      /**
+       * The fragment.
+       */
+      delta: string;
+      kind: "toolCallDelta";
+      /**
+       * Position within this stream.
+       */
+      offset: number;
+      /**
+       * The stream this belongs to.
+       */
+      streamId: string;
+    }
+  | {
+      kind: "usage";
+      usage: Usage;
+    }
+  | {
+      kind: "completed";
+      /**
+       * Why it ended.
+       */
+      stopReason: "stop" | "length" | "toolCall" | "cancelled";
+    }
+  | {
+      error: ErrorEnvelope;
+      kind: "failed";
+    };
+
+/**
+ * Bounds on one request.
+ *
+ * `deadlineMs` is required rather than optional: a request with no deadline
+ * is one that can hang a task forever, and every provider has to honour the
+ * same bound for cancellation to mean the same thing everywhere.
+ */
+export interface ModelLimits {
+  /**
+   * How long the whole request may take.
+   */
+  deadlineMs: number;
+  /**
+   * Cap on generated tokens, when one applies.
+   */
+  maxOutputTokens?: number;
+}
+
+/**
  * Whether a model runs on this device.
  */
 export type ModelLocation = "local" | "cloud";
+
+/**
+ * A normalized request for inference.
+ */
+export interface ModelRequest {
+  /**
+   * The context release this request was built from.
+   */
+  contextManifestId: string;
+  /**
+   * How sensitive the content is, for routing and disclosure.
+   */
+  dataClasses?: DataClass[];
+  limits: ModelLimits;
+  /**
+   * The conversation so far, already normalized and redacted.
+   */
+  messages: NormalizedMessage[];
+  /**
+   * Correlates this request with its `modelStarted` event and its stream.
+   */
+  requestId: string;
+  /**
+   * Capabilities a model must have to serve this request.
+   *
+   * The router matches these; a provider that cannot meet them is not a
+   * fallback, it is ineligible.
+   */
+  requiredCapabilities?: string[];
+  /**
+   * What shape of answer was asked for.
+   */
+  responseFormat?:
+    | {
+        kind: "text";
+      }
+    | {
+        kind: "jsonSchema";
+        /**
+         * The schema the answer must satisfy.
+         */
+        schema: {
+          [k: string]: unknown;
+        };
+      };
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  /**
+   * The task on whose behalf it is made.
+   */
+  taskId: string;
+  /**
+   * Tools the model may call, as the model sees them.
+   */
+  tools?: NormalizedToolDefinition[];
+}
 
 /**
  * What a worker can do on the network.
@@ -1457,6 +1744,31 @@ export interface NormalizedMessage {
    * Task that produced it, when one did.
    */
   taskId?: string;
+}
+
+/**
+ * A tool as a model is told about it.
+ *
+ * Deliberately not [`ToolDescriptor`](super::ToolDescriptor): that type
+ * carries the risk class, capability, and cancellation facts Tramontana uses
+ * to *govern* a call. A model needs the name, the purpose, and the argument
+ * shape, and nothing else.
+ */
+export interface NormalizedToolDefinition {
+  /**
+   * What it does, in the words the model sees.
+   */
+  description: string;
+  /**
+   * JSON Schema for the arguments.
+   */
+  inputSchema: {
+    [k: string]: unknown;
+  };
+  /**
+   * Namespaced tool identifier, as the model should call it.
+   */
+  name: string;
 }
 
 /**
@@ -1568,6 +1880,69 @@ export interface ProjectRecord {
 }
 
 /**
+ * On whose authority a release proceeded.
+ */
+export interface ReleaseAuthorization {
+  /**
+   * The approval that permitted it, when a user was asked.
+   */
+  approvalId?: string;
+  /**
+   * The routing mode in force, which is the standing policy that applied.
+   */
+  mode: "localOnly" | "automatic" | "cloudPreferred";
+  /**
+   * Stable reason, from [`reason`].
+   */
+  reasonCode: string;
+}
+
+/**
+ * A source that was assembled and did not go.
+ */
+export interface ReleaseExclusion {
+  /**
+   * What kind of source it is.
+   */
+  category: "conversation" | "selectedFile" | "instruction" | "skill" | "repositoryMetadata" | "toolResult";
+  /**
+   * Stable reason it did not go.
+   */
+  reasonCode: string;
+  /**
+   * Which source.
+   */
+  sourceId: string;
+}
+
+/**
+ * One category of content actually carried by a request.
+ *
+ * Summarized by category and data class rather than listed source by source:
+ * the disclosure has to be readable before a person decides, and
+ * `PHASE_1_ACCEPTANCE_CRITERIA.md` §12 asks for categories, classes, and a
+ * size estimate — not a file listing.
+ */
+export interface ReleasedCategory {
+  /**
+   * How many bytes of them were carried.
+   */
+  byteCount: number;
+  /**
+   * What kind of source it is.
+   */
+  category: "conversation" | "selectedFile" | "instruction" | "skill" | "repositoryMetadata" | "toolResult";
+  /**
+   * How sensitive the content is.
+   */
+  dataClass: "public" | "project" | "sensitive" | "secret";
+  /**
+   * How many sources of this kind were carried.
+   */
+  sourceCount: number;
+}
+
+/**
  * Whether repeating an action is safe.
  *
  * This is a statement about *effects*, not about whether the action would
@@ -1575,6 +1950,23 @@ export interface ProjectRecord {
  * tool whose effects are not known is treated as though they are not.
  */
 export type ReplaySafety = "safe" | "unsafe" | "unknown";
+
+/**
+ * What shape of answer was asked for.
+ */
+export type ResponseFormat =
+  | {
+      kind: "text";
+    }
+  | {
+      kind: "jsonSchema";
+      /**
+       * The schema the answer must satisfy.
+       */
+      schema: {
+        [k: string]: unknown;
+      };
+    };
 
 /**
  * Whether, and how, this checkpoint can be resumed.
@@ -1764,6 +2156,11 @@ export type SecretStore = "platform";
 export type SideEffect = "none" | "localReversible" | "localIrreversible" | "external";
 
 /**
+ * Why a model stream ended.
+ */
+export type StopReason = "stop" | "length" | "toolCall" | "cancelled";
+
+/**
  * One frame of an in-flight model stream.
  *
  * Explicitly **not** an [`EventEnvelope`]: frames are transport, are never
@@ -1872,6 +2269,7 @@ export type TaskEventKind =
   | "configurationResolved"
   | "contextPrepared"
   | "routingDecided"
+  | "contextReleased"
   | "workerSelected"
   | "workerStarted"
   | "modelStarted"
@@ -2082,6 +2480,27 @@ export interface ToolDescriptor {
    * Namespaced identifier, such as `builtin.fs.read` or `mcp.github.search`.
    */
   toolId: string;
+}
+
+/**
+ * Token counts for one request.
+ */
+export interface Usage {
+  /**
+   * Whether these are counted or approximated.
+   *
+   * Recorded rather than hidden: a cost shown to a user as exact when it was
+   * estimated is a number they will make decisions on.
+   */
+  estimated: boolean;
+  /**
+   * Tokens consumed by the request.
+   */
+  inputTokens?: number;
+  /**
+   * Tokens produced.
+   */
+  outputTokens?: number;
 }
 
 /**
