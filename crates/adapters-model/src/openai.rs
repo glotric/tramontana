@@ -330,33 +330,53 @@ impl WireFormat for ChatCompletions {
                 .and_then(serde_json::Value::as_array)
             {
                 for call in calls {
-                    let Some(arguments) = call
-                        .get("function")
+                    let Some(call_index) = call.get("index").and_then(serde_json::Value::as_u64)
+                    else {
+                        return (
+                            events,
+                            Signal::Failed(error(
+                                ErrorCode::ProtocolError,
+                                "A streamed tool call has no valid index",
+                            )),
+                        );
+                    };
+                    let function = call.get("function");
+                    if function.is_some_and(|value| !value.is_null() && !value.is_object())
+                        || [
+                            call.get("id"),
+                            function.and_then(|value| value.get("name")),
+                            function.and_then(|value| value.get("arguments")),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .any(|value| !value.is_null() && !value.is_string())
+                    {
+                        return (
+                            events,
+                            Signal::Failed(error(
+                                ErrorCode::ProtocolError,
+                                "A streamed tool call has invalid field types",
+                            )),
+                        );
+                    }
+                    let arguments = function
                         .and_then(|function| function.get("arguments"))
                         .and_then(serde_json::Value::as_str)
-                    else {
-                        continue;
-                    };
+                        .unwrap_or_default();
+                    let name = function
+                        .and_then(|function| function.get("name"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned);
                     let call_id = call
                         .get("id")
                         .and_then(serde_json::Value::as_str)
-                        .map_or_else(
-                            || {
-                                // Providers omit the id on continuation frames
-                                // and identify the call by its index instead.
-                                call.get("index")
-                                    .and_then(serde_json::Value::as_u64)
-                                    .map_or_else(
-                                        || "call-0".to_owned(),
-                                        |index| format!("call-{index}"),
-                                    )
-                            },
-                            str::to_owned,
-                        );
+                        .map(str::to_owned);
                     events.push(ModelEvent::ToolCallDelta {
                         stream_id: stream_id.to_owned(),
                         offset: *offset,
+                        call_index,
                         call_id,
+                        name,
                         delta: arguments.to_owned(),
                     });
                     *offset += 1;

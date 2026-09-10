@@ -200,7 +200,7 @@ pub enum ModelEvent {
     TextDelta {
         /// The stream this belongs to.
         stream_id: String,
-        /// Position within this stream.
+        /// Zero-based ordinal shared by text/tool deltas (not a byte offset).
         offset: u64,
         /// The text produced.
         text: String,
@@ -210,10 +210,17 @@ pub enum ModelEvent {
     ToolCallDelta {
         /// The stream this belongs to.
         stream_id: String,
-        /// Position within this stream.
+        /// Zero-based ordinal shared by text/tool deltas (not a byte offset).
         offset: u64,
-        /// Identifies the call being assembled across deltas.
-        call_id: String,
+        /// Stable position of this call within the response. Continuations
+        /// carry the same index even when the provider omits its identifier.
+        call_index: u64,
+        /// Provider call identifier, supplied on the opening fragment.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        call_id: Option<String>,
+        /// Tool name, supplied on the opening fragment. Never inferred from ID.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        name: Option<String>,
         /// The fragment.
         delta: String,
     },
@@ -351,7 +358,9 @@ mod tests {
             ModelEvent::ToolCallDelta {
                 stream_id: "s1".into(),
                 offset: 1,
-                call_id: "call-1".into(),
+                call_index: 0,
+                call_id: Some("call-1".into()),
+                name: Some("builtin.fs.read".into()),
                 delta: "{".into(),
             },
             ModelEvent::Usage {

@@ -280,6 +280,51 @@ impl WireFormat for Messages {
                 (events, Signal::Continue)
             }
 
+            "content_block_start" if value["content_block"]["type"] == "tool_use" => {
+                let Some(call_index) = value.get("index").and_then(serde_json::Value::as_u64)
+                else {
+                    return (
+                        events,
+                        Signal::Failed(error(
+                            ErrorCode::ProtocolError,
+                            "A streamed tool call has no valid index",
+                        )),
+                    );
+                };
+                let block = &value["content_block"];
+                if !block.get("input").is_some_and(serde_json::Value::is_object) {
+                    return (
+                        events,
+                        Signal::Failed(error(
+                            ErrorCode::ProtocolError,
+                            "A streamed tool call has invalid initial input",
+                        )),
+                    );
+                }
+                // The opening empty object is a placeholder, not a fragment
+                // to concatenate before the actual input_json_delta bytes.
+                let delta = block
+                    .get("input")
+                    .filter(|input| input.as_object().is_none_or(|object| !object.is_empty()))
+                    .map_or_else(String::new, serde_json::Value::to_string);
+                events.push(ModelEvent::ToolCallDelta {
+                    stream_id: stream_id.to_owned(),
+                    offset: *offset,
+                    call_index,
+                    call_id: block
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    name: block
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    delta,
+                });
+                *offset += 1;
+                (events, Signal::Continue)
+            }
+
             "content_block_delta" => {
                 if let Some(text) = value
                     .get("delta")
@@ -299,6 +344,17 @@ impl WireFormat for Messages {
                 }
                 // A tool call arrives as `input_json_delta` fragments against
                 // the block opened by `content_block_start`.
+                if value["delta"]["type"] == "input_json_delta"
+                    && !value["delta"]["partial_json"].is_string()
+                {
+                    return (
+                        events,
+                        Signal::Failed(error(
+                            ErrorCode::ProtocolError,
+                            "A streamed tool call has invalid argument fragments",
+                        )),
+                    );
+                }
                 if let Some(partial) = value
                     .get("delta")
                     .filter(|delta| {
@@ -308,14 +364,22 @@ impl WireFormat for Messages {
                     .and_then(|delta| delta.get("partial_json"))
                     .and_then(serde_json::Value::as_str)
                 {
-                    let call_id = value
-                        .get("index")
-                        .and_then(serde_json::Value::as_u64)
-                        .map_or_else(|| "call-0".to_owned(), |index| format!("call-{index}"));
+                    let Some(call_index) = value.get("index").and_then(serde_json::Value::as_u64)
+                    else {
+                        return (
+                            events,
+                            Signal::Failed(error(
+                                ErrorCode::ProtocolError,
+                                "A streamed tool call has no valid index",
+                            )),
+                        );
+                    };
                     events.push(ModelEvent::ToolCallDelta {
                         stream_id: stream_id.to_owned(),
                         offset: *offset,
-                        call_id,
+                        call_index,
+                        call_id: None,
+                        name: None,
                         delta: partial.to_owned(),
                     });
                     *offset += 1;

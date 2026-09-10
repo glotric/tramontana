@@ -13,6 +13,7 @@ mod checkpoint;
 mod export;
 mod handoff;
 mod journal;
+mod model_turn;
 mod permission_manager;
 mod preparation;
 mod projection;
@@ -34,6 +35,7 @@ pub use export::{
 };
 pub use handoff::build_handoff;
 pub use journal::{JournalPorts, TaskJournal};
+pub use model_turn::{ModelToolCall, ModelTurn, ModelTurnAccumulator, ModelTurnLimits};
 pub use permission_manager::PermissionManager;
 pub use preparation::assemble_context;
 pub use projection::TaskProjectionWriter;
