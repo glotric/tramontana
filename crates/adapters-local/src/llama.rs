@@ -215,6 +215,13 @@ pub struct SupervisedLlamaServer {
     child: Option<Child>,
     port: u16,
     logs: Arc<Mutex<VecDeque<String>>>,
+    /// The tasks reading the child's pipes.
+    ///
+    /// Held so their completion can be waited for. Nothing orders a child's
+    /// write against these tasks being polled, so reading the log buffer the
+    /// instant the process exits can find it empty — which is exactly when
+    /// its output matters most.
+    readers: Vec<tokio::task::JoinHandle<()>>,
     client: reqwest::Client,
     version: ProbedVersion,
 }
@@ -281,17 +288,19 @@ impl SupervisedLlamaServer {
             .map_err(|failure| StartError::Spawn(failure.to_string()))?;
 
         let logs = Arc::new(Mutex::new(VecDeque::with_capacity(LOG_LINES)));
+        let mut readers = Vec::new();
         if let Some(stdout) = child.stdout.take() {
-            capture(stdout, Arc::clone(&logs));
+            readers.push(capture(stdout, Arc::clone(&logs)));
         }
         if let Some(stderr) = child.stderr.take() {
-            capture(stderr, Arc::clone(&logs));
+            readers.push(capture(stderr, Arc::clone(&logs)));
         }
 
         let mut server = Self {
             child: Some(child),
             port,
             logs,
+            readers,
             client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(2))
                 .build()
@@ -400,8 +409,14 @@ impl SupervisedLlamaServer {
             if let Some(child) = self.child.as_mut()
                 && let Ok(Some(status)) = child.try_wait()
             {
+                let status = status.to_string();
+                // Drain first. The process exiting says nothing about whether
+                // the tasks reading its pipes have been polled, and an
+                // `ExitedEarly` with an empty tail is the least useful
+                // possible version of the most useful error this type has.
+                self.drain_logs().await;
                 return Err(StartError::ExitedEarly {
-                    status: status.to_string(),
+                    status,
                     tail: self.tail(),
                 });
             }
@@ -417,6 +432,26 @@ impl SupervisedLlamaServer {
                 });
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Wait for everything the child wrote to be in the buffer.
+    ///
+    /// Once the process is gone and these tasks hold the only read ends, EOF
+    /// follows and they finish. The bound is not optional, though: a
+    /// grandchild that inherited the pipes keeps them open after its parent
+    /// exits, so without it this would wait for a process nobody is waiting
+    /// on. A partial tail beats a hang.
+    async fn drain_logs(&mut self) {
+        let readers = std::mem::take(&mut self.readers);
+        let drained = tokio::time::timeout(Duration::from_millis(500), async {
+            for reader in readers {
+                let _ = reader.await;
+            }
+        })
+        .await;
+        if drained.is_err() {
+            tracing::debug!("the runtime's output was still open after it exited");
         }
     }
 
@@ -531,7 +566,7 @@ async fn reserve_port() -> Result<u16, StartError> {
 }
 
 /// Read a child's output into the bounded buffer.
-fn capture<R>(stream: R, logs: Arc<Mutex<VecDeque<String>>>)
+fn capture<R>(stream: R, logs: Arc<Mutex<VecDeque<String>>>) -> tokio::task::JoinHandle<()>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -548,7 +583,7 @@ where
             }
             logs.push_back(truncate(&line, LOG_LINE_BYTES));
         }
-    });
+    })
 }
 
 /// Cut a string to a byte bound without splitting a character.
