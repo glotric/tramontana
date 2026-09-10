@@ -342,20 +342,32 @@ async fn an_endpoint_that_is_not_a_url_is_refused_at_construction() {
 }
 
 #[tokio::test]
-async fn an_https_endpoint_is_refused_as_unsupported_rather_than_failing_later() {
-    // This build carries no TLS stack. Saying so at configuration time is the
-    // difference between a clear message and a connection error nobody can
-    // interpret, and it keeps the missing capability visible rather than
-    // looking like a bug when the cloud adapters land.
-    let error = OpenAiCompatibleProvider::new(
+async fn an_https_endpoint_is_accepted_now_that_there_is_a_tls_stack() {
+    // Until `docs/decisions/0009-tls-for-cloud-adapters.md` this was refused
+    // with `capabilityUnsupported`, because the build carried no TLS at all.
+    OpenAiCompatibleProvider::new(
         "openai",
         "https://api.openai.com",
         OpenAiCompatibleProvider::local_descriptor("openai", "m", "M"),
         ProviderAuth::None,
     )
+    .expect("an https endpoint was refused");
+}
+
+#[tokio::test]
+async fn a_remote_endpoint_over_plain_http_is_refused_before_a_key_can_leave() {
+    // The restriction used to be implicit: with no TLS, no remote host was
+    // reachable at all. Now that one is, plain http to anything but loopback
+    // has to be refused, or a mistyped scheme sends the key in the clear.
+    let error = OpenAiCompatibleProvider::new(
+        "openai",
+        "http://api.openai.com",
+        OpenAiCompatibleProvider::local_descriptor("openai", "m", "M"),
+        ProviderAuth::None,
+    )
     .unwrap_err();
-    assert_eq!(error.code, ErrorCode::CapabilityUnsupported);
-    assert!(error.message.contains("https"));
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    assert!(error.message.contains("loopback"), "{}", error.message);
 }
 
 #[tokio::test]

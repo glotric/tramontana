@@ -11,13 +11,16 @@ repository.workspace = true
 [dependencies]
 tramontana-core = { workspace = true }
 async-trait = { workspace = true }
-# HTTP without TLS, deliberately: see `docs/decisions/0007-http-client-and-tls.md`.
-# The endpoints this milestone targets are on loopback. Adding a TLS stack for
-# a capability nothing uses yet cost a C crypto library on the build path and a
-# transitive advisory; the decision moves to the milestone that needs it.
+# TLS through the platform's own implementation: Security.framework on macOS,
+# SChannel on Windows, system OpenSSL on Linux. The `rustls` alternatives both
+# put a C crypto build on all three platforms — `aws-lc-sys` by default, and
+# `ring` compiles C and assembly even though it has no `-sys` crate. See
+# `docs/decisions/0009-tls-for-cloud-adapters.md`, which settles what
+# `0007-http-client-and-tls.md` deferred.
 reqwest = { version = "0.13.4", default-features = false, features = [
   "json",
   "stream",
+  "native-tls",
 ] }
 futures-util = "0.3"
 serde = { workspace = true }

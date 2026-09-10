@@ -100,22 +100,7 @@ impl OpenAiCompatibleProvider {
         auth: ProviderAuth,
     ) -> Result<Self, ErrorEnvelope> {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
-        // Refused here, plainly, rather than failing obscurely at the first
-        // request. This build has no TLS stack: the endpoints M5 targets are
-        // on loopback, and the decision to add one belongs to the milestone
-        // that ships a cloud adapter (`docs/decisions/0007-http-client-and-tls.md`).
-        if base_url.starts_with("https://") {
-            return Err(error(
-                ErrorCode::CapabilityUnsupported,
-                "this build reaches http endpoints only; https support arrives with the cloud adapters",
-            ));
-        }
-        if !base_url.starts_with("http://") {
-            return Err(error(
-                ErrorCode::InvalidRequest,
-                format!("model endpoint must be an http URL, got {base_url:?}"),
-            ));
-        }
+        check_endpoint(&base_url)?;
 
         let client = reqwest::Client::builder()
             // Connection setup only. The whole-request bound is the deadline
@@ -221,6 +206,70 @@ fn role_of(role: tramontana_core::contracts::MessageRole) -> &'static str {
 }
 
 /// Build a normalized error.
+/// Refuse an endpoint that would send a credential in the clear.
+///
+/// Plain HTTP is allowed only to loopback. Everything else must be `https://`.
+/// Before TLS existed the restriction was implicit — there was no way to reach
+/// a remote host at all — and now that it exists it has to be enforced rather
+/// than assumed: a key sent to a remote host over plain HTTP is disclosed to
+/// every hop between here and there, and a typo in a configuration field
+/// should not be able to do that quietly
+/// (`docs/decisions/0009-tls-for-cloud-adapters.md`).
+///
+/// # Errors
+///
+/// [`ErrorCode::InvalidRequest`] for a scheme that is neither, or for plain
+/// HTTP to anything but loopback.
+pub(crate) fn check_endpoint(base_url: &str) -> Result<(), ErrorEnvelope> {
+    if base_url.starts_with("https://") {
+        return Ok(());
+    }
+    let Some(rest) = base_url.strip_prefix("http://") else {
+        return Err(error(
+            ErrorCode::InvalidRequest,
+            format!("model endpoint must be an http or https URL, got {base_url:?}"),
+        ));
+    };
+    let host = host_of(rest);
+    if matches!(host, "localhost" | "127.0.0.1" | "::1") {
+        return Ok(());
+    }
+    Err(error(
+        ErrorCode::InvalidRequest,
+        format!(
+            "plain http is allowed only to loopback; use https for {host:?} so \
+             the credential is not sent in the clear"
+        ),
+    ))
+}
+
+/// The host in an authority, with any userinfo, port, and IPv6 brackets gone.
+///
+/// Written out step by step rather than as one expression, because this is the
+/// check that decides whether a credential may travel unencrypted. A parser
+/// that is hard to read is hard to be sure of, and the interesting inputs here
+/// are the adversarial ones: `http://evil.test/@localhost` and
+/// `http://localhost@evil.test/` must not both be read as loopback.
+fn host_of(after_scheme: &str) -> &str {
+    // The authority ends at the first `/`, `?`, or `#`. Anything after that is
+    // path or query and cannot change which host is contacted.
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    // Userinfo comes *before* the last `@` in the authority.
+    let host_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    // An IPv6 literal is bracketed, and only a colon after the closing bracket
+    // is a port separator.
+    if let Some(rest) = host_port.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or_default();
+    }
+    // A bare host has at most one colon, and it introduces the port.
+    host_port.split(':').next().unwrap_or_default()
+}
+
 fn error(code: ErrorCode, message: impl Into<String>) -> ErrorEnvelope {
     ErrorEnvelope::new(code, message, CorrelationId::new("model.openai"))
 }
@@ -543,5 +592,95 @@ fn transport_reason(failure: &reqwest::Error) -> &'static str {
         "sent a truncated body"
     } else {
         "failed"
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "tests assert on known-good literals; a panic is the failure report"
+)]
+mod endpoint_tests {
+    use super::*;
+
+    #[test]
+    fn loopback_may_be_plain_http() {
+        for allowed in [
+            "http://localhost:8080",
+            "http://127.0.0.1:11434",
+            "http://[::1]:1234",
+            "http://localhost",
+            "http://127.0.0.1/v1",
+        ] {
+            assert!(
+                check_endpoint(allowed).is_ok(),
+                "refused loopback: {allowed}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_remote_host_over_plain_http_is_refused() {
+        // The whole point: a credential must not be sent in the clear because
+        // a configuration field had the wrong scheme in it.
+        for refused in [
+            "http://api.openai.com",
+            "http://192.168.1.10:8080",
+            "http://example.test/v1",
+        ] {
+            let error = check_endpoint(refused).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidRequest, "for {refused}");
+            assert!(error.message.contains("loopback"), "{}", error.message);
+        }
+    }
+
+    #[test]
+    fn a_hostname_that_merely_contains_loopback_is_not_loopback() {
+        // `localhost.evil.test` and friends. A `contains` check would pass
+        // these, which is why the host is parsed rather than searched.
+        for refused in [
+            "http://localhost.evil.test",
+            "http://notlocalhost",
+            "http://127.0.0.1.evil.test",
+            "http://evil.test/localhost",
+            "http://evil.test/?h=127.0.0.1",
+            "http://evil.test#localhost",
+        ] {
+            assert!(
+                check_endpoint(refused).is_err(),
+                "accepted a non-loopback host: {refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn userinfo_cannot_disguise_a_remote_host_as_loopback() {
+        // `http://localhost@evil.test/` contacts evil.test. Reading the host
+        // as the text before the `@` would get this exactly backwards.
+        assert!(check_endpoint("http://localhost@evil.test/").is_err());
+        assert!(check_endpoint("http://127.0.0.1:80@evil.test/").is_err());
+        // And the mirror image is genuinely loopback.
+        assert!(check_endpoint("http://user@localhost:8080/").is_ok());
+        assert!(check_endpoint("http://user@evil.test@localhost/").is_ok());
+    }
+
+    #[test]
+    fn https_is_accepted_for_any_host() {
+        assert!(check_endpoint("https://api.anthropic.com").is_ok());
+        assert!(check_endpoint("https://localhost:8443").is_ok());
+    }
+
+    #[test]
+    fn a_scheme_that_is_neither_is_refused() {
+        for refused in [
+            "ftp://example.test",
+            "file:///etc/passwd",
+            "example.test",
+            "",
+        ] {
+            let error = check_endpoint(refused).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidRequest, "for {refused}");
+        }
     }
 }
