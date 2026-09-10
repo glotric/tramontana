@@ -96,6 +96,7 @@ crates/persistence/ SQLite implementation of the local operational plane
 crates/platform/    Paths, clock, identifiers, profile lease, bundle files
 crates/adapters-tools/  Read-only filesystem and Git tools
 crates/adapters-model/  Model provider adapters: chat-completions and Anthropic
+crates/adapters-local/  Supervised local model runtimes (llama.cpp)
 packages/shared/    Generated schemas and TypeScript client types
 xtask/              Repository build tooling; not shipped
 scripts/            Repository checks that are not tests

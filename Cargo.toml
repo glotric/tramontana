@@ -4,6 +4,7 @@ members = [
     "crates/core",
     "crates/adapters-tools",
     "crates/adapters-model",
+    "crates/adapters-local",
     "crates/persistence",
     "crates/platform",
     "apps/cli",
@@ -26,6 +27,7 @@ repository = "https://github.com/glotric/tramontana"
 tramontana-core = { path = "crates/core" }
 tramontana-adapters-tools = { path = "crates/adapters-tools" }
 tramontana-adapters-model = { path = "crates/adapters-model" }
+tramontana-adapters-local = { path = "crates/adapters-local" }
 tramontana-persistence = { path = "crates/persistence" }
 tramontana-platform = { path = "crates/platform" }
 

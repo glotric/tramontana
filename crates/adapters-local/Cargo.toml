@@ -1,0 +1,43 @@
+[package]
+name = "tramontana-adapters-local"
+description = "Supervised local model runtimes. Owns a child process, not a domain rule."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+tramontana-core = { workspace = true }
+reqwest = { version = "0.13.4", default-features = false, features = ["json"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["process", "time", "io-util", "rt", "sync", "net"] }
+tracing = { workspace = true }
+
+# Signalling a process *group* rather than one process, so a runtime that
+# spawns helpers cannot leave them behind. Unix only; the Windows equivalent is
+# a job object and is not built here (see the module documentation).
+#
+# `rustix` rather than `libc` because the workspace forbids `unsafe_code` and
+# means it: this is a safe wrapper over the same syscall, and it is already in
+# the dependency graph. Relaxing the lint for one call would have been the
+# easier change and the wrong one.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", features = ["process"] }
+
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net"] }
+
+# A stand-in for `llama-server`, used by this crate's tests. It is a test
+# fixture rather than a shipped tool: the desktop application packages the
+# Tauri binary and nothing from here.
+[[bin]]
+name = "tramontana-fake-llama-server"
+path = "src/bin/fake_llama_server.rs"
+
+[lints]
+workspace = true

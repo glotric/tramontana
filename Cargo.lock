@@ -5001,6 +5001,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tramontana-adapters-local"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "rustix",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "tramontana-core",
+]
+
+[[package]]
 name = "tramontana-adapters-model"
 version = "0.1.0"
 dependencies = [
