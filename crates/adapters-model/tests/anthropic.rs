@@ -209,7 +209,7 @@ async fn a_system_message_is_hoisted_out_of_the_conversation() {
     assert_eq!(body["system"], "Be brief.");
     assert_eq!(body["messages"].as_array().unwrap().len(), 1);
     assert_eq!(body["messages"][0]["role"], "user");
-    assert_eq!(body["messages"][0]["content"], "Say hello");
+    assert_eq!(body["messages"][0]["content"][0]["text"], "Say hello");
 }
 
 #[tokio::test]

@@ -521,6 +521,7 @@ impl BrokeredHost {
     fn release_refused(&self, error: &ReleaseError) -> ErrorEnvelope {
         let code = match error {
             ReleaseError::Denied { .. } => ErrorCode::PermissionDenied,
+            ReleaseError::InvalidPayload(code) => *code,
             _ => ErrorCode::Internal,
         };
         ErrorEnvelope::new(

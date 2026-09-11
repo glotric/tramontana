@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tramontana_core::contracts::{
     AuthorizedModelRequest, ErrorCode, ErrorEnvelope, Health, ModelCapability, ModelDescriptor,
-    ModelEvent, ModelLocation, ModelRequest, ProviderId, SecretRef, StopReason, Usage,
+    ModelEvent, ModelLocation, ProviderId, SecretRef, StopReason, Usage,
 };
 use tramontana_core::ports::{ModelProvider, SecretResolver};
 
@@ -149,58 +149,6 @@ impl OpenAiCompatibleProvider {
     fn completions_url(&self) -> String {
         format!("{}/v1/chat/completions", self.base_url)
     }
-
-    /// The request body, in the wire format.
-    fn body(&self, request: &ModelRequest) -> serde_json::Value {
-        let messages: Vec<serde_json::Value> = request
-            .messages
-            .iter()
-            .map(|message| {
-                let text: String = message
-                    .parts
-                    .iter()
-                    .filter_map(|part| match part {
-                        tramontana_core::contracts::MessagePart::Text { text } => {
-                            Some(text.as_str())
-                        }
-                        // Tool calls and results reach a model in M6, when a
-                        // worker can produce them. Sending a placeholder now
-                        // would put text in a prompt that no worker wrote.
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                serde_json::json!({ "role": role_of(message.role), "content": text })
-            })
-            .collect();
-
-        let mut body = serde_json::json!({
-            "model": self.descriptor.model_id,
-            "messages": messages,
-            "stream": true,
-            // Asked for explicitly: without it most servers omit usage from a
-            // streamed response, and a cost shown as unknown is worse than one
-            // shown as estimated.
-            "stream_options": { "include_usage": true },
-        });
-        if let Some(limit) = request.limits.max_output_tokens
-            && let Some(object) = body.as_object_mut()
-        {
-            object.insert("max_tokens".to_owned(), limit.into());
-        }
-        body
-    }
-}
-
-/// The wire name for a normalized role.
-fn role_of(role: tramontana_core::contracts::MessageRole) -> &'static str {
-    use tramontana_core::contracts::MessageRole;
-    match role {
-        MessageRole::System => "system",
-        MessageRole::User => "user",
-        MessageRole::Assistant => "assistant",
-        MessageRole::Tool => "tool",
-    }
 }
 
 #[async_trait]
@@ -222,12 +170,15 @@ impl ModelProvider for OpenAiCompatibleProvider {
         // sent was decided in the core; an adapter that could widen the
         // request would make the disclosure a description of something else.
         let request = authorized.request();
+        tramontana_core::services::validate_model_capabilities(request, &self.descriptor)?;
+        let names = crate::request::WireNames::new(request);
+        let body = crate::request::openai_body(request, &self.descriptor.model_id, &names)?;
         let mut builder = self
             .client
             .post(self.completions_url())
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
-            .json(&self.body(request));
+            .json(&body);
 
         // Resolved here and moved into the header. It is never stored on the
         // provider, never in the URL, and never in a process argument.
@@ -247,7 +198,10 @@ impl ModelProvider for OpenAiCompatibleProvider {
         tokio::spawn(async move {
             let outcome = pump(
                 builder,
-                &ChatCompletions,
+                &crate::request::NamedWire {
+                    format: ChatCompletions,
+                    names,
+                },
                 &stream_id,
                 deadline,
                 &cancel,

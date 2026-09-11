@@ -24,9 +24,8 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tramontana_core::contracts::{
-    AuthorizedModelRequest, ErrorCode, ErrorEnvelope, Health, MessagePart, MessageRole,
-    ModelCapability, ModelDescriptor, ModelEvent, ModelLocation, ModelRequest, ProviderId,
-    SecretRef, StopReason, Usage,
+    AuthorizedModelRequest, ErrorCode, ErrorEnvelope, Health, ModelCapability, ModelDescriptor,
+    ModelEvent, ModelLocation, ProviderId, SecretRef, StopReason, Usage,
 };
 use tramontana_core::ports::{ModelProvider, SecretResolver};
 
@@ -142,60 +141,6 @@ impl AnthropicProvider {
     fn messages_url(&self) -> String {
         format!("{}/v1/messages", self.base_url)
     }
-
-    /// The request body, in Anthropic's shape.
-    fn body(&self, request: &ModelRequest) -> serde_json::Value {
-        // System content is hoisted out of the conversation. Leaving it as a
-        // `system`-role message is a request error, and silently relabelling
-        // it `user` would change what the model was told.
-        let mut system = Vec::new();
-        let mut messages = Vec::new();
-
-        for message in &request.messages {
-            let text: String = message
-                .parts
-                .iter()
-                .filter_map(|part| match part {
-                    MessagePart::Text { text } => Some(text.as_str()),
-                    // Tool calls and results reach a model in M6, when a
-                    // worker can produce them.
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            match message.role {
-                MessageRole::System => system.push(text),
-                // A tool result has no home in this shape until M6 gives it
-                // one; treating it as user text would put a tool's output in
-                // the conversation as though a person had typed it.
-                MessageRole::Tool => {}
-                MessageRole::User => {
-                    messages.push(serde_json::json!({ "role": "user", "content": text }));
-                }
-                MessageRole::Assistant => {
-                    messages.push(serde_json::json!({ "role": "assistant", "content": text }));
-                }
-            }
-        }
-
-        let mut body = serde_json::json!({
-            "model": self.descriptor.model_id,
-            "messages": messages,
-            "stream": true,
-            // Required by the API, with no server-side default.
-            "max_tokens": request
-                .limits
-                .max_output_tokens
-                .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
-        });
-        if !system.is_empty()
-            && let Some(object) = body.as_object_mut()
-        {
-            object.insert("system".to_owned(), system.join("\n\n").into());
-        }
-        body
-    }
 }
 
 #[async_trait]
@@ -214,6 +159,14 @@ impl ModelProvider for AnthropicProvider {
         cancel: CancellationToken,
     ) -> Result<mpsc::Receiver<ModelEvent>, ErrorEnvelope> {
         let request = authorized.request();
+        tramontana_core::services::validate_model_capabilities(request, &self.descriptor)?;
+        let names = crate::request::WireNames::new(request);
+        let body = crate::request::anthropic_body(
+            request,
+            &self.descriptor.model_id,
+            DEFAULT_MAX_OUTPUT_TOKENS,
+            &names,
+        )?;
 
         // Resolved here and moved straight into the header: never a field on
         // the provider, never a URL, never a process argument.
@@ -225,14 +178,25 @@ impl ModelProvider for AnthropicProvider {
             .header("accept", "text/event-stream")
             .header("anthropic-version", API_VERSION)
             .header("x-api-key", key)
-            .json(&self.body(request));
+            .json(&body);
 
         let stream_id = request.request_id.clone();
         let deadline = Duration::from_millis(request.limits.deadline_ms);
         let (sender, receiver) = mpsc::channel(32);
 
         tokio::spawn(async move {
-            let outcome = pump(builder, &Messages, &stream_id, deadline, &cancel, &sender).await;
+            let outcome = pump(
+                builder,
+                &crate::request::NamedWire {
+                    format: Messages,
+                    names,
+                },
+                &stream_id,
+                deadline,
+                &cancel,
+                &sender,
+            )
+            .await;
             let _ = sender.send(outcome).await;
         });
 
