@@ -671,7 +671,11 @@ impl ModelProvider for CloudEndpoint {
             model_id: "gpt-oss".to_owned(),
             display_name: "gpt-oss".to_owned(),
             location: ModelLocation::Cloud,
-            capabilities: vec![ModelCapability::Text, ModelCapability::Streaming],
+            capabilities: vec![
+                ModelCapability::Text,
+                ModelCapability::Streaming,
+                ModelCapability::Cancellation,
+            ],
             context_limit: None,
             health: Health::Available,
             health_reason_code: None,
@@ -681,12 +685,20 @@ impl ModelProvider for CloudEndpoint {
     async fn stream(
         &self,
         request: AuthorizedModelRequest,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<mpsc::Receiver<ModelEvent>, ErrorEnvelope> {
         self.reached.fetch_add(1, Ordering::SeqCst);
         let (sender, receiver) = mpsc::channel(4);
         let stream_id = request.request().request_id.clone();
         tokio::spawn(async move {
+            if cancel.is_cancelled() {
+                let _ = sender
+                    .send(ModelEvent::Completed {
+                        stop_reason: StopReason::Cancelled,
+                    })
+                    .await;
+                return;
+            }
             let _ = sender
                 .send(ModelEvent::TextDelta {
                     stream_id,

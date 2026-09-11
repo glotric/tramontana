@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+mod model;
+
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
@@ -150,7 +152,6 @@ impl TaskDriver {
         // task was interrupted, and routing against a stale manifest would
         // describe a release that did not happen.
         let mut context: Option<ContextManifest> = None;
-        let mut route: Option<RoutingDecision> = None;
 
         // Each step checks cancellation first. A cancel that arrives before the
         // task really starts still produces a proper Cancelling -> Cancelled
@@ -198,10 +199,7 @@ impl TaskDriver {
                     Err(error) => Err(error),
                 },
                 TaskState::Routing => match self.record_route(context.as_ref()).await {
-                    Ok(decision) => {
-                        route = Some(decision);
-                        Ok(())
-                    }
+                    Ok(_) => Ok(()),
                     Err(error) => Err(error),
                 },
                 _ => Ok(()),
@@ -247,12 +245,10 @@ impl TaskDriver {
             journal: self.journal.clone(),
             models: self.providers.models.clone(),
             releases: Arc::clone(&self.providers.releases),
-            // The assembled context and the decision that chose a destination,
-            // held whole rather than by identifier: the release plan is
-            // derived from both, and a host that carried only an identifier
-            // would have to look them up to say what it was sending.
+            // Initial provenance constrains what a worker may request. The
+            // model host prepares and routes each actual call independently.
             context: context.clone(),
-            route: route.clone(),
+            model_gate: tokio::sync::Mutex::new(()),
             routing_mode: self.routing_mode,
             scope: self.scope.clone(),
             tools: ToolBroker {
@@ -504,8 +500,8 @@ struct BrokeredHost {
     releases: Arc<ReleaseManager>,
     /// The context assembled for this task.
     context: Option<ContextManifest>,
-    /// The decision that chose where it goes.
-    route: Option<RoutingDecision>,
+    /// Serialize requests so approvals and model starts cannot overlap per host.
+    model_gate: tokio::sync::Mutex<()>,
     /// The standing policy in force.
     routing_mode: RoutingMode,
     /// The limits this task runs under.
@@ -591,221 +587,7 @@ impl WorkerHost for BrokeredHost {
         prompt: &str,
         cancel: &CancellationToken,
     ) -> Result<String, ErrorEnvelope> {
-        // One identifier for the request, the stream, and the frames it
-        // publishes, so a delta can be tied back to the `modelStarted` event
-        // without anyone inventing a second name for the same thing.
-        let stream_id = format!("stream-{}", self.journal.task_id());
-
-        // Fail closed. A model call with no assembled context and no routing
-        // decision is one that cannot be disclosed, so it does not happen.
-        let (Some(manifest), Some(decision)) = (self.context.as_ref(), self.route.as_ref()) else {
-            return Err(ErrorEnvelope::new(
-                ErrorCode::PermissionDenied,
-                "a model request needs an assembled context and a routing decision",
-                self.journal.correlation_id().clone(),
-            ));
-        };
-
-        let mut request = ModelRequest::new(
-            stream_id.clone(),
-            self.journal.task_id().clone(),
-            vec![NormalizedMessage::text(
-                MessageId::new(self.journal.next_id("message")),
-                self.journal.conversation_id().cloned(),
-                MessageRole::User,
-                self.journal.now(),
-                prompt,
-            )],
-            // The release this request was built from. There is no fallback
-            // value: a request that cannot name the context it came from is
-            // one nobody can describe, and describing it is the whole job of
-            // the boundary below. A resumed run that skipped preparation used
-            // to reach here and record `context.unavailable`; now it cannot
-            // reach here at all.
-            manifest.context_manifest_id.clone(),
-        );
-        // What is being sent, for routing and disclosure. Everything a task
-        // carries today is derived from an opened project.
-        request.data_classes = vec![DataClass::Project];
-
-        // Nothing reaches a provider without a release decision. For a local
-        // destination that costs a record and no question; for a cloud one it
-        // is the disclosure and the approval
-        // (`SECURITY_AND_PERMISSIONS.md` §8).
-        let authorized = self
-            .releases
-            .authorize(
-                self.journal.next_id("release"),
-                request,
-                &ReleaseContext {
-                    manifest,
-                    decision,
-                    mode: self.routing_mode,
-                    scope: &self.scope,
-                },
-                self.journal.now(),
-            )
-            .await
-            .map_err(|error| self.release_refused(&error))?;
-
-        // Recorded before the request goes, not after: if the process dies
-        // mid-stream the record still says what left the device.
-        self.journal
-            .append(EventDraft::user(
-                TaskEventKind::ContextReleased,
-                EventPayload::ContextReleased {
-                    plan: Box::new(authorized.plan().clone()),
-                },
-            ))
-            .await?;
-
-        // Only now is it true that a model request has started. Emitted by the
-        // host rather than the worker, and after the release rather than
-        // before it, so a refused release cannot leave a record saying a model
-        // ran (`CORE_CONTRACTS.md` §5.1).
-        self.journal
-            .append(EventDraft::user(
-                TaskEventKind::ModelStarted,
-                EventPayload::ModelStarted {
-                    stream_id: stream_id.clone(),
-                    model_id: decision.model.model_id.clone(),
-                },
-            ))
-            .await?;
-
-        // The provider the decision named, not "the" provider. Failing
-        // closed here keeps the audit record and the execution from coming
-        // apart: a stream served by something other than the model the
-        // release plan discloses would make the disclosure describe a
-        // different act.
-        let provider = self
-            .models
-            .iter()
-            .find(|provider| provider.id().to_string() == decision.model.provider_id)
-            .ok_or_else(|| {
-                ErrorEnvelope::new(
-                    ErrorCode::ProviderUnavailable,
-                    format!(
-                        "no configured provider offers {:?}; the routing decision named one that is gone",
-                        decision.model.provider_id
-                    ),
-                    self.journal.correlation_id().clone(),
-                )
-            })?;
-
-        let deadline = tokio::time::Instant::now()
-            + std::time::Duration::from_millis(authorized.request().limits.deadline_ms);
-        let model_cancel = cancel.child_token();
-        let _cancel_on_drop = model_cancel.clone().drop_guard();
-        let mut stream = tokio::select! {
-            biased;
-            () = cancel.cancelled() => return Err(ErrorEnvelope::new(
-                ErrorCode::Cancelled, "Model request cancelled", self.journal.correlation_id().clone())),
-            () = tokio::time::sleep_until(deadline) => return Err(ErrorEnvelope::new(
-                ErrorCode::Timeout, "Model request deadline exceeded", self.journal.correlation_id().clone())),
-            result = provider.stream(authorized, model_cancel.clone()) => result?,
-        };
-
-        // Deltas are coalesced here and committed once. Persisting every token
-        // would make the durable stream enormous and tell the reader nothing
-        // the final message does not (`CORE_CONTRACTS.md` §5).
-        let mut turn = ModelTurnAccumulator::new(
-            stream_id.clone(),
-            self.journal.correlation_id().clone(),
-            ModelTurnLimits::default(),
-        );
-        let mut failure = None;
-        loop {
-            let event = tokio::select! {
-                biased;
-                () = cancel.cancelled() => {
-                    failure = Some(ErrorEnvelope::new(ErrorCode::Cancelled,
-                        "Model request cancelled", self.journal.correlation_id().clone()));
-                    break;
-                }
-                () = tokio::time::sleep_until(deadline) => {
-                    failure = Some(ErrorEnvelope::new(ErrorCode::Timeout,
-                        "Model request deadline exceeded", self.journal.correlation_id().clone()));
-                    break;
-                }
-                event = stream.recv() => event,
-            };
-            let Some(event) = event else { break };
-            let offset = turn.text().len() as u64;
-            if let Err(error) = turn.push(&event) {
-                failure = Some(error);
-                break;
-            }
-            if let ModelEvent::TextDelta { text, .. } = event {
-                self.journal.publish_frame(StreamFrame {
-                    stream_id: stream_id.clone(),
-                    offset,
-                    text,
-                });
-            }
-        }
-        let answer = turn.text().to_owned();
-        let result = turn.finish();
-        let stop_reason = result.as_ref().ok().map(|turn| turn.stop_reason);
-        if failure.is_none() {
-            failure = result.err();
-        }
-
-        // The frames are gone the moment they are delivered. Committing the
-        // coalesced answer is what puts the model's reply in the durable
-        // record at all — without it an exported task shows that a model was
-        // asked and never what it said (`CORE_CONTRACTS.md` §5).
-        let status = match (stop_reason, &failure) {
-            (Some(StopReason::Stop), None) => MessageStatus::Committed,
-            // Cut short: the content up to that point is kept and marked, so a
-            // reader can tell a finished answer from a truncated one.
-            _ => MessageStatus::Partial,
-        };
-        let mut message = NormalizedMessage::text(
-            MessageId::new(self.journal.next_id("message")),
-            self.journal.conversation_id().cloned(),
-            MessageRole::Assistant,
-            self.journal.now(),
-            answer.clone(),
-        );
-        message.task_id = Some(self.journal.task_id().clone());
-        message.status = status;
-
-        self.journal
-            .append(EventDraft::user(
-                TaskEventKind::MessageCommitted,
-                EventPayload::MessageCommitted { message },
-            ))
-            .await?;
-
-        if let Some(error) = failure {
-            return Err(error);
-        }
-        // The legacy fake worker asks for text, not model-selected tools. Do
-        // not turn a tool request or truncated answer into apparent success.
-        let refusal = match stop_reason {
-            Some(StopReason::Stop) => None,
-            Some(StopReason::ToolCall) => Some((
-                ErrorCode::CapabilityUnsupported,
-                "This worker does not support model-selected tool calls",
-            )),
-            Some(StopReason::Length) => {
-                Some((ErrorCode::LimitExceeded, "Model output limit reached"))
-            }
-            Some(StopReason::Cancelled) => Some((ErrorCode::Cancelled, "Model request cancelled")),
-            None => Some((
-                ErrorCode::ProtocolError,
-                "Model stream ended without an outcome",
-            )),
-        };
-        if let Some((code, message)) = refusal {
-            return Err(ErrorEnvelope::new(
-                code,
-                message,
-                self.journal.correlation_id().clone(),
-            ));
-        }
-        Ok(answer)
+        self.run_model_request(prompt, cancel).await
     }
 
     async fn call_tool_step(

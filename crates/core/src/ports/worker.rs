@@ -61,6 +61,11 @@ pub trait WorkerHost: Send + Sync {
 
     /// Ask the core to run a model request on the worker's behalf.
     ///
+    /// This legacy text path accepts only the task's initially included goal.
+    /// Each call prepares, routes and authorizes independently; a worker may
+    /// not concatenate new context or tool output into `prompt`. Structured
+    /// history requires the forthcoming host-owned tool-history path.
+    ///
     /// # Errors
     ///
     /// Returns a normalized error when routing, the provider, or cancellation

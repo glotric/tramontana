@@ -81,6 +81,8 @@ temp/
 .tramontana-local/
 data/
 runtime/
+# Core runtime source modules are not local application data.
+!/crates/core/src/services/runtime/
 logs/
 diagnostics/
 *.sqlite
