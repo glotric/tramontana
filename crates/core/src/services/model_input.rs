@@ -176,7 +176,22 @@ pub fn validate_model_capabilities(
     request: &ModelRequest,
     descriptor: &ModelDescriptor,
 ) -> Result<(), ErrorEnvelope> {
+    for capability in required_model_capabilities(request)? {
+        if !descriptor.capabilities.contains(&capability) {
+            return Err(error(
+                ErrorCode::CapabilityUnsupported,
+                "Selected model lacks a required capability",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn required_model_capabilities(
+    request: &ModelRequest,
+) -> Result<Vec<ModelCapability>, ErrorEnvelope> {
     validate_model_input(request)?;
+    let mut capabilities = Vec::new();
     let uses_tools = !request.tools.is_empty()
         || request.messages.iter().any(|message| {
             message.parts.iter().any(|part| {
@@ -186,15 +201,8 @@ pub fn validate_model_capabilities(
                 )
             })
         });
-    if uses_tools
-        && !descriptor
-            .capabilities
-            .contains(&ModelCapability::ToolCalls)
-    {
-        return Err(error(
-            ErrorCode::CapabilityUnsupported,
-            "Selected model has no verified tool-call capability",
-        ));
+    if uses_tools {
+        capabilities.push(ModelCapability::ToolCalls);
     }
     for required in &request.required_capabilities {
         let capability = match required.as_str() {
@@ -209,14 +217,11 @@ pub fn validate_model_capabilities(
                 ));
             }
         };
-        if !descriptor.capabilities.contains(&capability) {
-            return Err(error(
-                ErrorCode::CapabilityUnsupported,
-                "Selected model lacks a required capability",
-            ));
+        if !capabilities.contains(&capability) {
+            capabilities.push(capability);
         }
     }
-    Ok(())
+    Ok(capabilities)
 }
 
 /// Content units used by disclosure. Text keeps its existing hash convention;
