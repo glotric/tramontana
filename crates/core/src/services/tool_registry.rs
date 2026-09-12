@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::contracts::{Capability, RiskClass, ToolDescriptor};
@@ -33,6 +33,12 @@ pub enum RegistryError {
         /// The offending identifier.
         tool_id: String,
     },
+    /// Descriptor ownership does not match the supplying provider.
+    #[error("tool `{tool_id}` declares a different provider")]
+    ProviderMismatch {
+        /// The rejected tool.
+        tool_id: String,
+    },
 }
 
 /// A tool and the provider that implements it.
@@ -55,10 +61,12 @@ impl std::fmt::Debug for RegisteredTool {
 /// The single place a tool can be found.
 ///
 /// `ARCHITECTURE.md` §6.4: the registry merges built-in and MCP tools,
-/// namespaces their identifiers, rejects collisions and invalid schemas,
+/// namespaces their identifiers, rejects collisions and false ownership,
 /// resolves a tool to its provider, and attaches risk metadata — and
 /// **does not grant permissions**. Registration says a tool exists. Only
-/// `PermissionManager` says it may run.
+/// `PermissionManager` says it may run. Model catalogue selection additionally
+/// checks bounded object-shaped schemas; full argument-schema validation is
+/// still an execution-boundary responsibility.
 #[derive(Debug, Default)]
 pub struct ToolRegistry {
     tools: HashMap<String, RegisteredTool>,
@@ -82,9 +90,21 @@ impl ToolRegistry {
     /// [`RegistryError`] describing the first tool that could not be accepted.
     pub fn register(&mut self, provider: Arc<dyn ToolProvider>) -> Result<(), RegistryError> {
         let descriptors = provider.list_tools();
+        let mut offered = HashSet::new();
 
         for descriptor in &descriptors {
             validate_id(&descriptor.tool_id)?;
+            if descriptor.provider_id != provider.id().as_str() {
+                return Err(RegistryError::ProviderMismatch {
+                    tool_id: descriptor.tool_id.clone(),
+                });
+            }
+            if !offered.insert(&descriptor.tool_id) {
+                return Err(RegistryError::DuplicateTool {
+                    tool_id: descriptor.tool_id.clone(),
+                    existing_provider: descriptor.provider_id.clone(),
+                });
+            }
             if descriptor.capability.trim().is_empty() {
                 return Err(RegistryError::MissingCapability {
                     tool_id: descriptor.tool_id.clone(),

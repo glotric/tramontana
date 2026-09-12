@@ -235,7 +235,7 @@ fn text_has_secret(text: &str) -> bool {
     redact(text).text != text
 }
 
-fn json_has_secret(value: &serde_json::Value) -> bool {
+pub(crate) fn json_has_secret(value: &serde_json::Value) -> bool {
     // Depth/count are already bounded. Scan semantic strings, not escaped
     // JSON, so nested credentials cannot hide behind JSON framing.
     match value {

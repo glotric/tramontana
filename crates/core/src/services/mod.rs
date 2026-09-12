@@ -13,7 +13,9 @@ mod checkpoint;
 mod export;
 mod handoff;
 mod journal;
+mod model_catalogue;
 mod model_context;
+mod model_history;
 mod model_input;
 mod model_turn;
 mod permission_manager;
@@ -37,9 +39,11 @@ pub use export::{
 };
 pub use handoff::build_handoff;
 pub use journal::{JournalPorts, TaskJournal};
+pub use model_catalogue::ModelToolCatalogue;
 pub use model_context::{
     ModelContentProvenance, ModelContextInput, PreparedModelContext, prepare_model_context,
 };
+pub use model_history::CanonicalModelHistory;
 pub use model_input::{
     MODEL_INPUT_BYTES, model_input_content, validate_model_capabilities, validate_model_input,
 };

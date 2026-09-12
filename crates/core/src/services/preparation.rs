@@ -37,7 +37,7 @@ pub fn assemble_context(
     // nothing left to find, and the manifest would say a credential-free goal
     // had always been credential-free.
     debug_assert!(
-        !crate::services::carries_credential(goal),
+        crate::services::redact(goal).text == goal,
         "the goal reached context assembly without being redacted at ingestion"
     );
     let mut sources = vec![ContextSource::redacted(

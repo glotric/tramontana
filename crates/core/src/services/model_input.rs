@@ -270,7 +270,7 @@ fn identity(value: &str) -> Result<(), ErrorEnvelope> {
     Ok(())
 }
 
-fn json_limits(value: &serde_json::Value) -> Result<(), ErrorEnvelope> {
+pub(crate) fn json_limits(value: &serde_json::Value) -> Result<(), ErrorEnvelope> {
     let mut stack = vec![(value, 0)];
     let mut visited = 0usize;
     while let Some((value, depth)) = stack.pop() {
@@ -297,6 +297,11 @@ fn json_limits(value: &serde_json::Value) -> Result<(), ErrorEnvelope> {
         }
     }
     Ok(())
+}
+
+pub(crate) fn input_size(value: &impl serde::Serialize) -> Result<(), ErrorEnvelope> {
+    serde_json::to_writer(ByteBudget(MODEL_INPUT_BYTES), value)
+        .map_err(|_| error(ErrorCode::LimitExceeded, "Model input byte limit exceeded"))
 }
 
 struct ByteBudget(usize);
