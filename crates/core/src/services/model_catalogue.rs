@@ -62,6 +62,7 @@ impl ModelToolCatalogue {
                 return Err(error(ErrorCode::InvalidRequest));
             }
             model_input::json_limits(&descriptor.input_schema)?;
+            super::ToolInputSchema::compile(&descriptor.input_schema)?;
             descriptors.push(descriptor);
         }
         // Bound the entire selection before copying untrusted descriptions/schemas.

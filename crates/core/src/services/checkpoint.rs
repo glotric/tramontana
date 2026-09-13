@@ -187,7 +187,12 @@ pub fn derive_state(events: &[EventEnvelope]) -> DerivedState {
                 );
             }
             EventPayload::MessageCommitted { message }
-                if message.status == crate::contracts::MessageStatus::Committed =>
+                if message.status == crate::contracts::MessageStatus::Committed
+                    && message.role == crate::contracts::MessageRole::Assistant
+                    && message
+                        .parts
+                        .iter()
+                        .any(|part| matches!(part, crate::contracts::MessagePart::Text { .. })) =>
             {
                 pending.retain(|_, action| action.kind != PendingActionKind::Model);
             }

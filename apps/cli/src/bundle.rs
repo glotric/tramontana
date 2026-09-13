@@ -49,7 +49,7 @@ struct ExportArgs {
     #[arg(long)]
     include_absolute_paths: bool,
 
-    /// Keep unredacted tool output, which can contain file contents.
+    /// Keep raw tool arguments and results, which can contain project/file contents.
     #[arg(long)]
     include_raw_tool_output: bool,
 

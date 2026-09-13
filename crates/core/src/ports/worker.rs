@@ -79,6 +79,9 @@ pub trait WorkerHost: Send + Sync {
     /// Run a stable logical step. Reusing an ID with changed arguments is refused.
     /// A completed step returns a safe summary with `skipped: true`, not its raw
     /// historical output. Workers must not treat that summary as raw tool data.
+    /// Arguments pass the core's supported schema subset before approval or
+    /// execution. The host records canonical call/result messages, including
+    /// bounded/redacted content and explicit failure results, for new attempts.
     async fn call_tool_step(
         &self,
         step_id: &str,

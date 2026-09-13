@@ -29,6 +29,7 @@ mod task_export;
 mod task_recovery;
 mod task_service;
 mod tool_registry;
+mod tool_schema;
 
 pub use checkpoint::{
     DerivedState, ResumePlan, derive_checkpoint, derive_state, reason as checkpoint_reason,
@@ -61,3 +62,4 @@ pub use routing::{
 pub use task_export::ImportSummary;
 pub use task_service::{Providers, Repositories, StartTaskRequest, TaskService};
 pub use tool_registry::{RegisteredTool, RegistryError, ToolRegistry};
+pub use tool_schema::{TOOL_INPUT_BYTES, ToolInputSchema};

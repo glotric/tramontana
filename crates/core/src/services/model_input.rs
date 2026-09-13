@@ -300,7 +300,14 @@ pub(crate) fn json_limits(value: &serde_json::Value) -> Result<(), ErrorEnvelope
 }
 
 pub(crate) fn input_size(value: &impl serde::Serialize) -> Result<(), ErrorEnvelope> {
-    serde_json::to_writer(ByteBudget(MODEL_INPUT_BYTES), value)
+    bounded_size(value, MODEL_INPUT_BYTES)
+}
+
+pub(crate) fn bounded_size(
+    value: &impl serde::Serialize,
+    limit: usize,
+) -> Result<(), ErrorEnvelope> {
+    serde_json::to_writer(ByteBudget(limit), value)
         .map_err(|_| error(ErrorCode::LimitExceeded, "Model input byte limit exceeded"))
 }
 

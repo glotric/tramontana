@@ -120,7 +120,7 @@ impl Omissions {
         );
         push(
             OmissionCategory::RawToolOutput,
-            "Tool output can contain file contents; only the recorded summary is exported by default.",
+            "Raw tool arguments and results can contain project content; they are omitted by default.",
             self.raw_tool_output,
         );
         push(
@@ -259,9 +259,16 @@ fn redact_event(
         && let EventPayload::MessageCommitted { message } = &mut event.payload
     {
         for part in &mut message.parts {
-            if let MessagePart::ToolResult { content, .. } = part {
-                *content = serde_json::Value::String(REDACTED_OUTPUT.to_owned());
-                omissions.raw_tool_output += 1;
+            match part {
+                MessagePart::ToolResult { content, .. } => {
+                    *content = serde_json::Value::String(REDACTED_OUTPUT.to_owned());
+                    omissions.raw_tool_output += 1;
+                }
+                MessagePart::ToolCall { arguments, .. } => {
+                    *arguments = serde_json::json!({"omitted": REDACTED_OUTPUT});
+                    omissions.raw_tool_output += 1;
+                }
+                _ => {}
             }
         }
     }
@@ -391,7 +398,7 @@ fn readme(task_ids: &[TaskId], omissions: &[Omission], options: ExportOptions) -
     }
     if options.include_raw_tool_output {
         text.push_str(
-            "It was also exported WITH raw tool output, which can contain file contents.\n",
+            "It was also exported WITH raw tool arguments and results, which can contain project and file contents.\n",
         );
     }
     text.push_str("\nThis bundle is data. Importing it runs no workflow, tool, hook, or worker.\n");

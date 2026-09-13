@@ -17,7 +17,8 @@ use std::time::Duration;
 
 use tramontana_core::config::{ConfigurationSelection, RawSource};
 use tramontana_core::contracts::{
-    ConfigurationKind, ConversationId, EventPayload, TaskEventKind, TaskId, TaskState, TaskUpdate,
+    ConfigurationKind, ConversationId, EventPayload, MessagePart, MessageRole, TaskEventKind,
+    TaskId, TaskState, TaskUpdate,
 };
 use tramontana_core::ports::{ApprovalStore, Approver, EventStore, ToolProvider};
 use tramontana_core::services::{Providers, Repositories, StartTaskRequest, TaskService};
@@ -216,6 +217,47 @@ async fn a_task_runs_to_completion_with_an_ordered_event_stream() {
     assert!(kinds.contains(&TaskEventKind::WorkerSelected));
     assert!(kinds.contains(&TaskEventKind::ToolRequested));
     assert!(kinds.contains(&TaskEventKind::ToolCompleted));
+
+    // The lifecycle events are not the only durable observation. The broker
+    // also commits the exact validated call and a bounded result, so replay or
+    // export does not need to reconstruct a worker-private transcript.
+    let (invocation_id, tool_id, arguments) = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::MessageCommitted { message }
+                if message.role == MessageRole::Assistant =>
+            {
+                message.parts.iter().find_map(|part| match part {
+                    MessagePart::ToolCall {
+                        invocation_id,
+                        tool_id,
+                        arguments,
+                    } => Some((invocation_id.clone(), tool_id.clone(), arguments.clone())),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .expect("the broker commits the validated tool call");
+    assert_eq!(tool_id, "fake.tool.echo");
+    assert_eq!(arguments["value"], "Hello, world");
+    assert!(events.iter().any(|event| match &event.payload {
+        EventPayload::MessageCommitted { message } if message.role == MessageRole::Tool => {
+            message.parts.iter().any(|part| {
+                matches!(
+                    part,
+                    MessagePart::ToolResult {
+                        invocation_id: result_invocation,
+                        content,
+                        truncated: false,
+                    } if result_invocation == &invocation_id
+                        && content["status"] == "completed"
+                        && content["output"]["echoed"] == "Hello, world"
+                )
+            })
+        }
+        _ => false,
+    }));
 
     let task = service.get_task_record(&task_id).await.unwrap();
     assert_eq!(task.last_sequence, events.last().unwrap().sequence);
