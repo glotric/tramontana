@@ -110,7 +110,10 @@ const CREDENTIAL_NAMES: &[&str] = &[
 ///
 /// Idempotent: redacting already-redacted text changes nothing and reports
 /// nothing, so a value cannot pick up a second reason code by passing through
-/// twice.
+/// twice. Every rule leaves its own placeholder alone. This was documented
+/// long before it was true — only the provider-key rule held it, and the
+/// header, assignment, and URL rules re-fired on `[redacted]` — which made
+/// [`carries_credential`] answer yes for text that was already safe.
 #[must_use]
 pub fn redact(text: &str) -> Redacted {
     let mut codes = Vec::new();
@@ -191,7 +194,10 @@ fn remove_authorization_headers(text: &str, codes: &mut Vec<String>) -> String {
         let lowered = line.to_ascii_lowercase();
         let marker = lowered.find("authorization:")?;
         let value_start = marker + "authorization:".len();
-        if line[value_start..].trim().is_empty() {
+        let value = line[value_start..].trim();
+        // Already this rule's own output. Re-reporting it would claim a second
+        // credential was removed where there was none.
+        if value.is_empty() || value == PLACEHOLDER {
             return None;
         }
         Some((
@@ -224,7 +230,8 @@ fn remove_credential_assignments(text: &str, codes: &mut Vec<String>) -> String 
         {
             return None;
         }
-        if line[separator + 1..].trim().is_empty() {
+        let value = line[separator + 1..].trim().trim_matches(['"', '\'', ',']);
+        if value.is_empty() || value == PLACEHOLDER {
             return None;
         }
         // The separator is preserved, so a redacted JSON line still reads as
@@ -259,6 +266,11 @@ fn remove_url_credentials(text: &str, codes: &mut Vec<String>) -> String {
         };
         if userinfo.contains('/') || userinfo.contains(' ') {
             break;
+        }
+        if &userinfo[colon + 1..] == PLACEHOLDER {
+            out.push_str(&rest[..scheme + 3 + at + 1]);
+            rest = &after[at + 1..];
+            continue;
         }
         out.push_str(&rest[..scheme + 3]);
         out.push_str(&userinfo[..=colon]);
@@ -443,6 +455,46 @@ mod tests {
         assert_eq!(result.text, "before\n[redacted]\nafter");
         assert!(!result.text.contains("MIIEow"));
         assert_eq!(result.reason_codes, vec![reason::PRIVATE_KEY_BLOCK]);
+    }
+
+    #[test]
+    fn every_rule_leaves_its_own_placeholder_alone() {
+        // The earlier idempotence test covered one rule. The others re-fired on
+        // their own output: `NAME=[redacted]` still has a credential name and a
+        // non-empty value, so a second pass reported a code for nothing.
+        for input in [
+            "Authorization: Bearer abc123def456",
+            "OPENAI_API_KEY=sk-notreal",
+            "password = hunter2",
+            "  \"apiKey\": \"abcdef\"",
+            "client_secret: abc123",
+            "clone https://gasper:hunter2@git.example.com/repo.git now",
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----",
+            OPENAI_KEY,
+        ] {
+            let once = redact(input);
+            assert!(once.changed(), "nothing was redacted in {input:?}");
+            let twice = redact(&once.text);
+            assert_eq!(twice.text, once.text, "second pass rewrote {input:?}");
+            assert!(
+                !twice.changed(),
+                "second pass over {input:?} reported {:?}",
+                twice.reason_codes
+            );
+        }
+    }
+
+    #[test]
+    fn already_redacted_text_is_not_mistaken_for_a_credential() {
+        // `carries_credential` is the check a boundary makes. Answering yes for
+        // text that is already safe would refuse work that should be allowed.
+        for redacted in [
+            "OPENAI_API_KEY=[redacted]",
+            "Authorization: [redacted]",
+            "https://gasper:[redacted]@git.example.com/repo.git",
+        ] {
+            assert!(!carries_credential(redacted), "{redacted}");
+        }
     }
 
     #[test]
