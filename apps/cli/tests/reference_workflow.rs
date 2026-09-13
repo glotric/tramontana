@@ -102,6 +102,13 @@ fn configured_reference_worker_reads_a_repository_and_reopens_its_checkpoint() {
                     Err(error) => panic!("{error}"),
                 }
             };
+            // On macOS an accepted socket inherits the listener's non-blocking
+            // mode, so without this `read` can return `WouldBlock` before the
+            // CLI's request has arrived — a load-dependent failure that took
+            // down a full local check. The listener itself stays non-blocking:
+            // the assertion before this thread relies on it to prove that no
+            // request was made while the capability was unknown.
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
