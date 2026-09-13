@@ -247,39 +247,50 @@ fn remove_credential_assignments(text: &str, codes: &mut Vec<String>) -> String 
     })
 }
 
-/// Replace the password in `scheme://user:password@host`.
+/// Replace the password in `scheme://user:password@host`, in every URL.
+///
+/// Two bugs lived in the first version. It searched for the next `@` anywhere
+/// in the text, so an email address later in a sentence was read as the end of
+/// an earlier URL's userinfo — and when that span held a `/`, it gave up and
+/// appended the rest of the text unscanned. And after redacting one URL it
+/// appended the remainder unscanned too. Either way, a second credential URL
+/// in the same text kept its password.
+///
+/// Userinfo can only occur inside the authority, so the search is bounded by
+/// it, and scanning resumes after every authority.
 fn remove_url_credentials(text: &str, codes: &mut Vec<String>) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
 
     while let Some(scheme) = rest.find("://") {
-        let after = &rest[scheme + 3..];
-        // Userinfo ends at the first `@`, and cannot span past the authority.
-        let Some(at) = after.find('@') else {
-            break;
-        };
-        let userinfo = &after[..at];
-        let Some(colon) = userinfo.find(':') else {
-            out.push_str(&rest[..scheme + 3 + at + 1]);
-            rest = &after[at + 1..];
-            continue;
-        };
-        if userinfo.contains('/') || userinfo.contains(' ') {
-            break;
+        let authority_start = scheme + 3;
+        out.push_str(&rest[..authority_start]);
+        let after = &rest[authority_start..];
+        // The authority ends at the first `/`, `?`, `#`, or whitespace.
+        let authority_end = after
+            .find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace())
+            .unwrap_or(after.len());
+        let authority = &after[..authority_end];
+
+        // The host follows the *last* `@`; a password is what follows the
+        // first `:` of the userinfo before it.
+        let credential = authority.rsplit_once('@').and_then(|(userinfo, host)| {
+            userinfo
+                .split_once(':')
+                .map(|(user, password)| (user, password, host))
+        });
+        match credential {
+            Some((user, password, host)) if !password.is_empty() && password != PLACEHOLDER => {
+                out.push_str(user);
+                out.push(':');
+                out.push_str(PLACEHOLDER);
+                out.push('@');
+                out.push_str(host);
+                codes.push(reason::URL_CREDENTIALS.to_owned());
+            }
+            _ => out.push_str(authority),
         }
-        if &userinfo[colon + 1..] == PLACEHOLDER {
-            out.push_str(&rest[..scheme + 3 + at + 1]);
-            rest = &after[at + 1..];
-            continue;
-        }
-        out.push_str(&rest[..scheme + 3]);
-        out.push_str(&userinfo[..=colon]);
-        out.push_str(PLACEHOLDER);
-        out.push_str(&after[at..]);
-        // The rest of the string was already appended whole above.
-        rest = "";
-        codes.push(reason::URL_CREDENTIALS.to_owned());
-        break;
+        rest = &after[authority_end..];
     }
     out.push_str(rest);
     out
@@ -455,6 +466,36 @@ mod tests {
         assert_eq!(result.text, "before\n[redacted]\nafter");
         assert!(!result.text.contains("MIIEow"));
         assert_eq!(result.reason_codes, vec![reason::PRIVATE_KEY_BLOCK]);
+    }
+
+    #[test]
+    fn every_credential_url_in_a_text_is_redacted_not_just_the_first() {
+        // After the first credential URL, the rest of the text used to be
+        // appended unscanned, so a second URL's password went straight
+        // through.
+        let result = redact("mirror https://a:first-pw@one.test and https://b:second-pw@two.test");
+        assert!(!result.text.contains("first-pw"), "{}", result.text);
+        assert!(!result.text.contains("second-pw"), "{}", result.text);
+    }
+
+    #[test]
+    fn a_distant_at_sign_does_not_end_the_scan() {
+        // The scan looked for the next `@` anywhere in the text, so an email
+        // address later in the sentence was read as the end of an earlier
+        // URL's userinfo — which then stopped the scan before a real
+        // credential further on.
+        // The port's colon is what reaches the leaking branch: without a colon
+        // before the distant `@`, the old code skipped past it harmlessly — and
+        // the first version of this test passed against the bug.
+        let text = "docs at https://example.test:8443/guide, mail me@example.test, clone https://u:leaked-pw@git.test/r";
+        let result = redact(text);
+        assert!(!result.text.contains("leaked-pw"), "{}", result.text);
+        assert!(
+            result.text.contains("https://example.test:8443/guide"),
+            "{}",
+            result.text
+        );
+        assert!(result.text.contains("me@example.test"), "{}", result.text);
     }
 
     #[test]
