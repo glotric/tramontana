@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 mod model;
+mod read_only;
 mod tool;
 
 use async_trait::async_trait;
@@ -9,9 +10,9 @@ use tokio_util::sync::CancellationToken;
 use crate::contracts::{
     AuthorizedToolRequest, CancellationOrigin, CapabilityScope, ContextManifest, DataClass,
     EffectiveConfiguration, ErrorCode, ErrorEnvelope, EventDraft, EventPayload, HandoffBundle,
-    InvocationId, MessageId, MessageRole, MessageStatus, ModelEvent, ModelRequest,
-    NormalizedMessage, PermissionOrigin, ReplaySafety, RiskClass, RoutingDecision, RoutingMode,
-    SideEffect, StopReason, StreamFrame, TaskCheckpoint, TaskEventKind, TaskState,
+    InvocationId, MessageId, MessageRole, MessageStatus, ModelRequest, NormalizedMessage,
+    PermissionOrigin, ReplaySafety, RiskClass, RoutingDecision, RoutingMode, SideEffect,
+    StopReason, StreamFrame, TaskCheckpoint, TaskEventKind, TaskState,
 };
 use crate::ports::{AgentProvider, ModelProvider, WorkerHost, WorkerOutcome, WorkerRequest};
 use crate::ports::{Clock, PermissionQuery};
@@ -199,14 +200,18 @@ impl TaskDriver {
                     }
                     Err(error) => Err(error),
                 },
-                TaskState::Routing => match self.record_route(context.as_ref()).await {
+                TaskState::Routing => match self.record_route(context.as_ref(), &cancel).await {
                     Ok(_) => Ok(()),
                     Err(error) => Err(error),
                 },
                 _ => Ok(()),
             };
             if let Err(error) = recorded {
-                self.finish_failed(state, error).await;
+                if cancel.is_cancelled() {
+                    self.finish_cancelled(state).await;
+                } else {
+                    self.finish_failed(state, error).await;
+                }
                 return;
             }
         }
@@ -329,15 +334,21 @@ impl TaskDriver {
     async fn record_route(
         &self,
         context: Option<&ContextManifest>,
+        cancel: &CancellationToken,
     ) -> Result<RoutingDecision, ErrorEnvelope> {
         let snapshot = AvailabilitySnapshot {
             snapshot_id: self.journal.next_id("availability"),
-            models: {
+            models: tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Err(ErrorEnvelope::new(ErrorCode::Cancelled, "Routing cancelled", self.journal.correlation_id().clone())),
+                () = tokio::time::sleep(std::time::Duration::from_secs(30)) => return Err(ErrorEnvelope::new(ErrorCode::Timeout, "Model discovery timed out", self.journal.correlation_id().clone())),
+                models = async {
                 let mut available = Vec::new();
                 for provider in &self.providers.models {
                     available.extend(provider.list_models().await);
                 }
                 available
+                } => models,
             },
             taken_at: self.clock.now(),
         };
@@ -559,7 +570,23 @@ impl std::fmt::Debug for ToolBroker {
 
 #[async_trait]
 impl WorkerHost for BrokeredHost {
+    async fn read_only_turn(
+        &self,
+        tools: &[String],
+        limits: &crate::ports::ReadOnlyLimits,
+        cancel: &CancellationToken,
+    ) -> Result<crate::ports::ReadOnlyTurn, ErrorEnvelope> {
+        self.run_read_only_turn(tools, limits, cancel).await
+    }
     async fn emit(&self, draft: EventDraft) -> Result<(), ErrorEnvelope> {
+        if matches!(&draft.payload, EventPayload::DiagnosticRecorded { code, .. } if code.starts_with("reference."))
+        {
+            return Err(ErrorEnvelope::new(
+                ErrorCode::PermissionDenied,
+                "Reserved host event",
+                self.journal.correlation_id().clone(),
+            ));
+        }
         // Workers cannot forge lifecycle, approval, release, or completion
         // ledger entries. What is left is an observation about the worker's
         // own conduct, which is the only thing it is the authority on.

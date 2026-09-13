@@ -406,16 +406,19 @@ export function App(): React.JSX.Element {
       <main className="workspace">
         <header className="workspace-header">
           <div>
-            <span className="eyebrow">M2 · Durable work</span>
+            <span className="eyebrow">M6 · Read-only repository work</span>
             <h1>{selectedConversation?.title ?? inspection?.project.name ?? "Open a project"}</h1>
             <p>
               {inspection?.project.roots[0] ??
                 "Choose a local directory to create a canonical, restart-safe project record."}
             </p>
           </div>
-          <div className="runtime-chip" title="M4 replaces deterministic providers">
+          <div
+            className="runtime-chip"
+            title="Inspect task activity for the selected worker, model and destination"
+          >
             <span className="status-dot" data-state="ready" />
-            reference fake runtime
+            governed task runtime
           </div>
         </header>
 

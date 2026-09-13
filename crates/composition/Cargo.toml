@@ -14,6 +14,7 @@ tramontana-adapters-model = { workspace = true }
 tramontana-adapters-local = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }
 tracing = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

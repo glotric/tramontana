@@ -106,6 +106,57 @@ impl BrokeredHost {
             std::mem::take(&mut prepared.manifest.sources),
             prepared.manifest.created_at.clone(),
         );
+        let turn = self
+            .dispatch_model(prepared, deadline, cancel, ModelTurnLimits::default(), true)
+            .await?;
+        let answer = turn.text.clone();
+        let stop_reason = Some(turn.stop_reason);
+        self.commit_answer(
+            &answer,
+            if turn.stop_reason == StopReason::Stop {
+                MessageStatus::Committed
+            } else {
+                MessageStatus::Partial
+            },
+        )
+        .await?;
+        // The legacy fake worker asks for text, not model-selected tools. Do
+        // not turn a tool request or truncated answer into apparent success.
+        let refusal = match stop_reason {
+            Some(StopReason::Stop) => None,
+            Some(StopReason::ToolCall) => Some((
+                ErrorCode::CapabilityUnsupported,
+                "This worker does not support model-selected tool calls",
+            )),
+            Some(StopReason::Length) => {
+                Some((ErrorCode::LimitExceeded, "Model output limit reached"))
+            }
+            Some(StopReason::Cancelled) => Some((ErrorCode::Cancelled, "Model request cancelled")),
+            None => Some((
+                ErrorCode::ProtocolError,
+                "Model stream ended without an outcome",
+            )),
+        };
+        if let Some((code, message)) = refusal {
+            return Err(ErrorEnvelope::new(
+                code,
+                message,
+                self.journal.correlation_id().clone(),
+            ));
+        }
+        Ok(answer)
+    }
+
+    /// Common release, routing, streaming and validation path for all workers.
+    pub(super) async fn dispatch_model(
+        &self,
+        prepared: crate::services::PreparedModelContext,
+        deadline: tokio::time::Instant,
+        cancel: &CancellationToken,
+        limits: ModelTurnLimits,
+        live: bool,
+    ) -> Result<crate::services::ModelTurn, ErrorEnvelope> {
+        let stream_id = prepared.request.request_id.clone();
         let manifest = &prepared.manifest;
         let decision = &prepared.decision;
         let provider = self
@@ -192,7 +243,7 @@ impl BrokeredHost {
                 ErrorCode::Cancelled, "Model request cancelled", self.journal.correlation_id().clone())),
             () = tokio::time::sleep_until(deadline) => return Err(ErrorEnvelope::new(
                 ErrorCode::Timeout, "Model request deadline exceeded", self.journal.correlation_id().clone())),
-            result = provider.stream(authorized, model_cancel.clone()) => result?,
+            result = provider.stream(authorized, model_cancel.clone()) => result.map_err(|error| ErrorEnvelope::new(error.code, "Model provider could not start the request", self.journal.correlation_id().clone()))?,
         };
 
         // Deltas are coalesced here and committed once. Persisting every token
@@ -201,7 +252,7 @@ impl BrokeredHost {
         let mut turn = ModelTurnAccumulator::new(
             stream_id.clone(),
             self.journal.correlation_id().clone(),
-            ModelTurnLimits::default(),
+            limits,
         );
         let mut failure = None;
         loop {
@@ -225,7 +276,7 @@ impl BrokeredHost {
                 failure = Some(error);
                 break;
             }
-            if let ModelEvent::TextDelta { text, .. } = event {
+            if live && let crate::contracts::ModelEvent::TextDelta { text, .. } = event {
                 self.journal.publish_frame(StreamFrame {
                     stream_id: stream_id.clone(),
                     offset,
@@ -233,68 +284,54 @@ impl BrokeredHost {
                 });
             }
         }
-        let answer = turn.text().to_owned();
-        let result = turn.finish();
-        let stop_reason = result.as_ref().ok().map(|turn| turn.stop_reason);
-        if failure.is_none() {
-            failure = result.err();
-        }
 
-        // The frames are gone the moment they are delivered. Committing the
-        // coalesced answer is what puts the model's reply in the durable
-        // record at all — without it an exported task shows that a model was
-        // asked and never what it said (`CORE_CONTRACTS.md` §5).
-        let status = match (stop_reason, &failure) {
-            (Some(StopReason::Stop), None) => MessageStatus::Committed,
-            // Cut short: the content up to that point is kept and marked, so a
-            // reader can tell a finished answer from a truncated one.
-            _ => MessageStatus::Partial,
-        };
+        let partial = crate::services::redact(turn.text()).text;
+        let result = turn.finish();
+        if let Some(error) = failure.or_else(|| result.as_ref().err().cloned()) {
+            self.commit_answer(&partial, MessageStatus::Partial).await?;
+            return Err(ErrorEnvelope::new(
+                error.code,
+                "Model turn did not complete",
+                self.journal.correlation_id().clone(),
+            ));
+        }
+        let mut result = result?;
+        result.text = crate::services::redact(&result.text).text;
+        // Redact complete semantic text before publishing: credential shapes
+        // may span arbitrary network chunks.
+        if !live {
+            self.journal.publish_frame(StreamFrame {
+                stream_id,
+                offset: 0,
+                text: result.text.clone(),
+            });
+        }
+        Ok(result)
+    }
+
+    pub(super) async fn commit_answer(
+        &self,
+        text: &str,
+        status: MessageStatus,
+    ) -> Result<(), ErrorEnvelope> {
+        self.journal.append(self.answer_draft(text, status)).await?;
+        Ok(())
+    }
+
+    pub(super) fn answer_draft(&self, text: &str, status: MessageStatus) -> EventDraft {
         let mut message = NormalizedMessage::text(
             MessageId::new(self.journal.next_id("message")),
             self.journal.conversation_id().cloned(),
             MessageRole::Assistant,
             self.journal.now(),
-            answer.clone(),
+            text,
         );
         message.task_id = Some(self.journal.task_id().clone());
         message.status = status;
-
-        self.journal
-            .append(EventDraft::user(
-                TaskEventKind::MessageCommitted,
-                EventPayload::MessageCommitted { message },
-            ))
-            .await?;
-
-        if let Some(error) = failure {
-            return Err(error);
-        }
-        // The legacy fake worker asks for text, not model-selected tools. Do
-        // not turn a tool request or truncated answer into apparent success.
-        let refusal = match stop_reason {
-            Some(StopReason::Stop) => None,
-            Some(StopReason::ToolCall) => Some((
-                ErrorCode::CapabilityUnsupported,
-                "This worker does not support model-selected tool calls",
-            )),
-            Some(StopReason::Length) => {
-                Some((ErrorCode::LimitExceeded, "Model output limit reached"))
-            }
-            Some(StopReason::Cancelled) => Some((ErrorCode::Cancelled, "Model request cancelled")),
-            None => Some((
-                ErrorCode::ProtocolError,
-                "Model stream ended without an outcome",
-            )),
-        };
-        if let Some((code, message)) = refusal {
-            return Err(ErrorEnvelope::new(
-                code,
-                message,
-                self.journal.correlation_id().clone(),
-            ));
-        }
-        Ok(answer)
+        EventDraft::user(
+            TaskEventKind::MessageCommitted,
+            EventPayload::MessageCommitted { message },
+        )
     }
 
     fn model_error(&self, code: ErrorCode) -> ErrorEnvelope {

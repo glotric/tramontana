@@ -44,6 +44,8 @@ enum ProviderCommand {
     List(ProfileArgs),
     /// Turn an endpoint on or off without losing its configuration.
     Enable(ToggleArgs),
+    /// Record verified tool-call support for this model/endpoint; unknown is off.
+    ToolCalls(ToggleArgs),
     /// Remove an endpoint. The credential in the OS store is left alone.
     Remove(RemoveArgs),
 }
@@ -188,7 +190,8 @@ pub(crate) async fn execute(args: ProviderArgs) -> ExitCode {
             .await
         }
         ProviderCommand::List(args) => list(args).await,
-        ProviderCommand::Enable(args) => toggle(args).await,
+        ProviderCommand::Enable(args) => toggle(args, false).await,
+        ProviderCommand::ToolCalls(args) => toggle(args, true).await,
         ProviderCommand::Remove(args) => remove(args).await,
     }
 }
@@ -290,7 +293,7 @@ async fn list(args: ProfileArgs) -> ExitCode {
 
     for endpoint in endpoints {
         println!(
-            "{:<20} {:<18} {:<24} {:<7} {}",
+            "{:<20} {:<18} {:<24} {:<7} {} tool-calls={}",
             endpoint.endpoint_id,
             endpoint.config.kind(),
             endpoint.config.model_id(),
@@ -300,12 +303,13 @@ async fn list(args: ProfileArgs) -> ExitCode {
             } else {
                 "disabled"
             },
+            endpoint.supports_tool_calls,
         );
     }
     ExitCode::SUCCESS
 }
 
-async fn toggle(args: ToggleArgs) -> ExitCode {
+async fn toggle(args: ToggleArgs, capability: bool) -> ExitCode {
     let wanted = !args.off;
     let id = args.id.clone();
     let settings = match settings(args.profile).await {
@@ -329,12 +333,24 @@ async fn toggle(args: ToggleArgs) -> ExitCode {
         eprintln!("error: no endpoint named {id:?}");
         return ExitCode::FAILURE;
     };
-    endpoint.enabled = wanted;
+    if capability {
+        endpoint.supports_tool_calls = wanted;
+    } else {
+        endpoint.enabled = wanted;
+    }
     if let Err(error) = settings.save(endpoint).await {
         eprintln!("error: could not save the endpoint: {error}");
         return ExitCode::FAILURE;
     }
-    println!("{id}: {}", if wanted { "enabled" } else { "disabled" });
+    println!(
+        "{id}: {} {}",
+        if capability {
+            "verified tool-call support"
+        } else {
+            "endpoint"
+        },
+        if wanted { "enabled" } else { "disabled" }
+    );
     ExitCode::SUCCESS
 }
 

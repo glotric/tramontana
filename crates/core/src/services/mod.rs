@@ -22,6 +22,7 @@ mod permission_manager;
 mod preparation;
 mod projection;
 mod redaction;
+mod reference_worker;
 mod release;
 mod routing;
 mod runtime;
@@ -55,6 +56,7 @@ pub use projection::TaskProjectionWriter;
 pub use redaction::{
     PLACEHOLDER, Redacted, carries_credential, reason as redaction_reason, redact, redacted_hash,
 };
+pub use reference_worker::{REFERENCE_AGENT_ID, ReferenceWorker};
 pub use release::{RELEASE_CAPABILITY, ReleaseContext, ReleaseError, ReleaseManager};
 pub use routing::{
     AvailabilitySnapshot, NoEligibleRoute, RoutingInput, route, route_after_failure,

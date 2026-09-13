@@ -19,6 +19,18 @@ impl BrokeredHost {
         arguments: Value,
         cancel: &CancellationToken,
     ) -> Result<Value, ErrorEnvelope> {
+        self.run_tool_step_with_answer(step_id, tool_id, arguments, cancel, None)
+            .await
+    }
+
+    pub(super) async fn run_tool_step_with_answer(
+        &self,
+        step_id: &str,
+        tool_id: &str,
+        arguments: Value,
+        cancel: &CancellationToken,
+        answer: Option<&str>,
+    ) -> Result<Value, ErrorEnvelope> {
         if tool_id.len() > 256 {
             return Err(self.tool_error(ErrorCode::LimitExceeded));
         }
@@ -75,35 +87,53 @@ impl BrokeredHost {
             .get(tool_id)
             .ok_or_else(|| self.tool_error(ErrorCode::NotFound))?;
         ToolInputSchema::compile(&registered.descriptor.input_schema)?.validate(&arguments)?;
-        if tool_id.len() > 256 {
-            return Err(self.tool_error(ErrorCode::LimitExceeded));
-        }
         // Invocation identifies one attempt. The logical step/hash, not this
         // ID or a provider call ID, supplies replay identity across attempts.
-        let invocation = InvocationId::new(self.journal.next_id("invocation"));
-        self.journal
-            .append_batch(vec![
-                EventDraft::user(
-                    TaskEventKind::ToolRequested,
-                    EventPayload::ToolRequested {
-                        invocation_id: invocation.clone(),
-                        tool_id: tool_id.into(),
-                        arguments_summary: summarize_arguments(&arguments),
-                        risk_class: registered.descriptor.risk_class,
-                        step_id: Some(step_id.into()),
-                        request_hash: Some(hash.clone()),
+        let events = self.journal.replay().await?;
+        let pending = events.iter().rev().find_map(|event| match &event.payload {
+            EventPayload::ToolRequested { invocation_id, step_id: Some(step), .. } if step == step_id => Some(invocation_id.clone()),
+            _ => None,
+        }).filter(|id| !events.iter().any(|event| matches!(&event.payload,
+            EventPayload::ToolCompleted { invocation_id, .. } | EventPayload::ToolFailed { invocation_id, .. } if invocation_id == id)));
+        let invocation = pending
+            .clone()
+            .unwrap_or_else(|| InvocationId::new(self.journal.next_id("invocation")));
+        if pending.is_none() {
+            let mut call = self.tool_message(
+                MessageRole::Assistant,
+                MessagePart::ToolCall {
+                    invocation_id: invocation.clone(),
+                    tool_id: tool_id.into(),
+                    arguments: arguments.clone(),
+                },
+            );
+            if let Some(answer) = answer
+                && let EventPayload::MessageCommitted { message } = &mut call.payload
+            {
+                message.parts.insert(
+                    0,
+                    MessagePart::Text {
+                        text: answer.into(),
                     },
-                ),
-                self.tool_message(
-                    MessageRole::Assistant,
-                    MessagePart::ToolCall {
-                        invocation_id: invocation.clone(),
-                        tool_id: tool_id.into(),
-                        arguments: arguments.clone(),
-                    },
-                ),
-            ])
-            .await?;
+                );
+            }
+            self.journal
+                .append_batch(vec![
+                    EventDraft::user(
+                        TaskEventKind::ToolRequested,
+                        EventPayload::ToolRequested {
+                            invocation_id: invocation.clone(),
+                            tool_id: tool_id.into(),
+                            arguments_summary: summarize_arguments(&arguments),
+                            risk_class: registered.descriptor.risk_class,
+                            step_id: Some(step_id.into()),
+                            request_hash: Some(hash.clone()),
+                        },
+                    ),
+                    call,
+                ])
+                .await?;
+        }
         plan.requests.insert(step_id.into(), hash.clone());
         let replay_safe = registered.descriptor.side_effect == SideEffect::None;
         let result = self
@@ -246,7 +276,11 @@ impl BrokeredHost {
         if replay_safety != ReplaySafety::Safe {
             plan.uncertain.insert(step_id.into());
         }
-        registered.provider.invoke(authorized, cancel.clone()).await
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => Err(self.tool_error(ErrorCode::Cancelled)),
+            result = registered.provider.invoke(authorized, cancel.clone()) => result,
+        }
     }
 
     fn tool_message(&self, role: MessageRole, part: MessagePart) -> EventDraft {

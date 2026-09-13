@@ -175,6 +175,12 @@ pub fn derive_state(events: &[EventEnvelope]) -> DerivedState {
                 }
             }
             EventPayload::ModelStarted { stream_id, .. } => {
+                // Model calls are serialized by the host. A new model start
+                // supersedes a safely interrupted prior attempt, which must
+                // not accumulate phantom concurrent actions after retries.
+                pending.retain(|_, action: &mut PendingAction| {
+                    action.kind != PendingActionKind::Model
+                });
                 pending.insert(
                     format!("model:{stream_id}"),
                     PendingAction {

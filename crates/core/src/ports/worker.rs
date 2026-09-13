@@ -46,6 +46,22 @@ pub enum WorkerOutcome {
 /// audit apply uniformly to an embedded worker and an external one.
 #[async_trait]
 pub trait WorkerHost: Send + Sync {
+    /// Run one bounded model/observation turn using canonical task history and
+    /// explicitly selected read-only tools. No worker-supplied message bodies.
+    /// Older hosts fail closed. Budgets and replay remain host-owned.
+    async fn read_only_turn(
+        &self,
+        _tools: &[String],
+        _limits: &super::ReadOnlyLimits,
+        _cancel: &CancellationToken,
+    ) -> Result<super::ReadOnlyTurn, ErrorEnvelope> {
+        Err(ErrorEnvelope::new(
+            crate::contracts::ErrorCode::CapabilityUnsupported,
+            "This host does not support structured read-only turns",
+            crate::contracts::CorrelationId::new("worker-host"),
+        ))
+    }
+
     /// Append a durable event to the task's stream.
     ///
     /// # Errors

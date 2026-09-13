@@ -17,7 +17,7 @@ use tramontana_core::ports::{
 };
 use tramontana_core::services::{Providers, Repositories, TaskService};
 use tramontana_core::testing::{
-    FakeModelProvider, FakeWorker, InMemoryApprovalStore, ReceivingWorker, assemble_tool_plane,
+    FakeModelProvider, InMemoryApprovalStore, ReceivingWorker, assemble_tool_plane,
 };
 
 use crate::approval::TerminalApprover;
@@ -141,7 +141,8 @@ async fn open_with(
     // with nothing configured, and it says so every time: an interface that
     // let a deterministic stub pass for a model would be lying about the one
     // thing this project is built to be honest about.
-    let models: Vec<Arc<dyn ModelProvider>> = if plane.providers.is_empty() {
+    let has_configured = configured.iter().any(|endpoint| endpoint.enabled);
+    let models: Vec<Arc<dyn ModelProvider>> = if !has_configured {
         if !plane.skipped.is_empty() {
             eprintln!(
                 "note: {} supervised runtime(s) were not started for this command",
@@ -176,13 +177,9 @@ async fn open_with(
             tools: Arc::clone(&registry),
             permissions: Arc::clone(&permissions),
             releases: Arc::clone(&releases),
-            // Points the reference worker at a genuine read-only tool, so the
-            // skeleton exercises the real permission and containment path
-            // rather than a fake that cannot be refused.
-            worker: Arc::new(FakeWorker::calling(
-                "builtin.fs.list",
-                serde_json::json!({ "path": "." }),
-            )),
+            // Shared strategy selection; both real and diagnostic work use
+            // the same permission-governed built-in tools.
+            worker: tramontana_composition::assemble_worker(has_configured),
         },
         Arc::new(SystemClock::new()),
         Arc::new(UuidIdSource::new()),
@@ -206,18 +203,16 @@ async fn open_with(
 
 /// Workers a task can be handed to by name.
 ///
-/// A flat table rather than a registry: M4 has exactly two workers, both
-/// fakes, and inventing a discovery mechanism for them would be a shape M10
-/// then has to unpick. What it does establish is that handing a task over
-/// names a worker rather than assuming one.
+/// Explicit built-in choices; external worker discovery belongs to M10.
 #[must_use]
 pub(crate) fn worker_named(agent_id: &str) -> Option<Arc<dyn AgentProvider>> {
     match agent_id {
+        tramontana_core::services::REFERENCE_AGENT_ID => {
+            Some(tramontana_composition::assemble_worker(true))
+        }
         tramontana_core::testing::RECEIVING_AGENT_ID => {
-            // Pointed at the same tool, with the same arguments, as the
-            // reference worker above. A receiving worker that reconstructed
-            // the step differently would be refused rather than repeat it,
-            // which is correct but would make the handoff undemonstrable.
+            // M4 diagnostic handoff target. Its fixed step matches the fake
+            // diagnostic worker, not arbitrary model-selected reference work.
             Some(Arc::new(ReceivingWorker::calling(
                 "builtin.fs.list",
                 serde_json::json!({ "path": "." }),
@@ -230,5 +225,8 @@ pub(crate) fn worker_named(agent_id: &str) -> Option<Arc<dyn AgentProvider>> {
 /// The names [`worker_named`] accepts, for an error message worth reading.
 #[must_use]
 pub(crate) fn available_workers() -> Vec<&'static str> {
-    vec![tramontana_core::testing::RECEIVING_AGENT_ID]
+    vec![
+        tramontana_core::services::REFERENCE_AGENT_ID,
+        tramontana_core::testing::RECEIVING_AGENT_ID,
+    ]
 }

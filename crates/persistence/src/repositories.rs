@@ -1017,7 +1017,7 @@ impl SqliteProviderSettingsRepository {
 impl ProviderSettingsRepository for SqliteProviderSettingsRepository {
     async fn list(&self) -> Result<Vec<ProviderEndpoint>, RepositoryError> {
         let rows = sqlx::query(
-            "SELECT endpoint_id, display_name, enabled, config, created_at, schema_version
+            "SELECT endpoint_id, display_name, enabled, config, created_at, schema_version, supports_tool_calls
              FROM provider_endpoint
              ORDER BY created_at, endpoint_id",
         )
@@ -1030,6 +1030,9 @@ impl ProviderSettingsRepository for SqliteProviderSettingsRepository {
             let config: String = row.try_get("config").map_err(|e| unavailable(&e))?;
             let schema_version: i64 = row.try_get("schema_version").map_err(|e| unavailable(&e))?;
             endpoints.push(ProviderEndpoint {
+                supports_tool_calls: row
+                    .try_get::<bool, _>("supports_tool_calls")
+                    .map_err(|e| unavailable(&e))?,
                 schema_version: u32::try_from(schema_version).unwrap_or(SCHEMA_VERSION),
                 endpoint_id: row.try_get("endpoint_id").map_err(|e| unavailable(&e))?,
                 display_name: row.try_get("display_name").map_err(|e| unavailable(&e))?,
@@ -1052,13 +1055,14 @@ impl ProviderSettingsRepository for SqliteProviderSettingsRepository {
         // window with no configuration.
         sqlx::query(
             "INSERT INTO provider_endpoint (
-                 endpoint_id, display_name, enabled, kind, config, created_at, schema_version
-             ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                 endpoint_id, display_name, enabled, kind, config, created_at, schema_version, supports_tool_calls
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(endpoint_id) DO UPDATE SET
                  display_name = excluded.display_name,
                  enabled = excluded.enabled,
                  kind = excluded.kind,
-                 config = excluded.config",
+                 config = excluded.config,
+                 supports_tool_calls = excluded.supports_tool_calls",
         )
         .bind(&endpoint.endpoint_id)
         .bind(&endpoint.display_name)
@@ -1067,6 +1071,7 @@ impl ProviderSettingsRepository for SqliteProviderSettingsRepository {
         .bind(to_json(&endpoint.config, "provider configuration")?)
         .bind(endpoint.created_at.as_str())
         .bind(i64::from(endpoint.schema_version))
+        .bind(endpoint.supports_tool_calls)
         .execute(self.database.pool())
         .await
         .map_err(|error| unavailable(&error))?;

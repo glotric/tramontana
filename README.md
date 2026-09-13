@@ -20,7 +20,9 @@ Phase 1 has no enterprise server dependency. The default architecture is persona
 
 ## Status
 
-Milestone M5 is complete. Validation gate V3 is next.
+Milestone M6's read-only reference worker is implemented. M7 (safe writes and
+commands) is next, followed by validation gate V3. See the
+[M6 evidence and limitations](docs/evidence/M6-reference-worker.md).
 
 The differentiating capability is built and runs end to end against fakes: a task can be **stopped, understood, continued, handed to a different worker, and carried out of the application** as a record that stands on its own.
 
@@ -40,6 +42,15 @@ M5 added the model path: configured endpoints, a deterministic router, and a rel
 - Credential-shaped text is redacted where it enters the system, so the durable record never held it.
 
 **A real model streams end to end through the CLI. No request has been made to OpenAI or Anthropic**, no test performs a TLS handshake, and no real `llama-server` has been supervised — those are named in [the M5 evidence note](docs/evidence/M5-models-and-routing.md) rather than implied. The desktop reaches the same models through the same composition but has no settings screen yet. Modifying tools arrive in M7. Validation gates V1 and V2 passed.
+
+M6 adds model-selected filesystem/Git reads with schema validation, fresh
+per-turn disclosure, durable observations and restart-safe budget reservations.
+Its end-to-end test uses synthetic inference with real HTTP, filesystem tools
+and SQLite; live-model validation of this loop is still outstanding. Structured
+answer text is buffered until redaction, while task activity remains live.
+Profiles without enabled endpoints retain the labelled diagnostic fake. An
+enabled endpoint selects the real loop and must explicitly advertise tool-call
+support; broken configuration never silently becomes fake inference.
 
 ```bash
 corepack enable pnpm     # Node 24.x; Node 25 removed Corepack
@@ -66,6 +77,8 @@ tramontana bundle import  ./out                          # into a clean profile
 tramontana provider add-openai local --base-url http://127.0.0.1:8080 --model llama3
 tramontana provider add-anthropic claude --model claude-sonnet-4-5 --credential anthropic.apiKey
 tramontana provider list                                 # shows local vs CLOUD, derived not declared
+tramontana provider tool-calls local                     # only after verifying this model supports native tool calls
+tramontana provider tool-calls local --off               # unknown/unsupported must stay off
 
 tramontana secret set    openai.apiKey < key.txt         # stdin only, never an argument
 tramontana secret status openai.apiKey                   # configured or not; never the value

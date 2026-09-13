@@ -55,6 +55,20 @@ impl std::fmt::Debug for TaskJournal {
 }
 
 impl TaskJournal {
+    /// Read the canonical prefix for host-owned reconstruction.
+    pub(crate) async fn replay(&self) -> Result<Vec<EventEnvelope>, ErrorEnvelope> {
+        self.ports
+            .store
+            .replay(&self.task_id, 0)
+            .await
+            .map_err(|_| {
+                ErrorEnvelope::new(
+                    ErrorCode::PersistenceError,
+                    "Task history unavailable",
+                    self.correlation_id.clone(),
+                )
+            })
+    }
     /// Create a journal for a task whose stream is currently at `sequence`.
     #[must_use]
     pub fn new(

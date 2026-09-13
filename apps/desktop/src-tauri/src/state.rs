@@ -11,9 +11,7 @@ use tramontana_core::ports::{
     ToolProvider,
 };
 use tramontana_core::services::{Providers, Repositories, TaskService};
-use tramontana_core::testing::{
-    FakeModelProvider, FakeWorker, InMemoryApprovalStore, assemble_tool_plane,
-};
+use tramontana_core::testing::{FakeModelProvider, InMemoryApprovalStore, assemble_tool_plane};
 
 use crate::approval::DesktopApprover;
 use tramontana_composition::{ModelPlane, Supervision, assemble_models};
@@ -106,7 +104,8 @@ impl AppState {
                 failure.error.message
             );
         }
-        let models: Vec<Arc<dyn ModelProvider>> = if plane.providers.is_empty() {
+        let has_configured = configured.iter().any(|endpoint| endpoint.enabled);
+        let models: Vec<Arc<dyn ModelProvider>> = if !has_configured {
             // Labelled explicitly in the interface, not silently substituted.
             vec![Arc::new(FakeModelProvider::streaming_paced(
                 ["Hello", ", ", "world", " from ", "Tramontana"],
@@ -132,13 +131,8 @@ impl AppState {
                 tools: Arc::clone(&registry),
                 permissions: Arc::clone(&permissions),
                 releases: Arc::clone(&releases),
-                // Points the reference worker at a genuine read-only tool, so the
-                // skeleton exercises the real permission and containment path
-                // rather than a fake that cannot be refused.
-                worker: Arc::new(FakeWorker::calling(
-                    "builtin.fs.list",
-                    serde_json::json!({ "path": "." }),
-                )),
+                // Same strategy and governed tool plane as the CLI.
+                worker: tramontana_composition::assemble_worker(has_configured),
             },
             Arc::new(SystemClock::new()),
             Arc::new(UuidIdSource::new()),
