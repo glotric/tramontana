@@ -31,6 +31,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -546,23 +547,114 @@ fn request_stop(_child: &Child) {
     // No graceful signal to send; `kill` below terminates the child.
 }
 
+/// First port of the range runtimes are given.
+///
+/// Below every operating system's default ephemeral range — 32768 on Linux,
+/// 49152 on macOS and Windows — so the kernel never hands one of these out on
+/// its own. That is the whole point of choosing a range at all.
+const RESERVED_PORT_BASE: u16 = 20_000;
+
+/// How many ports the range spans. Ends at 31999, below Linux's 32768.
+const RESERVED_PORT_SPAN: u16 = 12_000;
+
+/// Candidates tried before giving up.
+///
+/// Each one that fails is a port something is already listening on, so
+/// running out means the range is genuinely crowded, not that the search was
+/// unlucky.
+const RESERVE_ATTEMPTS: u16 = 64;
+
+/// The next candidate offset, shared by every reservation in this process.
+///
+/// Concurrent reservations take different values, so two runtimes started at
+/// the same moment by one application never probe — and never receive — the
+/// same port.
+static NEXT_CANDIDATE: AtomicU16 = AtomicU16::new(0);
+
 /// Reserve a free loopback port.
 ///
-/// Bind, read the port, and release it. There is a window between releasing
-/// and the runtime binding in which something else could take it — this is
-/// inherent to handing a port number to another process, and it is why a
-/// failure to bind surfaces as the runtime exiting early with its own message
-/// rather than as a confusing timeout.
+/// Choose a candidate, check nothing is listening on it, and hand the number
+/// to the runtime. Handing a number to another process always leaves a window
+/// before the runtime binds it; the design is about who can take the port
+/// inside that window, and the answer should be "nobody we control".
+///
+/// Three pieces, each load-bearing:
+///
+/// - **A range outside every default ephemeral range**, so no outbound
+///   connection can be holding the port: the probe below only sees
+///   listeners, and here only a listener could be in the way.
+/// - **A process-wide counter**, so two runtimes started at the same moment by
+///   one application never receive the same port. A probe cannot see another
+///   reservation that has not bound yet; distinct candidates make that moot.
+/// - **A probe that leaves nothing listening** (see [`is_free`]).
+///
+/// This took two wrong versions to find. The first bound port 0, released it,
+/// and failed about one parallel test run in eight with the runtime unable to
+/// bind. I moved to this range on the theory that the kernel was re-issuing
+/// the released ephemeral port — and it still failed three runs in sixty, on
+/// ports the kernel never issues. Capturing the holder at the moment of
+/// failure showed the real cause: a *sibling* runtime process listening on
+/// the port at fd 32, the same descriptor number the probe had in the parent.
+/// It had inherited the probe socket. See [`is_free`].
 async fn reserve_port() -> Result<u16, StartError> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    // Start where it differs between processes, so two applications reserving
+    // at once do not walk the same sequence.
+    let seed = std::process::id() % u32::from(RESERVED_PORT_SPAN);
+
+    for _ in 0..RESERVE_ATTEMPTS {
+        let step = NEXT_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+        let offset = (seed + u32::from(step)) % u32::from(RESERVED_PORT_SPAN);
+        let port = RESERVED_PORT_BASE + u16::try_from(offset).unwrap_or(0);
+        // Something listens there: move on. A port in use is the ordinary case
+        // this loop exists for.
+        if is_free(port).await {
+            return Ok(port);
+        }
+    }
+
+    Err(StartError::Port(format!(
+        "no free port among {RESERVE_ATTEMPTS} candidates in {RESERVED_PORT_BASE}..{}",
+        RESERVED_PORT_BASE + RESERVED_PORT_SPAN
+    )))
+}
+
+/// Whether nothing is listening on `port`.
+///
+/// Probed by *connecting*, not by binding. A bind probe is a listening socket
+/// in this process, and on macOS a child spawned by another thread at that
+/// moment inherits it: macOS has no atomic `SOCK_CLOEXEC`, so a new socket is
+/// inheritable until a separate call marks it close-on-exec. The inheriting
+/// child then holds the port open after this process has released it, and the
+/// runtime the port was reserved for cannot bind. A connection attempt leaves
+/// nothing listening behind, whoever spawns what, and whenever.
+///
+/// Refusal is immediate on a Unix loopback interface, and in the reserved
+/// range nothing but a listener can be holding the port, so "refused" means
+/// "free". The timeout covers a loopback that drops rather than refuses.
+#[cfg(unix)]
+async fn is_free(port: u16) -> bool {
+    matches!(
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            tokio::net::TcpStream::connect(("127.0.0.1", port)),
+        )
+        .await,
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::ConnectionRefused
+    )
+}
+
+/// Whether nothing is listening on `port`.
+///
+/// Probed by binding here, the opposite choice to Unix, for two Windows
+/// reasons: sockets are created non-inheritable, so the macOS failure cannot
+/// occur; and a connection to a closed loopback port is not refused promptly
+/// — the stack retries before reporting it — which would make a connect probe
+/// slow enough to exhaust the candidates.
+#[cfg(not(unix))]
+async fn is_free(port: u16) -> bool {
+    tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
-        .map_err(|failure| StartError::Port(failure.to_string()))?;
-    let port = listener
-        .local_addr()
-        .map_err(|failure| StartError::Port(failure.to_string()))?
-        .port();
-    drop(listener);
-    Ok(port)
+        .is_ok()
 }
 
 /// Read a child's output into the bounded buffer.
@@ -605,6 +697,51 @@ fn truncate(value: &str, bound: usize) -> String {
 )]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reserved_ports_come_from_outside_every_default_ephemeral_range() {
+        // The property the fix rests on. Port 0 draws from the pool the kernel
+        // re-issues to outbound connections; this range is never drawn from.
+        for _ in 0..20 {
+            let port = reserve_port().await.unwrap();
+            assert!(
+                (RESERVED_PORT_BASE..RESERVED_PORT_BASE + RESERVED_PORT_SPAN).contains(&port),
+                "{port} is outside the reserved range"
+            );
+            // Linux starts its ephemeral range at 32768; macOS and Windows at 49152.
+            assert!(port < 32_768, "{port} is inside an ephemeral range");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_port_something_listens_on_is_not_free_and_is_once_it_stops() {
+        let port = reserve_port().await.unwrap();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        assert!(
+            !is_free(port).await,
+            "{port} has a listener but was reported free"
+        );
+        drop(listener);
+        assert!(
+            is_free(port).await,
+            "{port} was reported busy after its listener closed"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_reservations_in_one_process_never_collide() {
+        let handles: Vec<_> = (0..64).map(|_| tokio::spawn(reserve_port())).collect();
+        let mut ports = Vec::new();
+        for handle in handles {
+            ports.push(handle.await.unwrap().unwrap());
+        }
+        let unique: std::collections::HashSet<_> = ports.iter().collect();
+        assert_eq!(
+            unique.len(),
+            ports.len(),
+            "two concurrent reservations got one port"
+        );
+    }
 
     #[test]
     fn a_version_banner_yields_its_build_number() {
