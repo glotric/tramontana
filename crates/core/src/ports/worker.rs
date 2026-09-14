@@ -62,6 +62,26 @@ pub trait WorkerHost: Send + Sync {
         ))
     }
 
+    /// Run one bounded turn offering the explicitly selected tools that
+    /// `admission` allows. A host that cannot govern writes still serves the
+    /// read-only level and refuses anything more (ADR 0021).
+    async fn governed_turn(
+        &self,
+        tools: &[String],
+        admission: super::ToolAdmission,
+        limits: &super::ReadOnlyLimits,
+        cancel: &CancellationToken,
+    ) -> Result<super::ReadOnlyTurn, ErrorEnvelope> {
+        match admission {
+            super::ToolAdmission::ReadOnly => self.read_only_turn(tools, limits, cancel).await,
+            super::ToolAdmission::ReadWrite => Err(ErrorEnvelope::new(
+                crate::contracts::ErrorCode::CapabilityUnsupported,
+                "This host does not support governed write turns",
+                crate::contracts::CorrelationId::new("worker-host"),
+            )),
+        }
+    }
+
     /// Append a durable event to the task's stream.
     ///
     /// # Errors

@@ -576,7 +576,17 @@ impl WorkerHost for BrokeredHost {
         limits: &crate::ports::ReadOnlyLimits,
         cancel: &CancellationToken,
     ) -> Result<crate::ports::ReadOnlyTurn, ErrorEnvelope> {
-        self.run_read_only_turn(tools, limits, cancel).await
+        self.run_turn(tools, crate::ports::ToolAdmission::ReadOnly, limits, cancel)
+            .await
+    }
+    async fn governed_turn(
+        &self,
+        tools: &[String],
+        admission: crate::ports::ToolAdmission,
+        limits: &crate::ports::ReadOnlyLimits,
+        cancel: &CancellationToken,
+    ) -> Result<crate::ports::ReadOnlyTurn, ErrorEnvelope> {
+        self.run_turn(tools, admission, limits, cancel).await
     }
     async fn emit(&self, draft: EventDraft) -> Result<(), ErrorEnvelope> {
         if matches!(&draft.payload, EventPayload::DiagnosticRecorded { code, .. } if code.starts_with("reference."))

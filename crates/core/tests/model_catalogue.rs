@@ -117,6 +117,76 @@ fn non_read_or_uncancellable_tools_cannot_enter_the_m6_catalogue() {
 }
 
 #[test]
+fn read_write_admission_adds_local_reversible_writes_and_nothing_worse() {
+    let mut write = descriptor("fixture.fs.write");
+    write.risk_class = RiskClass::Modify;
+    write.side_effect = SideEffect::LocalReversible;
+    write.capability = "filesystem.write".into();
+    let both = registry(vec![descriptor("fixture.fs.read"), write.clone()]);
+    let catalogue = ModelToolCatalogue::select(
+        &both,
+        &["fixture.fs.write", "fixture.fs.read"],
+        ToolAdmission::ReadWrite,
+    )
+    .unwrap();
+    assert_eq!(
+        catalogue
+            .definitions()
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["fixture.fs.read", "fixture.fs.write"]
+    );
+    // The same write, not asked for, is not offered.
+    assert_eq!(
+        ModelToolCatalogue::select(&both, &["fixture.fs.write"], ToolAdmission::ReadOnly)
+            .unwrap_err()
+            .code,
+        ErrorCode::CapabilityUnsupported
+    );
+    // Risk and effect must both say "local and reversible": no pair that is
+    // dangerous, irreversible, external or self-contradictory gets in.
+    for (risk, effect) in [
+        (RiskClass::Dangerous, SideEffect::LocalIrreversible),
+        (RiskClass::Dangerous, SideEffect::LocalReversible),
+        (RiskClass::Dangerous, SideEffect::External),
+        (RiskClass::Dangerous, SideEffect::None),
+        (RiskClass::Modify, SideEffect::LocalIrreversible),
+        (RiskClass::Modify, SideEffect::External),
+        (RiskClass::Modify, SideEffect::None),
+        (RiskClass::Read, SideEffect::LocalReversible),
+        (RiskClass::Read, SideEffect::External),
+    ] {
+        let mut tool = write.clone();
+        tool.risk_class = risk;
+        tool.side_effect = effect;
+        assert_eq!(
+            ModelToolCatalogue::select(
+                &registry(vec![tool]),
+                &["fixture.fs.write"],
+                ToolAdmission::ReadWrite
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::CapabilityUnsupported,
+            "{risk:?} / {effect:?}"
+        );
+    }
+    let mut stuck = write;
+    stuck.supports_cancellation = false;
+    assert_eq!(
+        ModelToolCatalogue::select(
+            &registry(vec![stuck]),
+            &["fixture.fs.write"],
+            ToolAdmission::ReadWrite
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::CapabilityUnsupported
+    );
+}
+
+#[test]
 fn schemas_and_metadata_are_bounded_and_credential_free() {
     for scenario in [
         "schema",

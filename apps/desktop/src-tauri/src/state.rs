@@ -131,8 +131,13 @@ impl AppState {
                 tools: Arc::clone(&registry),
                 permissions: Arc::clone(&permissions),
                 releases: Arc::clone(&releases),
-                // Same strategy and governed tool plane as the CLI.
-                worker: tramontana_composition::assemble_worker(has_configured),
+                // Same strategy and governed tool plane as the CLI. Read-only:
+                // the desktop has no way yet for a person to say a task may
+                // write, so it never offers a model a write (ADR 0021).
+                worker: tramontana_composition::assemble_worker(
+                    has_configured,
+                    tramontana_core::ports::ToolAdmission::ReadOnly,
+                ),
             },
             Arc::new(SystemClock::new()),
             Arc::new(UuidIdSource::new()),

@@ -1,5 +1,29 @@
-//! Bounded, canonical read-only turns available to any brokered worker.
+//! Bounded, canonical model/observation turns available to any brokered worker.
 use serde::{Deserialize, Serialize};
+
+/// Which tools a turn may offer a model.
+///
+/// Read-only unless a composition root asks for more. Admission only makes a
+/// tool offerable: every write the model then asks for is still a separate
+/// permission decision. No level offers a dangerous, irreversible or external
+/// tool (ADR 0021).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolAdmission {
+    /// Reads with no side effect: the M6 catalogue.
+    #[default]
+    ReadOnly,
+    /// Reads, plus writes whose effect is local and reversible.
+    ReadWrite,
+}
+
+impl ToolAdmission {
+    /// Whether this is the read-only level.
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        *self == Self::ReadOnly
+    }
+}
 
 /// Hard limits for a reference session, charged before dispatch and retained
 /// across restart. Reservations are conservative, not actual usage/cost.

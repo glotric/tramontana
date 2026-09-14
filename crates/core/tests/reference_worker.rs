@@ -24,6 +24,7 @@ enum Scenario {
     Failure,
     Length,
     ExcessUsage,
+    Write,
 }
 struct Model {
     scenario: Scenario,
@@ -103,7 +104,7 @@ impl ModelProvider for Model {
                 .await
                 .unwrap();
         }
-        if has_result && matches!(self.scenario, Scenario::Answer) {
+        if has_result && matches!(self.scenario, Scenario::Answer | Scenario::Write) {
             sender
                 .send(ModelEvent::TextDelta {
                     stream_id,
@@ -151,17 +152,17 @@ impl ModelProvider for Model {
                         call_index: i,
                         call_id: Some(format!("provider-call-{i}")),
                         name: Some(
-                            if matches!(self.scenario, Scenario::Unknown) {
-                                "builtin.fs.write"
-                            } else {
-                                "fake.tool.echo"
+                            match self.scenario {
+                                Scenario::Unknown => "builtin.fs.write",
+                                Scenario::Write => FAKE_WRITE_TOOL_ID,
+                                _ => "fake.tool.echo",
                             }
                             .into(),
                         ),
-                        delta: if matches!(self.scenario, Scenario::Invalid) {
-                            "{\"value\":42}"
-                        } else {
-                            "{\"value\":\"repository fact\"}"
+                        delta: match self.scenario {
+                            Scenario::Invalid => "{\"value\":42}",
+                            Scenario::Write => "{\"key\":\"greeting\",\"value\":\"hello\"}",
+                            _ => "{\"value\":\"repository fact\"}",
                         }
                         .into(),
                     })
@@ -232,10 +233,23 @@ impl Harness {
         limits: ReadOnlyLimits,
         approver: Arc<dyn Approver>,
     ) -> Self {
+        Self::with(
+            model,
+            vec![tool as Arc<dyn ToolProvider>],
+            Arc::new(ReferenceWorker::new(vec!["fake.tool.echo".into()], limits)),
+            approver,
+        )
+    }
+    fn with(
+        model: Arc<Model>,
+        tools: Vec<Arc<dyn ToolProvider>>,
+        worker: Arc<dyn AgentProvider>,
+        approver: Arc<dyn Approver>,
+    ) -> Self {
         let events = Arc::new(InMemoryEventStore::new());
         let ids = Arc::new(SequentialIdSource::new());
         let (tools, permissions, releases) = assemble_tool_plane(
-            vec![tool],
+            tools,
             Arc::new(InMemoryApprovalStore::new()),
             approver,
             ids.clone(),
@@ -255,7 +269,7 @@ impl Harness {
                 tools,
                 permissions,
                 releases,
-                worker: Arc::new(ReferenceWorker::new(vec!["fake.tool.echo".into()], limits)),
+                worker,
             },
             ids,
             clock: Arc::new(FakeClock::new()),
@@ -650,4 +664,329 @@ async fn a_cloud_observation_needs_fresh_approval_and_denial_stops_dispatch() {
     assert_eq!(approver.0.load(Ordering::SeqCst), 2);
     assert_eq!(model.requests.lock().unwrap().len(), 1);
     assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+}
+
+/// The idempotent fake write, held mid-flight on request so a test can
+/// interrupt it after the broker recorded that it started.
+struct HeldWrite {
+    inner: FakeWriteTool,
+    hold: AtomicBool,
+    calls: AtomicUsize,
+    entered: Notify,
+}
+impl HeldWrite {
+    fn declaring(safety: ReplaySafety) -> Self {
+        Self {
+            inner: FakeWriteTool::declaring(safety),
+            hold: AtomicBool::new(false),
+            calls: AtomicUsize::new(0),
+            entered: Notify::new(),
+        }
+    }
+}
+#[async_trait]
+impl ToolProvider for HeldWrite {
+    fn id(&self) -> ProviderId {
+        self.inner.id()
+    }
+    fn list_tools(&self) -> Vec<ToolDescriptor> {
+        self.inner.list_tools()
+    }
+    async fn invoke(
+        &self,
+        request: AuthorizedToolRequest,
+        cancel: CancellationToken,
+    ) -> Result<ToolOutcome, ErrorEnvelope> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.entered.notify_one();
+        if self.hold.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
+        self.inner.invoke(request, cancel).await
+    }
+}
+fn reference(admission: ToolAdmission) -> Arc<dyn AgentProvider> {
+    let mut tools = vec!["fake.tool.echo".to_owned()];
+    if admission == ToolAdmission::ReadWrite {
+        tools.push(FAKE_WRITE_TOOL_ID.to_owned());
+    }
+    Arc::new(ReferenceWorker::new(tools, ReadOnlyLimits::default()).admitting(admission))
+}
+fn writing(
+    model: Arc<Model>,
+    write: Arc<HeldWrite>,
+    admission: ToolAdmission,
+    approver: Arc<dyn Approver>,
+) -> Harness {
+    Harness::with(
+        model,
+        vec![Arc::new(Tool::new()) as Arc<dyn ToolProvider>, write],
+        reference(admission),
+        approver,
+    )
+}
+fn offered(model: &Model) -> Vec<String> {
+    model.requests.lock().unwrap()[0]
+        .request()
+        .tools
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn an_admitted_write_is_offered_and_runs_once_approved() {
+    let model = Arc::new(Model::new(Scenario::Write));
+    let write = Arc::new(HeldWrite::declaring(ReplaySafety::Safe));
+    let approver = Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce));
+    let h = writing(
+        model.clone(),
+        write.clone(),
+        ToolAdmission::ReadWrite,
+        approver.clone(),
+    );
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start(&service, true).await;
+    let events = finished(&service, &task).await;
+    assert_eq!(
+        events.last().unwrap().kind,
+        TaskEventKind::TaskCompleted,
+        "{events:?}"
+    );
+    assert_eq!(offered(&model), vec!["fake.tool.echo", FAKE_WRITE_TOOL_ID]);
+    // Being offered the write was not permission to run it.
+    assert_eq!(approver.asked().len(), 1);
+    assert_eq!(write.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(write.inner.value("greeting").as_deref(), Some("hello"));
+}
+
+#[tokio::test]
+async fn a_write_nobody_approved_never_runs() {
+    for approver in [
+        ScriptedApprover::always(ApprovalDecisionKind::Deny),
+        ScriptedApprover::unavailable(),
+    ] {
+        let model = Arc::new(Model::new(Scenario::Write));
+        let write = Arc::new(HeldWrite::declaring(ReplaySafety::Safe));
+        let h = writing(
+            model,
+            write.clone(),
+            ToolAdmission::ReadWrite,
+            Arc::new(approver),
+        );
+        let service = h.service(RoutingMode::LocalOnly);
+        let task = start(&service, true).await;
+        fail(
+            &finished(&service, &task).await,
+            ErrorCode::PermissionDenied,
+        );
+        assert_eq!(write.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(write.inner.value("greeting"), None);
+    }
+}
+
+#[tokio::test]
+async fn a_read_only_worker_is_never_offered_a_write() {
+    // Registered but not admitted, and the model asks for it anyway.
+    let model = Arc::new(Model::new(Scenario::Write));
+    let write = Arc::new(HeldWrite::declaring(ReplaySafety::Safe));
+    let approver = Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce));
+    let h = writing(
+        model.clone(),
+        write.clone(),
+        ToolAdmission::ReadOnly,
+        approver.clone(),
+    );
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start(&service, true).await;
+    fail(
+        &finished(&service, &task).await,
+        ErrorCode::PermissionDenied,
+    );
+    assert_eq!(offered(&model), vec!["fake.tool.echo"]);
+    assert_eq!(write.calls.load(Ordering::SeqCst), 0);
+    assert!(approver.asked().is_empty());
+
+    // Naming a write without admitting it refuses the session before any
+    // model call, rather than quietly dropping the write from the catalogue.
+    let model = Arc::new(Model::new(Scenario::Write));
+    let write = Arc::new(HeldWrite::declaring(ReplaySafety::Safe));
+    let h = Harness::with(
+        model.clone(),
+        vec![
+            Arc::new(Tool::new()) as Arc<dyn ToolProvider>,
+            write.clone(),
+        ],
+        Arc::new(ReferenceWorker::new(
+            vec!["fake.tool.echo".into(), FAKE_WRITE_TOOL_ID.into()],
+            ReadOnlyLimits::default(),
+        )),
+        approver,
+    );
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start(&service, true).await;
+    fail(
+        &finished(&service, &task).await,
+        ErrorCode::CapabilityUnsupported,
+    );
+    assert!(model.requests.lock().unwrap().is_empty());
+    assert_eq!(write.calls.load(Ordering::SeqCst), 0);
+}
+
+/// A worker presenting another's descriptor. Any worker may ask for a governed
+/// turn, and nothing obliges its descriptor to reveal the admission level.
+struct Disguised {
+    runs: Arc<dyn AgentProvider>,
+    looks_like: AgentDescriptor,
+}
+#[async_trait]
+impl AgentProvider for Disguised {
+    fn describe(&self) -> AgentDescriptor {
+        self.looks_like.clone()
+    }
+    async fn run(
+        &self,
+        request: WorkerRequest,
+        host: &dyn WorkerHost,
+        cancel: CancellationToken,
+    ) -> Result<WorkerOutcome, ErrorEnvelope> {
+        self.runs.run(request, host, cancel).await
+    }
+}
+
+#[tokio::test]
+async fn a_resume_cannot_change_what_the_model_may_be_offered() {
+    for (started, resumed, scenario) in [
+        (
+            ToolAdmission::ReadWrite,
+            ToolAdmission::ReadOnly,
+            Scenario::Write,
+        ),
+        (
+            ToolAdmission::ReadOnly,
+            ToolAdmission::ReadWrite,
+            Scenario::Answer,
+        ),
+    ] {
+        for disguised in [false, true] {
+            let model = Arc::new(Model::new(scenario));
+            model.pause_after_read.store(true, Ordering::SeqCst);
+            let write = Arc::new(HeldWrite::declaring(ReplaySafety::Safe));
+            let approver = Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce));
+            let mut h = writing(model.clone(), write, started, approver);
+            let service = h.service(RoutingMode::LocalOnly);
+            let task = start(&service, true).await;
+            timeout(Duration::from_secs(2), async {
+                while model.requests.lock().unwrap().len() < 2 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let cp = service.create_checkpoint(&task).await.unwrap();
+            assert!(cp.resume.eligible);
+            drop(service);
+            model.pause_after_read.store(false, Ordering::SeqCst);
+            h.providers.worker = if disguised {
+                Arc::new(Disguised {
+                    runs: reference(resumed),
+                    looks_like: reference(started).describe(),
+                })
+            } else {
+                reference(resumed)
+            };
+            let reopened = h.service(RoutingMode::LocalOnly);
+            reopened.recover().await.unwrap();
+            // Stopping for the checkpoint already recorded one refusal.
+            let before = reopened
+                .replay_task_events(&task, 0)
+                .await
+                .unwrap()
+                .last()
+                .unwrap()
+                .sequence;
+            let outcome = reopened.resume_task(&task, &cp.checkpoint_id).await;
+            if disguised {
+                // Past the descriptor check, the session's own record refuses,
+                // and the task waits for a person rather than failing.
+                outcome.unwrap();
+                let refusal = timeout(Duration::from_secs(5), async {
+                    loop {
+                        let events = reopened.replay_task_events(&task, before).await.unwrap();
+                        if let Some(summary) =
+                            events.iter().find_map(|event| match &event.payload {
+                                EventPayload::DiagnosticRecorded { code, summary }
+                                    if code == "resume.refused" =>
+                                {
+                                    Some(summary.clone())
+                                }
+                                _ => None,
+                            })
+                        {
+                            return summary;
+                        }
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                assert!(refusal.contains("admission"), "{refusal}");
+                assert_eq!(
+                    reopened.get_task_record(&task).await.unwrap().state,
+                    TaskState::Interrupted
+                );
+            } else {
+                // The reference worker describes each level differently, and a
+                // checkpoint remembers the descriptor it was taken against.
+                assert_eq!(outcome.unwrap_err().code, ErrorCode::Conflict);
+            }
+            // Either way, the model was not called again under the other level.
+            assert_eq!(
+                model.requests.lock().unwrap().len(),
+                2,
+                "{started:?} -> {resumed:?}, disguised: {disguised}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_interrupted_write_is_retried_only_when_it_declared_that_safe() {
+    for safety in [ReplaySafety::Safe, ReplaySafety::Unsafe] {
+        let model = Arc::new(Model::new(Scenario::Write));
+        let write = Arc::new(HeldWrite::declaring(safety));
+        write.hold.store(true, Ordering::SeqCst);
+        let approver = Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce));
+        let h = writing(
+            model.clone(),
+            write.clone(),
+            ToolAdmission::ReadWrite,
+            approver,
+        );
+        let service = h.service(RoutingMode::LocalOnly);
+        let task = start(&service, true).await;
+        timeout(Duration::from_secs(2), write.entered.notified())
+            .await
+            .unwrap();
+        let cp = service.create_checkpoint(&task).await.unwrap();
+        assert_eq!(cp.pending_action.as_ref().unwrap().replay_safety, safety);
+        drop(service);
+        write.hold.store(false, Ordering::SeqCst);
+        let reopened = h.service(RoutingMode::LocalOnly);
+        reopened.recover().await.unwrap();
+        let resumed = reopened.resume_task(&task, &cp.checkpoint_id).await;
+        if safety == ReplaySafety::Safe {
+            assert!(cp.resume.eligible);
+            resumed.unwrap();
+            let events = finished(&reopened, &task).await;
+            assert_eq!(events.last().unwrap().kind, TaskEventKind::TaskCompleted);
+            assert_eq!(write.calls.load(Ordering::SeqCst), 2);
+            assert_eq!(write.inner.value("greeting").as_deref(), Some("hello"));
+        } else {
+            assert!(!cp.resume.eligible);
+            assert_eq!(resumed.unwrap_err().code, ErrorCode::InterruptedUnsafe);
+            assert_eq!(write.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(write.inner.invocations(), 0);
+        }
+    }
 }

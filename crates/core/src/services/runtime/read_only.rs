@@ -1,7 +1,7 @@
 //! One canonical, budgeted model/observation turn. Strategy repeats this port.
 use super::*;
 use crate::contracts::{EventEnvelope, MessagePart, TaskRecord};
-use crate::ports::{ReadOnlyLimits, ReadOnlyTurn};
+use crate::ports::{ReadOnlyLimits, ReadOnlyTurn, ToolAdmission};
 use crate::services::{
     CanonicalModelHistory, ModelToolCatalogue, ToolInputSchema, prepare_model_context,
 };
@@ -16,6 +16,10 @@ const TOOL_BYTES: u64 = 262_144;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Reservation {
     limits: ReadOnlyLimits,
+    /// Recorded so a resume cannot change what the model may be offered.
+    /// Read-only reservations omit it and keep their M6 shape.
+    #[serde(default, skip_serializing_if = "ToolAdmission::is_read_only")]
+    admission: ToolAdmission,
     input_bytes: u64,
     output_bytes: u64,
     output_tokens: u64,
@@ -24,9 +28,10 @@ struct Reservation {
 }
 
 impl BrokeredHost {
-    pub(super) async fn run_read_only_turn(
+    pub(super) async fn run_turn(
         &self,
         tools: &[String],
+        admission: ToolAdmission,
         limits: &ReadOnlyLimits,
         cancel: &CancellationToken,
     ) -> Result<ReadOnlyTurn, ErrorEnvelope> {
@@ -53,7 +58,7 @@ impl BrokeredHost {
         // exchange, for which selecting all message parts would be premature.
         CanonicalModelHistory::select(&task, initial, &events, &[])?;
         let names: Vec<_> = tools.iter().map(String::as_str).collect();
-        let catalogue = ModelToolCatalogue::select_read_only(&self.tools.registry, &names)?;
+        let catalogue = ModelToolCatalogue::select(&self.tools.registry, &names, admission)?;
         if names.is_empty() {
             return Err(error(ErrorCode::CapabilityUnsupported));
         }
@@ -130,8 +135,8 @@ impl BrokeredHost {
                     _ => None,
                 })
                 .ok_or_else(|| error(ErrorCode::InterruptedUnsafe))?;
-            self.reserve(&events, limits, 0, false).await?;
-            self.read_tool(&step, &name, arguments, deadline, cancel, None)
+            self.reserve(&events, limits, admission, 0, false).await?;
+            self.turn_tool(&step, &name, arguments, deadline, cancel, None)
                 .await?;
             return Ok(ReadOnlyTurn::Observed);
         }
@@ -150,7 +155,9 @@ impl BrokeredHost {
         let input_bytes = crate::services::MODEL_INPUT_BYTES as u64;
         // Charge before discovery, authorization or execution. A crash may
         // overcharge, but can never replenish a used budget on resume.
-        let ordinal = self.reserve(&events, limits, input_bytes, true).await?;
+        let ordinal = self
+            .reserve(&events, limits, admission, input_bytes, true)
+            .await?;
         let snapshot = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(error(ErrorCode::Cancelled)),
@@ -230,7 +237,7 @@ impl BrokeredHost {
                     .validate(&call.arguments)?;
                 // Complete the model action even for a tool-only answer. Tool
                 // intent/result have their own M4 pending-action lifecycle.
-                self.read_tool(
+                self.turn_tool(
                     &format!("reference-{ordinal}"),
                     &call.name,
                     call.arguments,
@@ -270,11 +277,13 @@ impl BrokeredHost {
         &self,
         events: &[EventEnvelope],
         limits: &ReadOnlyLimits,
+        admission: ToolAdmission,
         input_bytes: u64,
         model: bool,
     ) -> Result<u64, ErrorEnvelope> {
         let next = Reservation {
             limits: limits.clone(),
+            admission,
             input_bytes,
             output_bytes: TOOL_BYTES + if model { limits.turn_bytes as u64 } else { 0 },
             output_tokens: if model {
@@ -300,7 +309,9 @@ impl BrokeredHost {
                 }
                 let prior: Reservation = serde_json::from_str(summary)
                     .map_err(|_| error(ErrorCode::InterruptedUnsafe))?;
-                if &prior.limits != limits {
+                // What the model may be offered belongs to the session, like
+                // its limits. Resuming under another level would change it.
+                if &prior.limits != limits || prior.admission != admission {
                     return Err(error(ErrorCode::InterruptedUnsafe));
                 }
                 let model_reservation =
@@ -365,7 +376,7 @@ impl BrokeredHost {
         Ok(totals[0])
     }
 
-    async fn read_tool(
+    async fn turn_tool(
         &self,
         step: &str,
         name: &str,
@@ -413,7 +424,7 @@ fn error(code: ErrorCode) -> ErrorEnvelope {
             "Read-only worker reached a content or durable reservation limit; inspect task activity"
         }
         ErrorCode::InterruptedUnsafe => {
-            "Canonical history or limits changed; this work cannot be resumed safely"
+            "Canonical history, limits or tool admission changed; this work cannot be resumed safely"
         }
         _ => "Read-only worker stopped; inspect task activity and budget reservations",
     };

@@ -27,7 +27,7 @@ pub use permission::{
     ApprovalStore, Approver, PermissionError, PermissionOutcome, PermissionPolicy, PermissionQuery,
     reason,
 };
-pub use read_only::{ReadOnlyLimits, ReadOnlyTurn};
+pub use read_only::{ReadOnlyLimits, ReadOnlyTurn, ToolAdmission};
 pub use repository::{
     CheckpointRepository, ConfigurationRepository, ConversationRepository, ProjectRepository,
     ProviderSettingsRepository, RepositoryError, TaskRepository,

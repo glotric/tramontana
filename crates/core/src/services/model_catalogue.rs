@@ -6,6 +6,8 @@ use crate::contracts::{
     SideEffect,
 };
 
+use crate::ports::ToolAdmission;
+
 use super::{ModelContentProvenance, ToolRegistry, model_context, model_input};
 
 /// Definitions selected by core from a registry snapshot, not supplied by a worker.
@@ -23,14 +25,26 @@ impl std::fmt::Debug for ModelToolCatalogue {
 }
 
 impl ModelToolCatalogue {
-    /// Select exactly these tools in stable canonical-name order. Empty means
-    /// no tools, never all registered tools. M6 offers only cancellable reads
-    /// with no side effects. Selection does not evaluate or bypass permissions.
-    /// Input schemas are bounded object schemas; argument-schema validation is
-    /// a separate execution-boundary responsibility, not performed here.
+    /// [`select`](Self::select) at the read-only level: cancellable reads with
+    /// no side effects, the M6 catalogue.
     pub fn select_read_only(
         registry: &ToolRegistry,
         selected: &[&str],
+    ) -> Result<Self, ErrorEnvelope> {
+        Self::select(registry, selected, ToolAdmission::ReadOnly)
+    }
+
+    /// Select exactly these tools in stable canonical-name order. Empty means
+    /// no tools, never all registered tools. Every tool must be cancellable and
+    /// allowed at `admission`; one that is not refuses the whole selection
+    /// rather than being dropped from it. Selection does not evaluate or bypass
+    /// permissions: an offered write is still asked about each time it runs.
+    /// Input schemas are bounded object schemas; argument-schema validation is
+    /// a separate execution-boundary responsibility, not performed here.
+    pub fn select(
+        registry: &ToolRegistry,
+        selected: &[&str],
+        admission: ToolAdmission,
     ) -> Result<Self, ErrorEnvelope> {
         if selected.len() > 64 {
             return Err(error(ErrorCode::LimitExceeded));
@@ -45,8 +59,7 @@ impl ModelToolCatalogue {
                 .get(name)
                 .ok_or_else(|| error(ErrorCode::NotFound))?;
             let descriptor = &registered.descriptor;
-            if descriptor.risk_class != RiskClass::Read
-                || descriptor.side_effect != SideEffect::None
+            if !admits(admission, descriptor.risk_class, descriptor.side_effect)
                 || !descriptor.supports_cancellation
                 || descriptor.provider_id != registered.provider.id().as_str()
             {
@@ -116,4 +129,18 @@ fn error(code: ErrorCode) -> ErrorEnvelope {
         "Model tool catalogue selection refused",
         CorrelationId::new("model-catalogue"),
     )
+}
+
+/// Whether a tool of this risk and effect may be offered at `admission`.
+///
+/// Both facts must agree: a "modify" tool that declares an external or
+/// irreversible effect is not a local write, whatever its risk class says.
+/// Nothing dangerous, irreversible or external is offered at any level
+/// (ADR 0021).
+fn admits(admission: ToolAdmission, risk: RiskClass, effect: SideEffect) -> bool {
+    match (risk, effect) {
+        (RiskClass::Read, SideEffect::None) => true,
+        (RiskClass::Modify, SideEffect::LocalReversible) => admission == ToolAdmission::ReadWrite,
+        _ => false,
+    }
 }

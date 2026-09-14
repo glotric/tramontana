@@ -24,27 +24,38 @@ use tramontana_core::contracts::{
     ErrorEnvelope, Health, ModelCapability, ModelDescriptor, ModelLocation, ProviderConfig,
     ProviderEndpoint,
 };
-use tramontana_core::ports::{ModelProvider, SecretResolver};
+use tramontana_core::ports::{ModelProvider, SecretResolver, ToolAdmission};
 
 /// Both applications select the same worker. Empty profiles retain the labelled
 /// deterministic diagnostic; configured endpoints use the actual bounded loop.
+///
+/// `admission` is the caller's choice, never a default: writes are offered to
+/// the model only when a person asked for them, and each one is still approved
+/// as it happens (ADR 0021). The diagnostic worker ignores it.
 #[must_use]
-pub fn assemble_worker(configured: bool) -> Arc<dyn tramontana_core::ports::AgentProvider> {
+pub fn assemble_worker(
+    configured: bool,
+    admission: ToolAdmission,
+) -> Arc<dyn tramontana_core::ports::AgentProvider> {
     if configured {
-        Arc::new(tramontana_core::services::ReferenceWorker::new(
-            [
-                "builtin.fs.list",
-                "builtin.fs.read",
-                "builtin.fs.search",
-                "builtin.git.status",
-                "builtin.git.diff",
-                "builtin.git.log",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
-            tramontana_core::ports::ReadOnlyLimits::default(),
-        ))
+        let mut tools = vec![
+            "builtin.fs.list",
+            "builtin.fs.read",
+            "builtin.fs.search",
+            "builtin.git.status",
+            "builtin.git.diff",
+            "builtin.git.log",
+        ];
+        if admission == ToolAdmission::ReadWrite {
+            tools.extend(["builtin.fs.create", "builtin.fs.patch"]);
+        }
+        Arc::new(
+            tramontana_core::services::ReferenceWorker::new(
+                tools.into_iter().map(str::to_owned).collect(),
+                tramontana_core::ports::ReadOnlyLimits::default(),
+            )
+            .admitting(admission),
+        )
     } else {
         Arc::new(tramontana_core::testing::FakeWorker::calling(
             "builtin.fs.list",

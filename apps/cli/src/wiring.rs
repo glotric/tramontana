@@ -64,9 +64,14 @@ pub(crate) fn profile_path(explicit: Option<PathBuf>) -> PathBuf {
 pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskService>, String> {
     // Nothing supervised, so there is no runtime to keep alive and the plane
     // can be dropped here.
-    open_with(path, chunk_delay_ms, Supervision::Skip)
-        .await
-        .map(|(service, _plane)| service)
+    open_with(
+        path,
+        chunk_delay_ms,
+        Supervision::Skip,
+        tramontana_core::ports::ToolAdmission::ReadOnly,
+    )
+    .await
+    .map(|(service, _plane)| service)
 }
 
 /// Open a profile for a command that will actually run a model.
@@ -74,17 +79,22 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
 /// Returns the plane as well: it owns any runtime this process started, and
 /// dropping it stops them. The caller has to hold it for as long as the task
 /// runs, which is why this cannot simply return the service.
+///
+/// `admission` is what the reference worker may offer its model, and comes
+/// from the command line: writes only when the person asked for them.
 pub(crate) async fn open_running(
     path: &Path,
     chunk_delay_ms: u64,
+    admission: tramontana_core::ports::ToolAdmission,
 ) -> Result<(Arc<TaskService>, ModelPlane), String> {
-    open_with(path, chunk_delay_ms, Supervision::Start).await
+    open_with(path, chunk_delay_ms, Supervision::Start, admission).await
 }
 
 async fn open_with(
     path: &Path,
     chunk_delay_ms: u64,
     supervision: Supervision,
+    admission: tramontana_core::ports::ToolAdmission,
 ) -> Result<(Arc<TaskService>, ModelPlane), String> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -97,8 +107,8 @@ async fn open_with(
         .await
         .map_err(|error| format!("could not open {}: {error}", path.display()))?;
 
-    // Read-only tools, behind the permission boundary. The registry says a
-    // tool exists; only the permission manager says it may run.
+    // Filesystem and Git tools, behind the permission boundary. The registry
+    // says a tool exists; only the permission manager says it may run.
     let (registry, permissions, releases) = assemble_tool_plane(
         vec![
             Arc::new(FilesystemTools::new()) as Arc<dyn ToolProvider>,
@@ -106,9 +116,9 @@ async fn open_with(
         ],
         Arc::new(InMemoryApprovalStore::new()) as Arc<dyn ApprovalStore>,
         // Prompts on a terminal, and refuses when there is no terminal to
-        // prompt on. Every tool registered above is a read inside an approved
-        // project, which policy permits without asking, so this is exercised
-        // only once modifying tools arrive in M7.
+        // prompt on. A read inside an approved project is permitted without
+        // asking; a write is asked about every time it runs, and is offered
+        // to a model at all only under `--allow-writes`.
         Arc::new(TerminalApprover::new()) as Arc<dyn Approver>,
         Arc::new(UuidIdSource::new()),
     )
@@ -179,7 +189,7 @@ async fn open_with(
             releases: Arc::clone(&releases),
             // Shared strategy selection; both real and diagnostic work use
             // the same permission-governed built-in tools.
-            worker: tramontana_composition::assemble_worker(has_configured),
+            worker: tramontana_composition::assemble_worker(has_configured, admission),
         },
         Arc::new(SystemClock::new()),
         Arc::new(UuidIdSource::new()),
@@ -207,8 +217,13 @@ async fn open_with(
 #[must_use]
 pub(crate) fn worker_named(agent_id: &str) -> Option<Arc<dyn AgentProvider>> {
     match agent_id {
+        // A worker taking a task over reads: handing a task on is not a way
+        // for it to gain writes nobody gave it.
         tramontana_core::services::REFERENCE_AGENT_ID => {
-            Some(tramontana_composition::assemble_worker(true))
+            Some(tramontana_composition::assemble_worker(
+                true,
+                tramontana_core::ports::ToolAdmission::ReadOnly,
+            ))
         }
         tramontana_core::testing::RECEIVING_AGENT_ID => {
             // M4 diagnostic handoff target. Its fixed step matches the fake
