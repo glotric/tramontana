@@ -29,6 +29,10 @@ rustix = { version = "1.1", features = ["process"] }
 
 
 [dev-dependencies]
+# The chat-completions adapter a supervised runtime is reached through, so
+# the model provider contract can run against the managed path as composition
+# assembles it.
+tramontana-adapters-model = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net"] }
 

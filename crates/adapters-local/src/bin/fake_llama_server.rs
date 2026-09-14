@@ -18,9 +18,19 @@
 //! - `spawn-child`      — serve, having spawned a long-lived child of its own,
 //!   so that "the whole process group is cleaned up" can be tested rather than
 //!   asserted
+//!
+//! Chat completions, chosen with `--fake-chat`, so the model provider contract
+//! can run against a supervised runtime (`BUILD_ORDER.md` §17):
+//!
+//! - `streams` — each `--fake-chunk` value as a content delta, then a clean
+//!   finish, in the OpenAI-compatible shape `llama-server` speaks
+//! - `fails`   — 503 with no body
+//! - `silent`  — headers, then nothing, so a cancellation lands mid-stream
+//!
+//! Without it, anything but `/health` is 404.
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
 /// The build this fixture claims to be.
@@ -106,43 +116,123 @@ fn main() {
         }
     };
 
+    let chat = flag(&args, "--fake-chat").unwrap_or_default();
+    let chunks = flags(&args, "--fake-chunk");
     let started = Instant::now();
     println!("HTTP server listening on 127.0.0.1:{port}");
     let _ = std::io::stdout().flush();
 
     for stream in listener.incoming() {
-        let Ok(mut stream) = stream else { continue };
-
-        // Read just the request line; nothing here needs the rest.
-        let mut request_line = String::new();
-        let mut reader = BufReader::new(match stream.try_clone() {
-            Ok(clone) => clone,
-            Err(_) => continue,
-        });
-        if reader.read_line(&mut request_line).is_err() {
-            continue;
-        }
-
+        let Ok(stream) = stream else { continue };
         let loading = mode == "never-ready"
             || (mode == "slow" && started.elapsed() < Duration::from_millis(load_ms));
-        let (status, body) = if !request_line.contains("/health") {
-            ("404 Not Found", "{}".to_owned())
-        } else if loading {
-            (
-                "503 Service Unavailable",
-                r#"{"status":"loading model"}"#.to_owned(),
-            )
-        } else {
-            ("200 OK", r#"{"status":"ok"}"#.to_owned())
-        };
-
-        let response = format!(
-            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        let _ = stream.write_all(response.as_bytes());
-        let _ = stream.flush();
+        // One thread per connection, so a stream `silent` holds open does not
+        // stop `/health` from answering.
+        let chat = chat.clone();
+        let chunks = chunks.clone();
+        std::thread::spawn(move || serve(stream, loading, &chat, &chunks));
     }
+}
+
+/// Answer one connection.
+fn serve(mut stream: TcpStream, loading: bool, chat: &str, chunks: &[String]) {
+    let Ok(clone) = stream.try_clone() else {
+        return;
+    };
+    let mut reader = BufReader::new(clone);
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line).is_err() {
+        return;
+    }
+    // The rest of the request too, so a client still sending its body is not
+    // answered with a reset.
+    let mut length: usize = 0;
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) if line == "\r\n" => break,
+            Ok(_) => {
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+        }
+    }
+    let mut body = vec![0; length];
+    let _ = reader.read_exact(&mut body);
+
+    if request_line.contains("/health") {
+        if loading {
+            respond(
+                &mut stream,
+                "503 Service Unavailable",
+                r#"{"status":"loading model"}"#,
+            );
+        } else {
+            respond(&mut stream, "200 OK", r#"{"status":"ok"}"#);
+        }
+    } else if request_line.contains("/chat/completions") {
+        chat_completion(&mut stream, chat, chunks);
+    } else {
+        respond(&mut stream, "404 Not Found", "{}");
+    }
+}
+
+/// A chat completion, as `--fake-chat` says.
+fn chat_completion(stream: &mut TcpStream, chat: &str, chunks: &[String]) {
+    match chat {
+        "streams" | "silent" => {
+            let head =
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
+            if stream.write_all(head.as_bytes()).is_err() {
+                return;
+            }
+            let _ = stream.flush();
+            if chat == "silent" {
+                // Held open and never written to: the client's cancellation
+                // or deadline has to be what ends it.
+                loop {
+                    std::thread::sleep(Duration::from_secs(3600));
+                }
+            }
+            for chunk in chunks {
+                let frame = serde_json::json!({ "choices": [{ "delta": { "content": chunk } }] });
+                if stream
+                    .write_all(format!("data: {frame}\n\n").as_bytes())
+                    .is_err()
+                {
+                    return;
+                }
+                let _ = stream.flush();
+            }
+            let finish = serde_json::json!({
+                "choices": [{ "delta": {}, "finish_reason": "stop" }],
+                "usage": { "prompt_tokens": 11, "completion_tokens": 3 }
+            });
+            let _ = stream.write_all(format!("data: {finish}\n\ndata: [DONE]\n\n").as_bytes());
+            let _ = stream.flush();
+        }
+        "fails" => respond(stream, "503 Service Unavailable", ""),
+        _ => respond(stream, "404 Not Found", "{}"),
+    }
+}
+
+fn respond(stream: &mut TcpStream, status: &str, body: &str) {
+    let response = format!(
+        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+}
+
+/// Every value following `name` in the argument list.
+fn flags(args: &[String], name: &str) -> Vec<String> {
+    args.windows(2)
+        .filter(|pair| pair[0] == name)
+        .map(|pair| pair[1].clone())
+        .collect()
 }
 
 /// The value following `name` in the argument list.
