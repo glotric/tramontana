@@ -77,6 +77,9 @@ pub struct LlamaServerSpec {
     pub extra_args: Vec<String>,
     /// How long to wait for the server to report itself healthy.
     pub readiness_timeout: Duration,
+    /// Where to record the runtime while it runs, so a later process can stop
+    /// it if this one is killed outright (ADR 0030). `None` records nothing.
+    pub records: Option<PathBuf>,
 }
 
 impl LlamaServerSpec {
@@ -92,6 +95,7 @@ impl LlamaServerSpec {
             // long. It is a bound on *silence*, not on the whole start: a
             // child that exits fails immediately whatever this says.
             readiness_timeout: Duration::from_secs(120),
+            records: None,
         }
     }
 }
@@ -238,6 +242,8 @@ pub struct SupervisedLlamaServer {
     readers: Vec<tokio::task::JoinHandle<()>>,
     client: reqwest::Client,
     version: ProbedVersion,
+    /// This runtime's record, removed when it stops.
+    record: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for SupervisedLlamaServer {
@@ -310,6 +316,25 @@ impl SupervisedLlamaServer {
             readers.push(capture(stderr, Arc::clone(&logs)));
         }
 
+        // Recorded while it runs, so a process that inherits the profile after
+        // this one is killed outright can stop it (ADR 0030).
+        let record = spec.records.as_deref().and_then(|directory| {
+            let record = crate::runtime_records::RuntimeRecord {
+                pid: child.id()?,
+                binary: spec.binary.clone(),
+                port,
+            };
+            match crate::runtime_records::write(directory, &record) {
+                Ok(path) => Some(path),
+                Err(failure) => {
+                    tracing::warn!(
+                        "could not record the runtime, so a crash would leave it running: {failure}"
+                    );
+                    None
+                }
+            }
+        });
+
         let mut server = Self {
             child: Some(child),
             port,
@@ -320,6 +345,7 @@ impl SupervisedLlamaServer {
                 .build()
                 .map_err(|failure| StartError::Spawn(failure.to_string()))?,
             version,
+            record,
         };
 
         match server.await_ready(spec.readiness_timeout).await {
@@ -385,6 +411,7 @@ impl SupervisedLlamaServer {
     /// nobody dares put in an error path.
     pub async fn shutdown(&mut self) {
         let Some(mut child) = self.child.take() else {
+            self.forget_record();
             return;
         };
 
@@ -397,6 +424,15 @@ impl SupervisedLlamaServer {
             // than hoping.
             let _ = child.kill().await;
             let _ = child.wait().await;
+        }
+        self.forget_record();
+    }
+
+    /// Remove this runtime's record: it is stopping, so nothing is left
+    /// behind to find.
+    fn forget_record(&mut self) {
+        if let Some(path) = self.record.take() {
+            let _ = std::fs::remove_file(path);
         }
     }
 
@@ -489,6 +525,7 @@ impl Drop for SupervisedLlamaServer {
             request_stop(child);
             let _ = child.start_kill();
         }
+        self.forget_record();
     }
 }
 

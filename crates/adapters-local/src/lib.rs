@@ -12,6 +12,7 @@
 //! and the model are supplied by the user, by path.
 
 mod llama;
+pub mod runtime_records;
 
 pub use llama::{
     LlamaServerSpec, MINIMUM_BUILD, ProbedVersion, StartError, SupervisedLlamaServer, probe_version,

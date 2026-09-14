@@ -95,6 +95,35 @@ pub fn recovery_store(profile: &std::path::Path) -> std::path::PathBuf {
     profile.with_file_name(name)
 }
 
+/// Where a profile records the model runtimes running for it: beside the
+/// profile, named after it (ADR 0030).
+pub fn runtime_records(profile: &std::path::Path) -> std::path::PathBuf {
+    let mut name = profile
+        .file_name()
+        .map_or_else(|| std::ffi::OsString::from("profile"), ToOwned::to_owned);
+    name.push(".runtimes");
+    profile.with_file_name(name)
+}
+
+/// Stop model runtimes that a previous process on this profile left running.
+///
+/// Call only while holding the profile's lease: that is what proves the
+/// process that started them is gone (ADR 0030). Returns a line for each
+/// runtime stopped, for the caller to show.
+pub async fn reap_runtimes(profile: &std::path::Path) -> Vec<String> {
+    tramontana_adapters_local::runtime_records::reap(&runtime_records(profile))
+        .await
+        .into_iter()
+        .filter_map(|reaped| match reaped {
+            tramontana_adapters_local::runtime_records::Reaped::Stopped(record) => Some(format!(
+                "stopped a model runtime left running by an earlier process (pid {}, port {})",
+                record.pid, record.port
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Whether to start runtimes this process would own.
 ///
 /// Listing projects must not load a seven-billion-parameter model. A command
@@ -172,6 +201,17 @@ pub async fn assemble_models(
     resolver: &Arc<dyn SecretResolver>,
     supervision: Supervision,
 ) -> ModelPlane {
+    assemble_models_recording(endpoints, resolver, supervision, None).await
+}
+
+/// [`assemble_models`], recording each runtime it starts in `records`, so
+/// the next holder of the profile can stop one left behind (ADR 0030).
+pub async fn assemble_models_recording(
+    endpoints: &[ProviderEndpoint],
+    resolver: &Arc<dyn SecretResolver>,
+    supervision: Supervision,
+    records: Option<&std::path::Path>,
+) -> ModelPlane {
     let mut plane = ModelPlane {
         providers: Vec::new(),
         failures: Vec::new(),
@@ -189,7 +229,7 @@ pub async fn assemble_models(
             plane.skipped.push(endpoint.endpoint_id.clone());
             continue;
         }
-        match bring_up(endpoint, resolver, &mut plane.supervised).await {
+        match bring_up(endpoint, resolver, &mut plane.supervised, records).await {
             Ok(provider) => plane.providers.push(provider),
             Err(error) => {
                 tracing::warn!(
@@ -213,6 +253,7 @@ async fn bring_up(
     endpoint: &ProviderEndpoint,
     resolver: &Arc<dyn SecretResolver>,
     supervised: &mut Vec<SupervisedLlamaServer>,
+    records: Option<&std::path::Path>,
 ) -> Result<Arc<dyn ModelProvider>, ErrorEnvelope> {
     // The configured endpoint's identifier *is* the provider identifier, so a
     // routing decision naming a provider can be resolved back to the row the
@@ -264,6 +305,7 @@ async fn bring_up(
         } => {
             let mut spec = LlamaServerSpec::new(binary_path, model_path);
             spec.extra_args = extra_args.clone();
+            spec.records = records.map(std::path::Path::to_path_buf);
             let runtime = SupervisedLlamaServer::start(&spec).await?;
 
             // Reached over the loopback URL it was given, with the same

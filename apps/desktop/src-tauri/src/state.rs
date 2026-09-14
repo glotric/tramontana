@@ -14,7 +14,7 @@ use tramontana_core::services::{Providers, Repositories, TaskService};
 use tramontana_core::testing::{FakeModelProvider, InMemoryApprovalStore, assemble_tool_plane};
 
 use crate::approval::DesktopApprover;
-use tramontana_composition::{ModelPlane, Supervision, assemble_models};
+use tramontana_composition::{ModelPlane, Supervision, assemble_models_recording};
 use tramontana_persistence::{
     Database, SqliteConfigurationRepository, SqliteConversationRepository, SqliteEventStore,
     SqliteProjectRepository, SqliteProviderSettingsRepository, SqliteTaskRepository,
@@ -93,6 +93,17 @@ impl AppState {
         let lease = tramontana_platform::ProfileLease::try_acquire(path)
             .map_err(|error| format!("could not acquire runtime profile lease: {error}"))?
             .map(|lease| Arc::new(lease) as Arc<dyn Send + Sync>);
+        // Holding the lease proves any runtime recorded for this profile
+        // outlived the process that started it: stop those before starting
+        // more. Without the lease they may be in use (ADR 0030).
+        if lease.is_some() {
+            for note in tramontana_composition::reap_runtimes(path).await {
+                tracing::warn!("{note}");
+            }
+        }
+        let records = lease
+            .is_some()
+            .then(|| tramontana_composition::runtime_records(path));
         let store: Arc<dyn EventStore> = Arc::new(SqliteEventStore::new(database.clone()));
         // The endpoints the user configured, through the same composition the
         // CLI uses. Supervised runtimes are started here because the desktop
@@ -103,7 +114,13 @@ impl AppState {
             .await
             .map_err(|error| format!("could not read provider settings: {error}"))?;
         let resolver = Arc::new(PlatformSecretVault::new()) as Arc<dyn SecretResolver>;
-        let plane = assemble_models(&configured, &resolver, Supervision::Start).await;
+        let plane = assemble_models_recording(
+            &configured,
+            &resolver,
+            Supervision::Start,
+            records.as_deref(),
+        )
+        .await;
         for failure in &plane.failures {
             tracing::warn!(
                 endpoint = failure.endpoint_id,
