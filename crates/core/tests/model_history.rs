@@ -60,6 +60,7 @@ fn fixture() -> (TaskRecord, ContextManifest, Vec<EventEnvelope>) {
                 display_summary: "Summary is not raw output".into(),
                 side_effect: SideEffect::None,
                 truncated: true,
+                changes: Vec::new(),
             },
         ),
         (

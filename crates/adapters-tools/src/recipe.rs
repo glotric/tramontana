@@ -170,6 +170,7 @@ impl ToolProvider for RecipeTools {
             display_summary,
             side_effect: SideEffect::External,
             truncated,
+            changes: Vec::new(),
         })
     }
 }

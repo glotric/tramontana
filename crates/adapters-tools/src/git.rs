@@ -364,6 +364,7 @@ impl ToolProvider for GitTools {
             ),
             side_effect: SideEffect::None,
             truncated,
+            changes: Vec::new(),
         })
     }
 }

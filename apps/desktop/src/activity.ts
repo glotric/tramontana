@@ -1,4 +1,10 @@
-import type { EventEnvelope, EventPayload, TaskState } from "@tramontana/shared";
+import type {
+  ArtifactRecord,
+  EventEnvelope,
+  EventPayload,
+  FileChange,
+  TaskState,
+} from "@tramontana/shared";
 
 /**
  * Turning contract events into something a person can read.
@@ -77,6 +83,8 @@ function describePayload(payload: EventPayload): string {
       return `${payload.toolId} (${payload.riskClass}) — ${payload.argumentsSummary}`;
     case "toolCompleted":
       return payload.truncated ? `${payload.displaySummary} (truncated)` : payload.displaySummary;
+    case "artifactRecorded":
+      return describeArtifact(payload.artifact);
     case "taskCompleted":
       return payload.summary;
     case "taskFailed":
@@ -88,6 +96,26 @@ function describePayload(payload: EventPayload): string {
       // kind and carrying on is the contract (`CORE_CONTRACTS.md` §2).
       return "unsupported event kind";
   }
+}
+
+/** How many changes one line names before counting the rest, as the CLI does. */
+const NAMED_IN_SUMMARY = 5;
+
+/** One line for an artifact, in the same words the CLI uses. */
+function describeArtifact(artifact: ArtifactRecord): string {
+  const content = artifact.content;
+  const named = content.changes.slice(0, NAMED_IN_SUMMARY).map(describeChange);
+  const rest = content.changes.length - named.length;
+  const tail = rest > 0 ? `, and ${rest} more` : "";
+  return `${content.changes.length} file change(s): ${named.join(", ")}${tail}`;
+}
+
+function describeChange(change: FileChange): string {
+  const already = change.alreadyApplied ? " (already so)" : "";
+  if (change.change === "moved" && change.from !== undefined) {
+    return `moved ${change.from} to ${change.path}${already}`;
+  }
+  return `${change.change} ${change.path}${already}`;
 }
 
 /** Whether a state can never be left. */

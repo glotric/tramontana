@@ -37,6 +37,8 @@ struct Model {
     capable: bool,
     requests: Mutex<Vec<AuthorizedModelRequest>>,
     pause_after_read: AtomicBool,
+    /// Fail the turn that follows a tool result.
+    fail_after_read: AtomicBool,
     entered: Notify,
 }
 impl Model {
@@ -47,6 +49,7 @@ impl Model {
             capable: true,
             requests: Mutex::new(vec![]),
             pause_after_read: AtomicBool::new(false),
+            fail_after_read: AtomicBool::new(false),
             entered: Notify::new(),
         }
     }
@@ -88,7 +91,9 @@ impl ModelProvider for Model {
                 CorrelationId::new("test"),
             ));
         }
-        if matches!(self.scenario, Scenario::Failure) {
+        if matches!(self.scenario, Scenario::Failure)
+            || (has_result && self.fail_after_read.load(Ordering::SeqCst))
+        {
             return Err(ErrorEnvelope::new(
                 ErrorCode::ProviderUnavailable,
                 "API_KEY=fixture-secret",
@@ -686,6 +691,9 @@ struct HeldWrite {
     hold: AtomicBool,
     calls: AtomicUsize,
     entered: Notify,
+    /// Report the change under this path instead, as a tool whose file name
+    /// carries a credential would.
+    reported_path: Option<&'static str>,
 }
 impl HeldWrite {
     fn declaring(safety: ReplaySafety) -> Self {
@@ -694,6 +702,7 @@ impl HeldWrite {
             hold: AtomicBool::new(false),
             calls: AtomicUsize::new(0),
             entered: Notify::new(),
+            reported_path: None,
         }
     }
 }
@@ -715,7 +724,14 @@ impl ToolProvider for HeldWrite {
         if self.hold.load(Ordering::SeqCst) {
             std::future::pending::<()>().await;
         }
-        self.inner.invoke(request, cancel).await
+        let mut outcome = self.inner.invoke(request, cancel).await?;
+        if let Some(path) = self.reported_path {
+            for change in &mut outcome.changes {
+                change.path = path.to_owned();
+                change.from = Some(path.to_owned());
+            }
+        }
+        Ok(outcome)
     }
 }
 fn reference(admission: ToolAdmission) -> Arc<dyn AgentProvider> {
@@ -800,6 +816,7 @@ impl ToolProvider for FakeRecipe {
             display_summary: "Recipe `test` passed".to_owned(),
             side_effect: SideEffect::External,
             truncated: false,
+            changes: Vec::new(),
         })
     }
 }
@@ -1022,6 +1039,168 @@ async fn a_write_nobody_approved_never_runs() {
         assert_eq!(write.calls.load(Ordering::SeqCst), 0);
         assert_eq!(write.inner.value("greeting"), None);
     }
+}
+
+fn recorded(events: &[EventEnvelope]) -> Vec<&ArtifactRecord> {
+    events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ArtifactRecorded { artifact } => Some(artifact),
+            _ => None,
+        })
+        .collect()
+}
+fn approved_write(model: Arc<Model>) -> Harness {
+    writing(
+        model,
+        Arc::new(HeldWrite::declaring(ReplaySafety::Safe)),
+        ToolAdmission::READ_WRITE,
+        Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce)),
+    )
+}
+async fn model_asked(model: &Model, times: usize) {
+    timeout(Duration::from_secs(5), async {
+        while model.requests.lock().unwrap().len() < times {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_task_that_wrote_ends_with_the_files_it_changed() {
+    let h = approved_write(Arc::new(Model::new(Scenario::Write)));
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start(&service, true).await;
+    let events = finished(&service, &task).await;
+
+    let artifacts = recorded(&events);
+    assert_eq!(artifacts.len(), 1, "{events:?}");
+    assert_eq!(artifacts[0].summary(), "1 file change(s): created greeting");
+    assert_eq!(
+        serde_json::to_value(&artifacts[0].content).unwrap(),
+        serde_json::json!({
+            "kind": "changedFiles",
+            "changes": [{
+                "change": "created",
+                "path": "greeting",
+                "contentHash": content_hash("hello"),
+                "alreadyApplied": false,
+            }],
+        })
+    );
+    // The completion points at it.
+    let Some(EventPayload::TaskCompleted {
+        artifacts: named, ..
+    }) = events.last().map(|event| &event.payload)
+    else {
+        panic!("expected completion: {events:?}");
+    };
+    assert_eq!(named, &vec![artifacts[0].artifact_id.clone()]);
+}
+
+#[tokio::test]
+async fn a_task_that_changed_nothing_records_no_summary() {
+    let model = Arc::new(Model::new(Scenario::Answer));
+    let h = harness(model, Arc::new(Tool::new()), ReadOnlyLimits::default());
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start(&service, true).await;
+    let events = finished(&service, &task).await;
+
+    assert!(recorded(&events).is_empty(), "{events:?}");
+    let Some(EventPayload::TaskCompleted { artifacts, .. }) =
+        events.last().map(|event| &event.payload)
+    else {
+        panic!("expected completion: {events:?}");
+    };
+    assert!(artifacts.is_empty());
+}
+
+#[tokio::test]
+async fn a_task_that_stopped_half_way_still_says_what_it_changed() {
+    // It failed after the write.
+    let model = Model::new(Scenario::Write);
+    model.fail_after_read.store(true, Ordering::SeqCst);
+    let h = approved_write(Arc::new(model));
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start(&service, true).await;
+    let events = finished(&service, &task).await;
+    fail(&events, ErrorCode::ProviderUnavailable);
+    let artifacts = recorded(&events);
+    assert_eq!(artifacts.len(), 1, "{events:?}");
+    assert_eq!(artifacts[0].summary(), "1 file change(s): created greeting");
+
+    // It was cancelled after the write.
+    let model = Arc::new(Model::new(Scenario::Write));
+    model.pause_after_read.store(true, Ordering::SeqCst);
+    let h = approved_write(model.clone());
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start(&service, true).await;
+    model_asked(&model, 2).await;
+    service.cancel_task(&task).await.unwrap();
+    let events = finished(&service, &task).await;
+    assert_eq!(events.last().unwrap().kind, TaskEventKind::TaskCancelled);
+    let artifacts = recorded(&events);
+    assert_eq!(artifacts.len(), 1, "{events:?}");
+    assert_eq!(artifacts[0].summary(), "1 file change(s): created greeting");
+}
+
+#[tokio::test]
+async fn a_resumed_task_counts_what_it_changed_before_the_interruption_once() {
+    let model = Arc::new(Model::new(Scenario::Write));
+    model.pause_after_read.store(true, Ordering::SeqCst);
+    let h = approved_write(model.clone());
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start(&service, true).await;
+    model_asked(&model, 2).await;
+    let checkpoint = service.create_checkpoint(&task).await.unwrap();
+    drop(service);
+
+    let service = h.service(RoutingMode::LocalOnly);
+    service.recover().await.unwrap();
+    model.pause_after_read.store(false, Ordering::SeqCst);
+    service
+        .resume_task(&task, &checkpoint.checkpoint_id)
+        .await
+        .unwrap();
+    let events = finished(&service, &task).await;
+
+    assert_eq!(
+        events.last().unwrap().kind,
+        TaskEventKind::TaskCompleted,
+        "{events:?}"
+    );
+    // The interruption recorded no summary of its own, and the write before
+    // it is counted once, not dropped and not doubled.
+    let artifacts = recorded(&events);
+    assert_eq!(artifacts.len(), 1, "{events:?}");
+    assert_eq!(artifacts[0].summary(), "1 file change(s): created greeting");
+}
+
+#[tokio::test]
+async fn a_changed_path_is_redacted_before_it_is_recorded() {
+    // Arguments carrying a credential are refused before any tool runs, but a
+    // tool can still report a path that has one.
+    let mut write = HeldWrite::declaring(ReplaySafety::Safe);
+    write.reported_path = Some("API_KEY=fixture-secret");
+    let h = writing(
+        Arc::new(Model::new(Scenario::Write)),
+        Arc::new(write),
+        ToolAdmission::READ_WRITE,
+        Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce)),
+    );
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start(&service, true).await;
+    let events = finished(&service, &task).await;
+
+    assert_eq!(recorded(&events).len(), 1, "{events:?}");
+    assert!(
+        !serde_json::to_string(&events)
+            .unwrap()
+            .contains("fixture-secret"),
+        "{events:?}"
+    );
 }
 
 #[tokio::test]

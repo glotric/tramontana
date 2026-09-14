@@ -60,6 +60,83 @@ export interface AgentDescriptor {
 export type ApprovalId = string;
 
 /**
+ * What an artifact holds.
+ */
+export type ArtifactContent = {
+  /**
+   * The changes.
+   */
+  changes: FileChange[];
+  kind: "changedFiles";
+};
+
+/**
+ * Something a task produced and recorded, such as its changed-file summary.
+ */
+export type ArtifactId = string;
+
+/**
+ * Who produced an artifact.
+ *
+ * Records distinguish Tramontana's own facts from claims a worker makes
+ * (`PROJECT_FORMAT.md` §7). Only Tramontana produces artifacts so far.
+ */
+export type ArtifactProducer = "tramontana";
+
+/**
+ * An artifact recorded against a task.
+ */
+export interface ArtifactRecord {
+  /**
+   * Identifies it within the task's record.
+   */
+  artifactId: string;
+  /**
+   * Size of that JSON in bytes.
+   */
+  byteCount: number;
+  /**
+   * The content itself, small enough to carry in the record.
+   */
+  content: {
+    /**
+     * The changes.
+     */
+    changes: FileChange[];
+    kind: "changedFiles";
+  };
+  /**
+   * SHA-256 of the content's JSON, so a copy can be checked.
+   */
+  contentHash: string;
+  /**
+   * How sensitive its content is.
+   */
+  dataClass: "public" | "project" | "sensitive" | "secret";
+  /**
+   * A short, safe name for it.
+   */
+  label: string;
+  /**
+   * What its content is.
+   */
+  mediaType: string;
+  /**
+   * Who produced it.
+   */
+  producedBy: "tramontana";
+  /**
+   * How it relates to the task.
+   */
+  relation: "taskSummary";
+}
+
+/**
+ * How an artifact relates to its task.
+ */
+export type ArtifactRelation = "taskSummary";
+
+/**
  * One file in a bundle, with what a reader needs to trust it.
  */
 export interface BundleEntry {
@@ -910,6 +987,12 @@ export interface EventEnvelope {
       }
     | {
         /**
+         * The files this invocation changed, as the tool reported them.
+         * Absent from records written before tools reported changes
+         * (ADR 0026).
+         */
+        changes?: FileChange[];
+        /**
          * Short, safe description of the result.
          */
         displaySummary: string;
@@ -926,6 +1009,10 @@ export interface EventEnvelope {
          * Whether output was cut short by a limit.
          */
         truncated: boolean;
+      }
+    | {
+        artifact: ArtifactRecord;
+        kind: "artifactRecorded";
       }
     | {
         /**
@@ -945,6 +1032,10 @@ export interface EventEnvelope {
         resume: ResumeEligibility;
       }
     | {
+        /**
+         * Artifacts the task recorded, such as the files it changed.
+         */
+        artifacts?: ArtifactId[];
         kind: "taskCompleted";
         /**
          * Secret-free summary of the outcome.
@@ -1189,6 +1280,12 @@ export type EventPayload =
     }
   | {
       /**
+       * The files this invocation changed, as the tool reported them.
+       * Absent from records written before tools reported changes
+       * (ADR 0026).
+       */
+      changes?: FileChange[];
+      /**
        * Short, safe description of the result.
        */
       displaySummary: string;
@@ -1205,6 +1302,10 @@ export type EventPayload =
        * Whether output was cut short by a limit.
        */
       truncated: boolean;
+    }
+  | {
+      artifact: ArtifactRecord;
+      kind: "artifactRecorded";
     }
   | {
       /**
@@ -1224,6 +1325,10 @@ export type EventPayload =
       resume: ResumeEligibility;
     }
   | {
+      /**
+       * Artifacts the task recorded, such as the files it changed.
+       */
+      artifacts?: ArtifactId[];
       kind: "taskCompleted";
       /**
        * Secret-free summary of the outcome.
@@ -1351,6 +1456,45 @@ export interface ExportedConfiguration {
    */
   projectId: string;
 }
+
+/**
+ * What one invocation did to one file, as the tool that did it reports.
+ */
+export interface FileChange {
+  /**
+   * Whether the tool found the change already made and changed nothing
+   * now: a replay after an interruption, or content that was already
+   * there.
+   */
+  alreadyApplied: boolean;
+  /**
+   * What happened.
+   */
+  change: "created" | "modified" | "moved" | "deleted";
+  /**
+   * Hash of the content afterwards; for a deletion, of the content that
+   * was removed and kept for recovery.
+   */
+  contentHash?: string;
+  /**
+   * For a move, the project-relative path it had before.
+   */
+  from?: string;
+  /**
+   * The project-relative path the file has now; for a deletion, the path
+   * it had.
+   */
+  path: string;
+  /**
+   * For an edit, the hash of the content before it.
+   */
+  previousHash?: string;
+}
+
+/**
+ * The kinds of change a file tool makes.
+ */
+export type FileChangeKind = "created" | "modified" | "moved" | "deleted";
 
 /**
  * How long an authorization lasts.

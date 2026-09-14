@@ -88,12 +88,26 @@ impl ToolProvider for FakeToolProvider {
             display_summary: format!("Echoed {} characters", value.len()),
             side_effect: SideEffect::None,
             truncated: false,
+            changes: Vec::new(),
         })
     }
 }
 
 /// The identifier of the fake write tool.
 pub const FAKE_WRITE_TOOL_ID: &str = "fake.tool.write";
+
+/// The change the fake write reports, as a file tool would: the key stands for
+/// the file, the value for its content (ADR 0026).
+fn written(key: &str, value: &str, already_applied: bool) -> crate::contracts::FileChange {
+    crate::contracts::FileChange {
+        change: crate::contracts::FileChangeKind::Created,
+        path: key.to_owned(),
+        from: None,
+        content_hash: Some(crate::contracts::content_hash(value)),
+        previous_hash: None,
+        already_applied,
+    }
+}
 
 /// A write tool whose replay safety is whatever the test declares.
 ///
@@ -203,14 +217,17 @@ impl ToolProvider for FakeWriteTool {
                 display_summary: format!("{key} already holds this value"),
                 side_effect: SideEffect::None,
                 truncated: false,
+                changes: vec![written(&key, &value, true)],
             });
         }
+        let change = written(&key, &value, false);
         values.insert(key.clone(), value);
         Ok(ToolOutcome {
             content: serde_json::json!({ "key": key, "alreadyApplied": false }),
             display_summary: format!("Wrote {key}"),
             side_effect: SideEffect::LocalReversible,
             truncated: false,
+            changes: vec![change],
         })
     }
 }

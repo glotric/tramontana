@@ -100,6 +100,10 @@ declare_id!(
     /// A correlation identifier shared by everything caused by one request.
     CorrelationId
 );
+declare_id!(
+    /// Something a task produced and recorded, such as its changed-file summary.
+    ArtifactId
+);
 
 #[cfg(test)]
 #[allow(

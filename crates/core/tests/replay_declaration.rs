@@ -63,6 +63,7 @@ impl ToolProvider for OverclaimingTool {
             display_summary: "Appended a line".to_owned(),
             side_effect: SideEffect::LocalReversible,
             truncated: false,
+            changes: Vec::new(),
         })
     }
 }

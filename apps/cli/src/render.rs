@@ -162,7 +162,8 @@ pub(crate) fn event_line(event: &EventEnvelope) -> String {
             let suffix = if *truncated { " (truncated)" } else { "" };
             format!("{display_summary} [{side_effect:?}]{suffix}")
         }
-        EventPayload::TaskCompleted { summary } => summary.clone(),
+        EventPayload::ArtifactRecorded { artifact } => artifact.summary(),
+        EventPayload::TaskCompleted { summary, .. } => summary.clone(),
         EventPayload::TaskFailed { error } => format!("{:?}: {}", error.code, error.message),
         EventPayload::TaskCancelled { origin } => format!("cancelled by {origin:?}"),
         // `EventPayload` is non-exhaustive, so this arm is mandatory rather

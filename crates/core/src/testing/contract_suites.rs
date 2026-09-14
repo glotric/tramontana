@@ -30,6 +30,7 @@ pub fn event_at(task_id: &TaskId, sequence: u64) -> EventEnvelope {
         TaskEventKind::TaskCompleted,
         EventPayload::TaskCompleted {
             summary: format!("event {sequence}"),
+            artifacts: Vec::new(),
         },
     )
     .into_envelope(

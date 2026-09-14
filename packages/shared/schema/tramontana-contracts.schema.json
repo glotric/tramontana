@@ -61,6 +61,111 @@
       "description": "One approval request and its decision.",
       "type": "string"
     },
+    "ArtifactContent": {
+      "description": "What an artifact holds.",
+      "oneOf": [
+        {
+          "description": "Every file change the task's tools reported, in the order they\nhappened.",
+          "properties": {
+            "changes": {
+              "description": "The changes.",
+              "items": {
+                "$ref": "#/$defs/FileChange"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "changedFiles",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "changes"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ArtifactId": {
+      "description": "Something a task produced and recorded, such as its changed-file summary.",
+      "type": "string"
+    },
+    "ArtifactProducer": {
+      "description": "Who produced an artifact.\n\nRecords distinguish Tramontana's own facts from claims a worker makes\n(`PROJECT_FORMAT.md` §7). Only Tramontana produces artifacts so far.",
+      "oneOf": [
+        {
+          "const": "tramontana",
+          "description": "Derived by Tramontana from its own records.",
+          "type": "string"
+        }
+      ]
+    },
+    "ArtifactRecord": {
+      "description": "An artifact recorded against a task.",
+      "properties": {
+        "artifactId": {
+          "$ref": "#/$defs/ArtifactId",
+          "description": "Identifies it within the task's record."
+        },
+        "byteCount": {
+          "description": "Size of that JSON in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "content": {
+          "$ref": "#/$defs/ArtifactContent",
+          "description": "The content itself, small enough to carry in the record."
+        },
+        "contentHash": {
+          "description": "SHA-256 of the content's JSON, so a copy can be checked.",
+          "type": "string"
+        },
+        "dataClass": {
+          "$ref": "#/$defs/DataClass",
+          "description": "How sensitive its content is."
+        },
+        "label": {
+          "description": "A short, safe name for it.",
+          "type": "string"
+        },
+        "mediaType": {
+          "description": "What its content is.",
+          "type": "string"
+        },
+        "producedBy": {
+          "$ref": "#/$defs/ArtifactProducer",
+          "description": "Who produced it."
+        },
+        "relation": {
+          "$ref": "#/$defs/ArtifactRelation",
+          "description": "How it relates to the task."
+        }
+      },
+      "required": [
+        "artifactId",
+        "label",
+        "producedBy",
+        "relation",
+        "mediaType",
+        "dataClass",
+        "contentHash",
+        "byteCount",
+        "content"
+      ],
+      "type": "object"
+    },
+    "ArtifactRelation": {
+      "description": "How an artifact relates to its task.",
+      "oneOf": [
+        {
+          "const": "taskSummary",
+          "description": "A summary of what the task did.",
+          "type": "string"
+        }
+      ]
+    },
     "BundleEntry": {
       "description": "One file in a bundle, with what a reader needs to trust it.",
       "properties": {
@@ -1355,6 +1460,13 @@
         {
           "description": "A tool invocation finished.",
           "properties": {
+            "changes": {
+              "description": "The files this invocation changed, as the tool reported them.\nAbsent from records written before tools reported changes\n(ADR 0026).",
+              "items": {
+                "$ref": "#/$defs/FileChange"
+              },
+              "type": "array"
+            },
             "displaySummary": {
               "description": "Short, safe description of the result.",
               "type": "string"
@@ -1382,6 +1494,24 @@
             "displaySummary",
             "sideEffect",
             "truncated"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Something the task produced, recorded as Tramontana's own fact.",
+          "properties": {
+            "artifact": {
+              "$ref": "#/$defs/ArtifactRecord",
+              "description": "The artifact."
+            },
+            "kind": {
+              "const": "artifactRecorded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "artifact"
           ],
           "type": "object"
         },
@@ -1429,6 +1559,13 @@
         {
           "description": "The task completed successfully.",
           "properties": {
+            "artifacts": {
+              "description": "Artifacts the task recorded, such as the files it changed.",
+              "items": {
+                "$ref": "#/$defs/ArtifactId"
+              },
+              "type": "array"
+            },
             "kind": {
               "const": "taskCompleted",
               "type": "string"
@@ -1655,6 +1792,67 @@
         "configuration"
       ],
       "type": "object"
+    },
+    "FileChange": {
+      "description": "What one invocation did to one file, as the tool that did it reports.",
+      "properties": {
+        "alreadyApplied": {
+          "default": false,
+          "description": "Whether the tool found the change already made and changed nothing\nnow: a replay after an interruption, or content that was already\nthere.",
+          "type": "boolean"
+        },
+        "change": {
+          "$ref": "#/$defs/FileChangeKind",
+          "description": "What happened."
+        },
+        "contentHash": {
+          "description": "Hash of the content afterwards; for a deletion, of the content that\nwas removed and kept for recovery.",
+          "type": "string"
+        },
+        "from": {
+          "description": "For a move, the project-relative path it had before.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The project-relative path the file has now; for a deletion, the path\nit had.",
+          "type": "string"
+        },
+        "previousHash": {
+          "description": "For an edit, the hash of the content before it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "change",
+        "path",
+        "alreadyApplied"
+      ],
+      "type": "object"
+    },
+    "FileChangeKind": {
+      "description": "The kinds of change a file tool makes.",
+      "oneOf": [
+        {
+          "const": "created",
+          "description": "A new file.",
+          "type": "string"
+        },
+        {
+          "const": "modified",
+          "description": "An existing file's content changed.",
+          "type": "string"
+        },
+        {
+          "const": "moved",
+          "description": "A file got a new name.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "A file was removed.",
+          "type": "string"
+        }
+      ]
     },
     "GrantKind": {
       "description": "How long an authorization lasts.",

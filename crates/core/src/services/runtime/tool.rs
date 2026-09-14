@@ -163,6 +163,18 @@ impl BrokeredHost {
                 self.journal.append_batch(vec![
                     EventDraft::user(TaskEventKind::ToolCompleted, EventPayload::ToolCompleted {
                         invocation_id: invocation.clone(), display_summary: summary.clone(), side_effect: outcome.side_effect, truncated: outcome.truncated,
+                        // What the tool says it changed, under the same
+                        // redaction as its summary (ADR 0026).
+                        changes: outcome
+                            .changes
+                            .iter()
+                            .cloned()
+                            .map(|mut change| {
+                                change.path = redact(&change.path).text;
+                                change.from = change.from.map(|from| redact(&from).text);
+                                change
+                            })
+                            .collect(),
                     }),
                     self.tool_message(MessageRole::Tool, MessagePart::ToolResult {
                         invocation_id: invocation,

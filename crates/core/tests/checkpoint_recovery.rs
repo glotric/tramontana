@@ -70,6 +70,7 @@ impl ToolProvider for CounterTool {
             display_summary: "Synthetic step completed".into(),
             side_effect: self.list_tools()[0].side_effect,
             truncated: false,
+            changes: Vec::new(),
         })
     }
 }

@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::contracts::{
-    AuthorizedToolRequest, ErrorEnvelope, InvocationId, ProviderId, SideEffect, ToolDescriptor,
+    AuthorizedToolRequest, ErrorEnvelope, FileChange, InvocationId, ProviderId, SideEffect,
+    ToolDescriptor,
 };
 
 /// A tool call that has passed schema validation but not yet policy.
@@ -32,6 +33,11 @@ pub struct ToolOutcome {
     pub side_effect: SideEffect,
     /// Whether output was cut short by a limit.
     pub truncated: bool,
+    /// The files this invocation changed, in the tool's own words. The tool
+    /// is the authority on what it did; the core records it rather than
+    /// guessing from the tool's output (ADR 0026). Empty for any tool that
+    /// changes no file.
+    pub changes: Vec<FileChange>,
 }
 
 /// A source of tools.

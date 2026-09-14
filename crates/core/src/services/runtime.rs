@@ -418,16 +418,50 @@ impl TaskDriver {
         self.journal.append(draft).await.map(|_| ())
     }
 
+    /// Record what this task changed, from its own `toolCompleted` events.
+    ///
+    /// On every ending — completed, failed or cancelled — because a task that
+    /// stopped half-way is exactly when a person needs to know what it
+    /// touched. Built from the whole task record, so a resumed task's summary
+    /// includes what it did before the interruption. Nothing is recorded when
+    /// nothing changed (ADR 0026).
+    async fn record_changes(&self) -> Option<crate::contracts::ArtifactId> {
+        let events = self.journal.replay().await.ok()?;
+        let changes: Vec<crate::contracts::FileChange> = events
+            .iter()
+            .flat_map(|event| match &event.payload {
+                EventPayload::ToolCompleted { changes, .. } => changes.clone(),
+                _ => Vec::new(),
+            })
+            .collect();
+        if changes.is_empty() {
+            return None;
+        }
+        let artifact = crate::contracts::ArtifactRecord::changed_files(
+            crate::contracts::ArtifactId::new(self.journal.next_id("artifact")),
+            changes,
+        );
+        let artifact_id = artifact.artifact_id.clone();
+        self.record(EventDraft::user(
+            TaskEventKind::ArtifactRecorded,
+            EventPayload::ArtifactRecorded { artifact },
+        ))
+        .await
+        .ok()?;
+        Some(artifact_id)
+    }
+
     async fn finish_completed(&self, from: TaskState, summary: String) {
         if self
             .change_state(from, TaskState::Completed, "worker.completed")
             .await
             .is_ok()
         {
+            let artifacts = self.record_changes().await.into_iter().collect();
             let _ = self
                 .record(EventDraft::user(
                     TaskEventKind::TaskCompleted,
-                    EventPayload::TaskCompleted { summary },
+                    EventPayload::TaskCompleted { summary, artifacts },
                 ))
                 .await;
         }
@@ -454,6 +488,7 @@ impl TaskDriver {
             .await
             .is_ok()
         {
+            let _ = self.record_changes().await;
             let _ = self
                 .record(EventDraft::user(
                     TaskEventKind::TaskFailed,
@@ -486,6 +521,7 @@ impl TaskDriver {
             .await
             .is_ok()
         {
+            let _ = self.record_changes().await;
             let _ = self
                 .record(EventDraft::user(
                     TaskEventKind::TaskCancelled,

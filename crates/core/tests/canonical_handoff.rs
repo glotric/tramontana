@@ -66,6 +66,7 @@ impl ToolProvider for BlockingTool {
             display_summary: "First step completed".into(),
             side_effect: SideEffect::None,
             truncated: false,
+            changes: Vec::new(),
         })
     }
 }

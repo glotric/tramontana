@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use tramontana_core::contracts::{
-    AuthorizedToolRequest, CorrelationId, ErrorCode, ErrorEnvelope, InvocationId, ProviderId,
-    ReplaySafety, RiskClass, SideEffect, ToolDescriptor, content_hash, content_hash_bytes,
+    AuthorizedToolRequest, CorrelationId, ErrorCode, ErrorEnvelope, FileChange, FileChangeKind,
+    InvocationId, ProviderId, ReplaySafety, RiskClass, SideEffect, ToolDescriptor, content_hash,
+    content_hash_bytes,
 };
 use tramontana_core::ports::{ToolOutcome, ToolProvider};
 
@@ -93,6 +94,23 @@ const MAX_MOVE_BYTES: u64 = 64 * 1024 * 1024;
 /// A deleted file is kept whole in the recovery store once its hash has been
 /// checked; this bounds both the copy and the reads behind the checks.
 const MAX_DELETE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// One file change, as a write tool reports it (ADR 0026).
+fn change(
+    kind: FileChangeKind,
+    path: &str,
+    content_hash: &str,
+    already_applied: bool,
+) -> FileChange {
+    FileChange {
+        change: kind,
+        path: path.to_owned(),
+        from: None,
+        content_hash: Some(content_hash.to_owned()),
+        previous_hash: None,
+        already_applied,
+    }
+}
 
 fn invalid(request: &AuthorizedToolRequest, message: impl Into<String>) -> ErrorEnvelope {
     ErrorEnvelope::new(
@@ -358,6 +376,7 @@ impl FilesystemTools {
             ),
             side_effect: SideEffect::None,
             truncated,
+            changes: Vec::new(),
         })
     }
 
@@ -393,6 +412,7 @@ impl FilesystemTools {
                 display_summary: format!("{relative} is binary ({} bytes)", bytes.len()),
                 side_effect: SideEffect::None,
                 truncated: false,
+                changes: Vec::new(),
             });
         }
 
@@ -428,6 +448,7 @@ impl FilesystemTools {
             },
             side_effect: SideEffect::None,
             truncated,
+            changes: Vec::new(),
         })
     }
 
@@ -485,6 +506,7 @@ impl FilesystemTools {
             display_summary: format!("Found {found} match{}", if found == 1 { "" } else { "es" }),
             side_effect: SideEffect::None,
             truncated,
+            changes: Vec::new(),
         })
     }
 }
@@ -769,6 +791,12 @@ impl FilesystemTools {
             display_summary: format!("Created {display} ({} bytes)", content.len()),
             side_effect: SideEffect::LocalReversible,
             truncated: false,
+            changes: vec![change(
+                FileChangeKind::Created,
+                &display,
+                &content_hash(content),
+                false,
+            )],
         })
     }
 }
@@ -816,6 +844,12 @@ fn already_there(
         display_summary: format!("{display} already has this content; nothing changed"),
         side_effect: SideEffect::None,
         truncated: false,
+        changes: vec![change(
+            FileChangeKind::Created,
+            display,
+            &content_hash(content),
+            true,
+        )],
     })
 }
 
@@ -958,6 +992,12 @@ impl FilesystemTools {
                     display_summary: format!("{display} already has this edit; nothing changed"),
                     side_effect: SideEffect::None,
                     truncated: false,
+                    changes: vec![change(
+                        FileChangeKind::Modified,
+                        &display,
+                        &current_hash,
+                        true,
+                    )],
                 })
             } else {
                 Err(fail(
@@ -1080,6 +1120,15 @@ impl FilesystemTools {
             display_summary: format!("Patched {display} at line {line}"),
             side_effect: SideEffect::LocalReversible,
             truncated: false,
+            changes: vec![FileChange {
+                previous_hash: Some(expected.to_owned()),
+                ..change(
+                    FileChangeKind::Modified,
+                    &display,
+                    &content_hash_bytes(updated.as_bytes()),
+                    false,
+                )
+            }],
         })
     }
 }
@@ -1322,6 +1371,10 @@ impl FilesystemTools {
             display_summary: format!("Moved {from_display} to {to_display}"),
             side_effect: SideEffect::LocalReversible,
             truncated: false,
+            changes: vec![FileChange {
+                from: Some(from_display.clone()),
+                ..change(FileChangeKind::Moved, &to_display, expected, false)
+            }],
         })
     }
 }
@@ -1402,6 +1455,10 @@ fn moved_already(
         display_summary: format!("{to_display} already holds this file; nothing changed"),
         side_effect: SideEffect::None,
         truncated: false,
+        changes: vec![FileChange {
+            from: Some(from_display.to_owned()),
+            ..change(FileChangeKind::Moved, to_display, expected, true)
+        }],
     })
 }
 
@@ -1551,6 +1608,7 @@ fn deleted(display: &str, hash: &str, already: bool) -> ToolOutcome {
             SideEffect::LocalReversible
         },
         truncated: false,
+        changes: vec![change(FileChangeKind::Deleted, display, hash, already)],
     }
 }
 
