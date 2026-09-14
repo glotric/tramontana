@@ -11,8 +11,8 @@ use crate::contracts::{
     AuthorizedToolRequest, CancellationOrigin, CapabilityScope, ContextManifest, DataClass,
     EffectiveConfiguration, ErrorCode, ErrorEnvelope, EventDraft, EventPayload, HandoffBundle,
     InvocationId, MessageId, MessageRole, MessageStatus, ModelRequest, NormalizedMessage,
-    PermissionOrigin, ReplaySafety, RiskClass, RoutingDecision, RoutingMode, SideEffect,
-    StopReason, StreamFrame, TaskCheckpoint, TaskEventKind, TaskState,
+    PermissionOrigin, ReplaySafety, RiskClass, RoutingDecision, RoutingMode, StopReason,
+    StreamFrame, TaskCheckpoint, TaskEventKind, TaskState,
 };
 use crate::ports::{AgentProvider, ModelProvider, WorkerHost, WorkerOutcome, WorkerRequest};
 use crate::ports::{Clock, PermissionQuery};

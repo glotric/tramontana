@@ -20,6 +20,7 @@ struct CounterTool {
     pending_calls: AtomicUsize,
     entered: Notify,
     unsafe_effect: bool,
+    declared_safe_write: bool,
 }
 
 #[async_trait]
@@ -31,6 +32,17 @@ impl ToolProvider for CounterTool {
         let mut tools = FakeToolProvider::new().list_tools();
         if self.unsafe_effect {
             tools[0].side_effect = SideEffect::LocalReversible;
+            // Declared since M7: the broker no longer infers replay safety
+            // from the side effect, so an unsafe step has to say so. Before
+            // this line existed the test failed — which is what showed the old
+            // inference had been load-bearing here (ADR 0019).
+            tools[0].replay_safety = ReplaySafety::Unsafe;
+        }
+        if self.declared_safe_write {
+            // A real effect that is nonetheless safe to replay, because the
+            // tool verifies the world before acting.
+            tools[0].side_effect = SideEffect::LocalReversible;
+            tools[0].replay_safety = ReplaySafety::Safe;
         }
         tools
     }
@@ -125,6 +137,13 @@ struct Harness {
 
 impl Harness {
     fn new(unsafe_effect: bool) -> Self {
+        Self::with_tool(CounterTool {
+            unsafe_effect,
+            ..CounterTool::default()
+        })
+    }
+
+    fn with_tool(tool: CounterTool) -> Self {
         let events: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
         let repos = Repositories {
             projects: Arc::new(InMemoryProjectRepository::new()),
@@ -135,10 +154,7 @@ impl Harness {
             checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
         };
         let ids = Arc::new(SequentialIdSource::new());
-        let tool = Arc::new(CounterTool {
-            unsafe_effect,
-            ..CounterTool::default()
-        });
+        let tool = Arc::new(tool);
         let worker = Arc::new(TwoStepWorker::default());
         let (tools, permissions, releases) = assemble_tool_plane(
             vec![tool.clone()],
@@ -288,6 +304,49 @@ async fn unsafe_pending_work_is_inspectable_but_cannot_be_resumed_and_discard_ke
     );
     assert_eq!(harness.tool.pending_calls.load(Ordering::SeqCst), 1);
     assert_eq!(harness.worker.runs.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_write_that_declares_safe_replay_is_resumed_without_repeating_completed_steps() {
+    // M7's promise, through the real resume path. This step has a genuine side
+    // effect, and until ADR 0019 that alone made it unsafe and unresumable. It
+    // now declares safe replay — as a tool that verifies the world before
+    // acting can — so the checkpoint offers resume, the pending step is
+    // retried, and the completed one is not run again.
+    let harness = Harness::with_tool(CounterTool {
+        declared_safe_write: true,
+        ..CounterTool::default()
+    });
+    let service = harness.service();
+    let task = harness.start(&service).await;
+    let checkpoint = service.create_checkpoint(&task).await.unwrap();
+    assert_eq!(
+        checkpoint.pending_action.as_ref().unwrap().replay_safety,
+        ReplaySafety::Safe,
+        "a declared-safe write was recorded as unsafe"
+    );
+    assert!(checkpoint.resume.eligible);
+
+    service
+        .resume_task(&task, &checkpoint.checkpoint_id)
+        .await
+        .unwrap();
+
+    assert_eq!(stopped(&service, &task).await, TaskState::Completed);
+    assert_eq!(
+        harness.tool.completed_calls.load(Ordering::SeqCst),
+        1,
+        "a completed write step was applied twice"
+    );
+    assert_eq!(harness.tool.pending_calls.load(Ordering::SeqCst), 2);
+    let events = service.replay_task_events(&task, 0).await.unwrap();
+    assert!(
+        events.iter().all(|event| !matches!(
+            &event.payload,
+            EventPayload::ToolStarted { replay_safety, .. } if *replay_safety != ReplaySafety::Safe
+        )),
+        "the record shows an inferred replay safety rather than the declaration"
+    );
 }
 
 #[tokio::test]

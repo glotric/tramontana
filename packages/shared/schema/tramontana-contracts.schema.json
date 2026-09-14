@@ -3470,6 +3470,11 @@
           "description": "Provider that implements it.",
           "type": "string"
         },
+        "replaySafety": {
+          "$ref": "#/$defs/ReplaySafety",
+          "default": "unknown",
+          "description": "What re-invoking the same step, with the same arguments, would do.\n\nDeclared by the tool rather than inferred from [`Self::side_effect`]. A\ntool that writes can still be safe to replay if it verifies the world\nbefore acting — creating a file only if it is absent, and reporting an\nidentical existing file as already applied — and a tool with no side\neffect may still decline the claim.\n\nRecovery trusts this value: a step declared `safe` is re-invoked on\nresume, and anything else leaves the task for a person to reconcile.\nAn over-claim therefore breaks the resume promise silently\n(`BUILD_ORDER.md` §16), which is why every tool declaring `safe` with a\nside effect must pass `testing::contract_suites::idempotent_tool_contract`.\n\nAbsent means `unknown`, never `safe`."
+        },
         "riskClass": {
           "$ref": "#/$defs/RiskClass",
           "description": "How much damage it could do."
@@ -3496,7 +3501,8 @@
         "riskClass",
         "sideEffect",
         "capability",
-        "supportsCancellation"
+        "supportsCancellation",
+        "replaySafety"
       ],
       "type": "object"
     },

@@ -34,6 +34,7 @@ fn descriptor(name: &str) -> ToolDescriptor {
         side_effect: SideEffect::None,
         capability: "filesystem.read".into(),
         supports_cancellation: true,
+        replay_safety: tramontana_core::contracts::ReplaySafety::Safe,
     }
 }
 fn registry(tools: Vec<ToolDescriptor>) -> ToolRegistry {

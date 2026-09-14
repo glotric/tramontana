@@ -135,7 +135,9 @@ impl BrokeredHost {
                 .await?;
         }
         plan.requests.insert(step_id.into(), hash.clone());
-        let replay_safe = registered.descriptor.side_effect == SideEffect::None;
+        // The tool's declaration, not an inference from its side effect
+        // (ADR 0019). Only a step declared safe may leave `uncertain` on failure.
+        let replay_safe = registered.descriptor.replay_safety == ReplaySafety::Safe;
         let result = self
             .execute_tool(
                 registered,
@@ -256,11 +258,11 @@ impl BrokeredHost {
         if cancel.is_cancelled() {
             return Err(self.tool_error(ErrorCode::Cancelled));
         }
-        let replay_safety = if descriptor.side_effect == SideEffect::None {
-            ReplaySafety::Safe
-        } else {
-            ReplaySafety::Unsafe
-        };
+        // Recorded before execution, from the tool's own declaration. Until
+        // M7 this was inferred — no side effect meant safe, anything else
+        // unsafe — which could not express a write that is safe to replay
+        // because it verifies the world first (ADR 0019).
+        let replay_safety = descriptor.replay_safety;
         self.journal
             .append(EventDraft::user(
                 TaskEventKind::ToolStarted,

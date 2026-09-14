@@ -92,6 +92,7 @@ fn descriptor(tool_id: &str, display: &str, description: &str) -> ToolDescriptor
         side_effect: SideEffect::None,
         capability: "git.read".to_owned(),
         supports_cancellation: true,
+        replay_safety: tramontana_core::contracts::ReplaySafety::Safe,
     }
 }
 

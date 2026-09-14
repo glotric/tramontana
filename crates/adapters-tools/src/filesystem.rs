@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use tramontana_core::contracts::{
-    AuthorizedToolRequest, CorrelationId, ErrorCode, ErrorEnvelope, ProviderId, RiskClass,
-    SideEffect, ToolDescriptor,
+    AuthorizedToolRequest, CorrelationId, ErrorCode, ErrorEnvelope, InvocationId, ProviderId,
+    ReplaySafety, RiskClass, SideEffect, ToolDescriptor, content_hash,
 };
 use tramontana_core::ports::{ToolOutcome, ToolProvider};
 
@@ -42,6 +42,13 @@ impl FilesystemTools {
 pub(crate) const LIST: &str = "builtin.fs.list";
 pub(crate) const READ: &str = "builtin.fs.read";
 pub(crate) const SEARCH: &str = "builtin.fs.search";
+pub(crate) const CREATE: &str = "builtin.fs.create";
+
+/// The largest file the create tool will write.
+///
+/// A model's arguments are already capped far below this by the broker; the
+/// bound is for every other caller.
+const MAX_CREATE_BYTES: usize = 1024 * 1024;
 
 fn invalid(request: &AuthorizedToolRequest, message: impl Into<String>) -> ErrorEnvelope {
     ErrorEnvelope::new(
@@ -75,6 +82,34 @@ fn descriptor(
         side_effect: SideEffect::None,
         capability: "filesystem.read".to_owned(),
         supports_cancellation: true,
+        replay_safety: ReplaySafety::Safe,
+    }
+}
+
+/// A tool that changes project files.
+///
+/// `Modify` and `LocalReversible`: a file this creates can be deleted again,
+/// and the permission manager asks before it runs. `safe` to replay only
+/// because every write tool verifies the world before acting and reports an
+/// effect it finds already made as applied — a claim each one is held to by
+/// `idempotent_tool_contract`.
+fn write_descriptor(
+    tool_id: &str,
+    display: &str,
+    description: &str,
+    schema: serde_json::Value,
+) -> ToolDescriptor {
+    ToolDescriptor {
+        tool_id: tool_id.to_owned(),
+        provider_id: "builtin".to_owned(),
+        display_name: display.to_owned(),
+        description: description.to_owned(),
+        input_schema: schema,
+        risk_class: RiskClass::Modify,
+        side_effect: SideEffect::LocalReversible,
+        capability: "filesystem.write".to_owned(),
+        supports_cancellation: true,
+        replay_safety: ReplaySafety::Safe,
     }
 }
 
@@ -122,6 +157,22 @@ impl ToolProvider for FilesystemTools {
                     "additionalProperties": false,
                 }),
             ),
+            write_descriptor(
+                CREATE,
+                "Create file",
+                "Create a new text file inside the project. Never replaces an existing file: \
+                 one with identical content is reported as already created, and any other is \
+                 a conflict.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "content": { "type": "string" },
+                    },
+                    "required": ["path", "content"],
+                    "additionalProperties": false,
+                }),
+            ),
         ]
     }
 
@@ -141,6 +192,7 @@ impl ToolProvider for FilesystemTools {
                 LIST => self.list(&request),
                 READ => self.read(&request),
                 SEARCH => self.search(&request),
+                CREATE => self.create(&request, &cancel),
                 other => Err(invalid(&request, format!("unknown tool {other}"))),
             }
         };
@@ -454,4 +506,227 @@ fn read_verifying_identity(
 /// The `path` argument as the caller supplied it.
 fn request_path(request: &AuthorizedToolRequest) -> Result<String, ErrorEnvelope> {
     argument(request, "path").map(str::to_owned)
+}
+
+impl FilesystemTools {
+    /// Create a new text file, atomically, without ever replacing one.
+    ///
+    /// The whole content goes to a temporary file beside the target, which is
+    /// synced and then *hard-linked* into place. A link fails if the target
+    /// exists, so this can never overwrite a file, and the target appears
+    /// complete or not at all: a crash leaves either nothing or the finished
+    /// file, never half of one (`SECURITY_AND_PERMISSIONS.md` §5).
+    ///
+    /// Safe to replay because it checks before acting. A file already holding
+    /// exactly this content is this step, already applied, and is reported
+    /// with no side effect; any other file at the path is a conflict. That is
+    /// what lets recovery re-invoke an interrupted create without applying it
+    /// twice (ADR 0019).
+    fn create(
+        &self,
+        request: &AuthorizedToolRequest,
+        cancel: &CancellationToken,
+    ) -> Result<ToolOutcome, ErrorEnvelope> {
+        let correlation = CorrelationId::new(request.invocation_id().as_str());
+        let fail = |code: ErrorCode, message: String| {
+            ErrorEnvelope::new(code, message, correlation.clone())
+        };
+
+        let relative = request_path(request)?;
+        let content = argument(request, "content")?;
+        if content.len() > MAX_CREATE_BYTES {
+            return Err(fail(
+                ErrorCode::LimitExceeded,
+                format!("the content is larger than {MAX_CREATE_BYTES} bytes"),
+            ));
+        }
+
+        let target = resolve_within_grant(request, &relative)?;
+        let display = relative_to_grant(request, &target);
+        let parent = target
+            .parent()
+            .filter(|_| target.file_name().is_some())
+            .ok_or_else(|| invalid(request, "the path must name a file"))?;
+        // The directory must already exist. Creating directories is a separate
+        // effect with its own undo, and this tool does not take it on.
+        if !parent.is_dir() {
+            return Err(fail(
+                ErrorCode::NotFound,
+                format!("the directory for {display} does not exist"),
+            ));
+        }
+
+        match std::fs::symlink_metadata(&target) {
+            Ok(existing) => return already_there(request, &target, &display, &existing, content),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(fail(
+                    ErrorCode::ToolFailed,
+                    format!("could not inspect {display}: {}", error.kind()),
+                ));
+            }
+        }
+
+        let temp = parent.join(temp_name(request.invocation_id()));
+        // A leftover under this name can only be an earlier attempt of this
+        // same invocation, interrupted between writing and linking.
+        let _ = std::fs::remove_file(&temp);
+        if let Err(error) = write_synced(&temp, content.as_bytes()) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(fail(
+                ErrorCode::ToolFailed,
+                format!("could not write {display}: {}", error.kind()),
+            ));
+        }
+        let Some(written) = FileIdentity::of_path(&temp) else {
+            let _ = std::fs::remove_file(&temp);
+            return Err(fail(
+                ErrorCode::PermissionDenied,
+                "cannot verify the written file's identity on this platform".to_owned(),
+            ));
+        };
+
+        // The last point at which cancelling leaves nothing behind.
+        if cancel.is_cancelled() {
+            let _ = std::fs::remove_file(&temp);
+            return Err(cancelled(request));
+        }
+
+        let linked = std::fs::hard_link(&temp, &target);
+        let _ = std::fs::remove_file(&temp);
+        match linked {
+            Ok(()) => {}
+            // Created by someone else between the check and the link: judge it
+            // exactly as a file that had been there all along.
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let existing = std::fs::symlink_metadata(&target).map_err(|error| {
+                    fail(
+                        ErrorCode::ToolFailed,
+                        format!("could not inspect {display}: {}", error.kind()),
+                    )
+                })?;
+                return already_there(request, &target, &display, &existing, content);
+            }
+            Err(error) => {
+                return Err(fail(
+                    ErrorCode::ToolFailed,
+                    format!("could not create {display}: {}", error.kind()),
+                ));
+            }
+        }
+
+        // Re-check after creation (`SECURITY_AND_PERMISSIONS.md` §5): the path
+        // must still resolve inside the grant, to the very file just written.
+        // If a parent was swapped for a symlink in between, the link may have
+        // landed outside the project — so the file is removed, but only when
+        // its identity proves it is the one this call wrote.
+        let inside = resolve_within_grant(request, &relative).is_ok();
+        let ours = FileIdentity::of_path(&target).is_some_and(|now| now == written);
+        if !inside || !ours {
+            if ours {
+                let _ = std::fs::remove_file(&target);
+            }
+            return Err(fail(
+                ErrorCode::PermissionDenied,
+                format!("{display} changed while it was being created; the write was not kept"),
+            ));
+        }
+        sync_directory(parent);
+
+        Ok(ToolOutcome {
+            content: serde_json::json!({
+                "path": display,
+                "bytes": content.len(),
+                "contentHash": content_hash(content),
+                "alreadyApplied": false,
+            }),
+            display_summary: format!("Created {display} ({} bytes)", content.len()),
+            side_effect: SideEffect::LocalReversible,
+            truncated: false,
+        })
+    }
+}
+
+/// Judge a path that already exists.
+///
+/// The same content is this step, already applied: no side effect, and the
+/// record says so. Anything else — different content, a directory, a symlink —
+/// is a conflict, never an overwrite.
+fn already_there(
+    request: &AuthorizedToolRequest,
+    target: &std::path::Path,
+    display: &str,
+    existing: &std::fs::Metadata,
+    content: &str,
+) -> Result<ToolOutcome, ErrorEnvelope> {
+    let conflict = |message: String| {
+        ErrorEnvelope::new(
+            ErrorCode::Conflict,
+            message,
+            CorrelationId::new(request.invocation_id().as_str()),
+        )
+    };
+    if !existing.file_type().is_file() {
+        return Err(conflict(format!(
+            "{display} already exists and is not a regular file"
+        )));
+    }
+    // Compared through a verified handle, and only when the length already
+    // matches, so a large unrelated file is never read to be refused.
+    if existing.len() != content.len() as u64
+        || read_verifying_identity(request, target)? != content.as_bytes()
+    {
+        return Err(conflict(format!(
+            "{display} already exists with different content"
+        )));
+    }
+    Ok(ToolOutcome {
+        content: serde_json::json!({
+            "path": display,
+            "bytes": content.len(),
+            "contentHash": content_hash(content),
+            "alreadyApplied": true,
+        }),
+        display_summary: format!("{display} already has this content; nothing changed"),
+        side_effect: SideEffect::None,
+        truncated: false,
+    })
+}
+
+/// A hidden temporary name, unique to one invocation.
+///
+/// Derived from the invocation rather than random, so a retry of the same
+/// attempt finds — and first removes — its own leftover instead of
+/// accumulating them. The target's name is deliberately not part of it: a
+/// long name plus a suffix could exceed the platform's limit.
+fn temp_name(invocation: &InvocationId) -> String {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    invocation.as_str().hash(&mut hasher);
+    format!(".tramontana-{:016x}.tmp", hasher.finish())
+}
+
+/// Write `bytes` to a new file and flush them to storage.
+fn write_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// Flush a directory entry to storage, where the platform allows it.
+///
+/// Makes the new name itself durable, not only the bytes behind it. Best
+/// effort: Windows cannot open a directory this way, and a failure here does
+/// not undo a write that has already been verified.
+fn sync_directory(directory: &std::path::Path) {
+    #[cfg(unix)]
+    if let Ok(handle) = std::fs::File::open(directory) {
+        let _ = handle.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = directory;
 }
