@@ -59,9 +59,13 @@ pub(crate) struct ResolvedRecipe {
 /// [`ErrorCode::InvalidRequest`] when no recipe is named, and
 /// [`ErrorCode::NotFound`] when the task has no configuration or its project
 /// declares no such recipe. Either way nobody is asked and nothing runs.
+///
+/// `local_only` is whether the task routes Local Only, which the prompt
+/// mentions because the mode does not reach commands.
 pub(crate) fn resolve(
     configuration: Option<&EffectiveConfiguration>,
     arguments: &Value,
+    local_only: bool,
 ) -> Result<ResolvedRecipe, ErrorCode> {
     let id = arguments
         .get("recipe")
@@ -85,9 +89,23 @@ pub(crate) fn resolve(
                 "Environment",
                 &format!("cleared, then {} where set", COMMAND_ENVIRONMENT.join(", ")),
             ),
+            // Tramontana has no network control over commands, so the person
+            // is told rather than left to assume (EXECUTION_BOUNDARY.md).
+            detail("Network", network(local_only)),
             detail("Declared in", &source.relative_path),
         ],
     })
+}
+
+/// What the prompt says about the network. Under Local Only it also says the
+/// mode does not reach commands, since that is exactly when someone might
+/// assume it does.
+fn network(local_only: bool) -> &'static str {
+    if local_only {
+        "not restricted: this command can reach the network. Local Only governs where models run, not commands."
+    } else {
+        "not restricted: this command can reach the network."
+    }
 }
 
 fn detail(label: &str, value: &str) -> ApprovalDetail {
@@ -145,7 +163,7 @@ mod tests {
     fn a_named_recipe_resolves_to_exactly_its_declared_command() {
         let configuration = configuration("id: p\nrecipes:\n  test: [cargo, test, --workspace]");
 
-        let resolved = resolve(Some(&configuration), &json!({ "recipe": "test" })).unwrap();
+        let resolved = resolve(Some(&configuration), &json!({ "recipe": "test" }), false).unwrap();
 
         assert_eq!(
             resolved.arguments["run"],
@@ -169,18 +187,47 @@ mod tests {
     }
 
     #[test]
+    fn the_prompt_says_the_network_is_not_restricted_and_what_local_only_covers() {
+        let configuration = configuration("id: p\nrecipes:\n  test: [cargo, test]");
+        let network = |local_only| {
+            resolve(
+                Some(&configuration),
+                &json!({ "recipe": "test" }),
+                local_only,
+            )
+            .unwrap()
+            .details
+            .into_iter()
+            .find(|detail| detail.label == "Network")
+            .map(|detail| detail.value)
+        };
+
+        // Every recipe prompt mentions the network, in either mode.
+        let anywhere = network(false).unwrap();
+        assert!(anywhere.contains("can reach the network"), "{anywhere}");
+        assert!(!anywhere.contains("Local Only"), "{anywhere}");
+
+        let local = network(true).unwrap();
+        assert!(local.contains("can reach the network"), "{local}");
+        assert!(
+            local.contains("Local Only governs where models run, not commands"),
+            "{local}"
+        );
+    }
+
+    #[test]
     fn nothing_resolves_without_a_declared_recipe_or_a_configuration() {
         let configuration = configuration("id: p\nrecipes:\n  test: [cargo, test]");
         assert_eq!(
-            resolve(Some(&configuration), &json!({ "recipe": "deploy" })),
+            resolve(Some(&configuration), &json!({ "recipe": "deploy" }), false),
             Err(ErrorCode::NotFound)
         );
         assert_eq!(
-            resolve(None, &json!({ "recipe": "test" })),
+            resolve(None, &json!({ "recipe": "test" }), false),
             Err(ErrorCode::NotFound)
         );
         assert_eq!(
-            resolve(Some(&configuration), &json!({})),
+            resolve(Some(&configuration), &json!({}), false),
             Err(ErrorCode::InvalidRequest)
         );
     }

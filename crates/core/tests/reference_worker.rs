@@ -983,6 +983,13 @@ async fn an_approved_recipe_runs_exactly_the_declared_command() {
         shown.contains(&("Declared in", ".tramontana/project.md")),
         "{shown:?}"
     );
+    // This task routes Local Only, which does not reach commands, and the
+    // person is told so before approving (EXECUTION_BOUNDARY.md).
+    assert!(
+        shown.iter().any(|(label, value)| *label == "Network"
+            && value.contains("Local Only governs where models run, not commands")),
+        "{shown:?}"
+    );
     assert_eq!(asked[0].risk_class, RiskClass::Dangerous);
     // Never "always for this project": every run is its own question.
     assert!(

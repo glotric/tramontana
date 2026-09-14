@@ -236,9 +236,12 @@ impl BrokeredHost {
         // exactly the command the tool will be handed, and a name the project
         // does not declare is refused without a question (ADR 0025).
         let (arguments, details) = if descriptor.tool_id == crate::services::RECIPE_TOOL_ID {
-            let resolved =
-                crate::services::recipe::resolve(self.tools.configuration.as_deref(), &arguments)
-                    .map_err(|code| self.tool_error(code))?;
+            let resolved = crate::services::recipe::resolve(
+                self.tools.configuration.as_deref(),
+                &arguments,
+                self.routing_mode == RoutingMode::LocalOnly,
+            )
+            .map_err(|code| self.tool_error(code))?;
             (resolved.arguments, resolved.details)
         } else {
             (arguments, Vec::new())
