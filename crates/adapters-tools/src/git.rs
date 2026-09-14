@@ -6,17 +6,16 @@ use tramontana_core::contracts::{
 };
 use tramontana_core::ports::{ToolOutcome, ToolProvider};
 
+use crate::command::{CommandError, CommandSpec, run_command};
 use crate::limits::ReadLimits;
 use crate::scope::primary_root;
 
 /// Read-only Git inspection.
 ///
-/// `git` runs as a supervised child process with a fixed argument array and
-/// **no shell**, its working directory pinned to an approved root, a minimal
-/// environment, a deadline, and a bounded output. M6 formalizes all of that as
-/// a general command broker; until then these three invocations are the only
-/// processes the application spawns, and they are hard-coded rather than
-/// composed from caller input.
+/// `git` runs through the command broker: a fixed argument array and **no
+/// shell**, its working directory pinned to an approved root, a minimal
+/// environment, a deadline, a bounded output, and a process tree the broker
+/// owns. The arguments are hard-coded rather than composed from caller input.
 ///
 /// Read-only in the sense that matters: the subcommands cannot alter the
 /// repository. `SECURITY_AND_PERMISSIONS.md` §3.1 classifies Git status and
@@ -133,36 +132,35 @@ impl ToolProvider for GitTools {
         };
         let root = primary_root(&request)?;
 
-        let mut command = tokio::process::Command::new("git");
-        command
-            .args(arguments)
-            .current_dir(root.as_path())
+        let spec = CommandSpec {
+            program: "git".into(),
+            arguments: arguments.iter().map(|&argument| argument.into()).collect(),
+            directory: root.as_path().to_path_buf(),
             // A scrubbed environment. Inheriting the parent's would hand the
             // child every variable this process holds, and Git in particular
             // reads a great deal of behavior from its environment.
-            .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("HOME", root.as_path())
-            .kill_on_drop(true)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        let output = tokio::select! {
-            result = command.output() => result.map_err(|error| {
-                fail(ErrorCode::ToolFailed, format!("could not run git: {}", error.kind()))
-            })?,
-            () = cancel.cancelled() => {
-                return Err(fail(ErrorCode::Cancelled, "cancelled while running".to_owned()));
-            }
-            () = tokio::time::sleep(self.limits.deadline) => {
-                return Err(fail(ErrorCode::Timeout, "git exceeded its deadline".to_owned()));
-            }
+            inherit: vec!["PATH".to_owned()],
+            set: vec![
+                ("GIT_TERMINAL_PROMPT".to_owned(), "0".into()),
+                ("GIT_CONFIG_NOSYSTEM".to_owned(), "1".into()),
+                ("HOME".to_owned(), root.as_path().into()),
+            ],
+            deadline: self.limits.deadline,
+            output_limit: self.limits.max_bytes,
         };
+        let output = run_command(&spec, &cancel)
+            .await
+            .map_err(|error| match error {
+                CommandError::Cancelled => {
+                    fail(ErrorCode::Cancelled, "cancelled while running".to_owned())
+                }
+                CommandError::Timeout => {
+                    fail(ErrorCode::Timeout, "git exceeded its deadline".to_owned())
+                }
+                other => fail(ErrorCode::ToolFailed, format!("could not run git: {other}")),
+            })?;
 
-        if !output.status.success() {
+        if !output.succeeded() {
             // stderr is bounded and reported as a category, not echoed: it can
             // carry absolute paths and remote URLs.
             return Err(fail(
@@ -170,19 +168,15 @@ impl ToolProvider for GitTools {
                 format!(
                     "git exited unsuccessfully ({})",
                     output
-                        .status
-                        .code()
+                        .exit_code
                         .map_or_else(|| "signal".to_owned(), |code| code.to_string())
                 ),
             ));
         }
 
-        let full_len = output.stdout.len();
-        let truncated = full_len > self.limits.max_bytes;
-        let text: String = String::from_utf8_lossy(&output.stdout)
-            .chars()
-            .take(self.limits.max_bytes)
-            .collect();
+        let full_len = output.stdout.total;
+        let truncated = output.stdout.truncated();
+        let text = String::from_utf8_lossy(&output.stdout.kept).into_owned();
 
         let lines = text.lines().count();
         Ok(ToolOutcome {
@@ -215,9 +209,10 @@ mod tests {
     #[test]
     fn every_tool_runs_exactly_the_arguments_it_declares() {
         // No caller input reaches the command line: the arguments are
-        // constants, matched here literally. That is what makes these three
-        // invocations safe to ship before M6's general command broker exists,
-        // and this test fails if anyone starts composing them.
+        // constants, matched here literally. The broker runs whatever it is
+        // given; what makes these three invocations safe is that nothing in
+        // them comes from a caller, and this test fails if anyone starts
+        // composing them.
         //
         // Spaces inside a single argument are fine — `--pretty=format:%h %ad
         // %s` is one argv element. What must never appear is a *shell*: the

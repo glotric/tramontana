@@ -22,13 +22,23 @@
 //!   never leaves one without a name (ADR 0022). A delete keeps a verified
 //!   copy in the profile's recovery store before it removes anything, and is
 //!   not offered where there is no store (ADR 0023).
+//!
+//! Every process this crate starts goes through the command broker,
+//! [`run_command`]: an argument array and never a shell, in a directory the
+//! caller resolved inside the grant, with a cleared environment, a deadline,
+//! bounded output, and a process tree the broker owns and kills however the
+//! run ends (ADR 0024).
 
+mod command;
 mod filesystem;
 mod git;
 mod identity;
 mod limits;
 mod scope;
 
+pub use command::{
+    BASE_ENVIRONMENT, CommandError, CommandOutput, CommandSpec, Stream, run_command,
+};
 pub use filesystem::FilesystemTools;
 pub use git::GitTools;
 pub use limits::ReadLimits;
