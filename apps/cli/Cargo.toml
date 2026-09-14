@@ -27,5 +27,17 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 [dev-dependencies]
 tempfile = { workspace = true }
 
+# Discarding typeahead before an approval prompt, so a line typed earlier is
+# not read as the answer. `rustix` rather than `libc` for the reason given in
+# `crates/adapters-local`: the workspace forbids `unsafe_code`, and this is a
+# safe wrapper already in the dependency graph. Unix only; Windows is not
+# handled yet.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", features = ["termios"] }
+
+# A pseudo-terminal, so the approval tests read from a real terminal.
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { version = "1.1", features = ["termios", "pty"] }
+
 [lints]
 workspace = true
