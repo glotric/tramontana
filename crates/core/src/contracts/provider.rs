@@ -170,6 +170,10 @@ pub struct ProviderEndpoint {
     /// Separate from deleting it: turning a cloud provider off for a while is
     /// a normal thing to want, and it should not cost the configuration.
     pub enabled: bool,
+    /// Explicit model/endpoint capability configured by the user after verification.
+    /// Unknown defaults to false; protocol/provider names never imply support.
+    #[serde(default)]
+    pub supports_tool_calls: bool,
     /// What it is and how to reach it.
     pub config: ProviderConfig,
     /// When it was configured.
@@ -190,6 +194,7 @@ impl ProviderEndpoint {
             endpoint_id: endpoint_id.into(),
             display_name: display_name.into(),
             enabled: true,
+            supports_tool_calls: false,
             config,
             created_at,
         }

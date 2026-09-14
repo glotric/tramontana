@@ -84,6 +84,64 @@ async fn drain(provider: &AnthropicProvider) -> Vec<ModelEvent> {
 }
 
 #[tokio::test]
+async fn tool_start_metadata_survives_interleaved_argument_fragments() {
+    let endpoint = FakeEndpoint::start(Behavior::Raw(vec![
+        serde_json::json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"read-1","name":"builtin.fs.read","input":{}}}).to_string(),
+        serde_json::json!({"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"list-2","name":"builtin.fs.list","input":{}}}).to_string(),
+        serde_json::json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}).to_string(),
+        serde_json::json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{}"}}).to_string(),
+        serde_json::json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"README.md\"}"}}).to_string(),
+        serde_json::json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}).to_string(),
+        serde_json::json!({"type":"message_stop"}).to_string(),
+    ])).await;
+    let events = drain(&provider(&endpoint, "synthetic-key")).await;
+    let mut turn = tramontana_core::services::ModelTurnAccumulator::new(
+        "request-1".into(),
+        tramontana_core::contracts::CorrelationId::new("test"),
+        Default::default(),
+    );
+    for event in &events {
+        turn.push(event).unwrap();
+    }
+    let turn = turn.finish().unwrap();
+    assert_eq!(turn.stop_reason, StopReason::ToolCall);
+    assert_eq!(turn.tool_calls.len(), 2);
+    assert_eq!(turn.tool_calls[0].call_id, "read-1");
+    assert_eq!(turn.tool_calls[0].name, "builtin.fs.read");
+    assert_eq!(
+        turn.tool_calls[0].arguments,
+        serde_json::json!({"path":"README.md"})
+    );
+    assert_eq!(turn.tool_calls[1].call_id, "list-2");
+    assert_eq!(turn.tool_calls[1].arguments, serde_json::json!({}));
+}
+
+#[tokio::test]
+async fn malformed_tool_frames_fail_closed() {
+    for frame in [
+        serde_json::json!({"type":"content_block_start","content_block":{"type":"tool_use","id":"id","name":"tool","input":{}}}),
+        serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"id","name":"tool","input":null}}),
+        serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":{}}}),
+        serde_json::json!({"type":"content_block_delta","index":-1,"delta":{"type":"input_json_delta","partial_json":"{}"}}),
+    ] {
+        let endpoint = FakeEndpoint::start(Behavior::Raw(vec![
+            frame.to_string(),
+            serde_json::json!({"type":"message_stop"}).to_string(),
+        ]))
+        .await;
+        let events = drain(&provider(&endpoint, "synthetic-key")).await;
+        assert!(
+            matches!(events.last(),Some(ModelEvent::Failed {error}) if error.code==tramontana_core::contracts::ErrorCode::ProtocolError)
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ModelEvent::Completed { .. }))
+        );
+    }
+}
+
+#[tokio::test]
 async fn the_adapter_obeys_the_model_provider_contract_over_a_socket() {
     model_provider_contract(|scenario| async move {
         let behavior = match scenario {
@@ -151,7 +209,7 @@ async fn a_system_message_is_hoisted_out_of_the_conversation() {
     assert_eq!(body["system"], "Be brief.");
     assert_eq!(body["messages"].as_array().unwrap().len(), 1);
     assert_eq!(body["messages"][0]["role"], "user");
-    assert_eq!(body["messages"][0]["content"], "Say hello");
+    assert_eq!(body["messages"][0]["content"][0]["text"], "Say hello");
 }
 
 #[tokio::test]

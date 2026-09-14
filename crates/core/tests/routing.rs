@@ -35,7 +35,11 @@ fn model(provider: &str, id: &str, location: ModelLocation) -> ModelDescriptor {
         model_id: id.to_owned(),
         display_name: id.to_owned(),
         location,
-        capabilities: vec![ModelCapability::Text, ModelCapability::Streaming],
+        capabilities: vec![
+            ModelCapability::Text,
+            ModelCapability::Streaming,
+            ModelCapability::Cancellation,
+        ],
         context_limit: None,
         health: Health::Available,
         health_reason_code: None,
@@ -337,29 +341,15 @@ impl ModelProvider for CountingProvider {
     async fn stream(
         &self,
         request: AuthorizedModelRequest,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<mpsc::Receiver<ModelEvent>, ErrorEnvelope> {
         // Recorded rather than panicking: a panic inside a spawned task would
         // surface as a hung test rather than as this assertion.
         self.reached.fetch_add(1, Ordering::SeqCst);
 
-        let (sender, receiver) = mpsc::channel(4);
-        let stream_id = request.request().request_id.clone();
-        tokio::spawn(async move {
-            let _ = sender
-                .send(ModelEvent::TextDelta {
-                    stream_id,
-                    offset: 0,
-                    text: "answer".into(),
-                })
-                .await;
-            let _ = sender
-                .send(ModelEvent::Completed {
-                    stop_reason: StopReason::Stop,
-                })
-                .await;
-        });
-        Ok(receiver)
+        FakeModelProvider::streaming(["answer"])
+            .stream(request, cancel)
+            .await
     }
 }
 
@@ -458,14 +448,16 @@ async fn under_local_only_a_task_never_reaches_a_cloud_endpoint() {
         })
         .collect();
 
-    assert_eq!(decisions.len(), 1);
-    assert_eq!(decisions[0].model.model_id, "on-device");
-    assert!(!decisions[0].leaves_the_device());
-    assert!(!decisions[0].requires_disclosure);
-    assert!(
-        decisions[0].fallback_order.is_empty(),
-        "a cloud endpoint was listed as reachable under Local Only"
-    );
+    assert_eq!(decisions.len(), 2); // Task plan plus actual request.
+    for decision in decisions {
+        assert_eq!(decision.model.model_id, "on-device");
+        assert!(!decision.leaves_the_device());
+        assert!(!decision.requires_disclosure);
+        assert!(
+            decision.fallback_order.is_empty(),
+            "a cloud endpoint was listed as reachable under Local Only"
+        );
+    }
 }
 
 #[tokio::test]

@@ -1,14 +1,18 @@
 use std::sync::Arc;
 
+mod model;
+mod read_only;
+mod tool;
+
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::contracts::{
     AuthorizedToolRequest, CancellationOrigin, CapabilityScope, ContextManifest, DataClass,
     EffectiveConfiguration, ErrorCode, ErrorEnvelope, EventDraft, EventPayload, HandoffBundle,
-    InvocationId, MessageId, MessageRole, MessageStatus, ModelEvent, ModelRequest,
-    NormalizedMessage, PermissionOrigin, ReplaySafety, RiskClass, RoutingDecision, RoutingMode,
-    SideEffect, StopReason, StreamFrame, TaskCheckpoint, TaskEventKind, TaskState,
+    InvocationId, MessageId, MessageRole, MessageStatus, ModelRequest, NormalizedMessage,
+    PermissionOrigin, ReplaySafety, RiskClass, RoutingDecision, RoutingMode, SideEffect,
+    StopReason, StreamFrame, TaskCheckpoint, TaskEventKind, TaskState,
 };
 use crate::ports::{AgentProvider, ModelProvider, WorkerHost, WorkerOutcome, WorkerRequest};
 use crate::ports::{Clock, PermissionQuery};
@@ -16,6 +20,7 @@ use crate::services::PermissionManager;
 use crate::services::ToolRegistry;
 use crate::services::checkpoint::ResumePlan;
 use crate::services::journal::TaskJournal;
+use crate::services::model_turn::{ModelTurnAccumulator, ModelTurnLimits};
 use crate::services::preparation::assemble_context;
 use crate::services::release::{ReleaseContext, ReleaseError, ReleaseManager};
 use crate::services::routing::{AvailabilitySnapshot, RoutingInput, route};
@@ -149,7 +154,6 @@ impl TaskDriver {
         // task was interrupted, and routing against a stale manifest would
         // describe a release that did not happen.
         let mut context: Option<ContextManifest> = None;
-        let mut route: Option<RoutingDecision> = None;
 
         // Each step checks cancellation first. A cancel that arrives before the
         // task really starts still produces a proper Cancelling -> Cancelled
@@ -196,17 +200,18 @@ impl TaskDriver {
                     }
                     Err(error) => Err(error),
                 },
-                TaskState::Routing => match self.record_route(context.as_ref()).await {
-                    Ok(decision) => {
-                        route = Some(decision);
-                        Ok(())
-                    }
+                TaskState::Routing => match self.record_route(context.as_ref(), &cancel).await {
+                    Ok(_) => Ok(()),
                     Err(error) => Err(error),
                 },
                 _ => Ok(()),
             };
             if let Err(error) = recorded {
-                self.finish_failed(state, error).await;
+                if cancel.is_cancelled() {
+                    self.finish_cancelled(state).await;
+                } else {
+                    self.finish_failed(state, error).await;
+                }
                 return;
             }
         }
@@ -246,12 +251,10 @@ impl TaskDriver {
             journal: self.journal.clone(),
             models: self.providers.models.clone(),
             releases: Arc::clone(&self.providers.releases),
-            // The assembled context and the decision that chose a destination,
-            // held whole rather than by identifier: the release plan is
-            // derived from both, and a host that carried only an identifier
-            // would have to look them up to say what it was sending.
+            // Initial provenance constrains what a worker may request. The
+            // model host prepares and routes each actual call independently.
             context: context.clone(),
-            route: route.clone(),
+            model_gate: tokio::sync::Mutex::new(()),
             routing_mode: self.routing_mode,
             scope: self.scope.clone(),
             tools: ToolBroker {
@@ -285,6 +288,12 @@ impl TaskDriver {
             // A worker that finished after cancellation was requested still
             // ends as cancelled: the user's decision outranks the late result.
             Ok(_) => self.finish_cancelled(state).await,
+            // Brokered calls return cancellation as a normalized error. The
+            // task still owns the user's lifecycle decision; do not depend
+            // on each worker translating that error into an outcome.
+            Err(error) if cancel.is_cancelled() && error.code == ErrorCode::Cancelled => {
+                self.finish_cancelled(state).await;
+            }
             Err(error) => self.finish_failed(state, error).await,
         }
     }
@@ -325,15 +334,21 @@ impl TaskDriver {
     async fn record_route(
         &self,
         context: Option<&ContextManifest>,
+        cancel: &CancellationToken,
     ) -> Result<RoutingDecision, ErrorEnvelope> {
         let snapshot = AvailabilitySnapshot {
             snapshot_id: self.journal.next_id("availability"),
-            models: {
+            models: tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Err(ErrorEnvelope::new(ErrorCode::Cancelled, "Routing cancelled", self.journal.correlation_id().clone())),
+                () = tokio::time::sleep(std::time::Duration::from_secs(30)) => return Err(ErrorEnvelope::new(ErrorCode::Timeout, "Model discovery timed out", self.journal.correlation_id().clone())),
+                models = async {
                 let mut available = Vec::new();
                 for provider in &self.providers.models {
                     available.extend(provider.list_models().await);
                 }
                 available
+                } => models,
             },
             taken_at: self.clock.now(),
         };
@@ -497,8 +512,8 @@ struct BrokeredHost {
     releases: Arc<ReleaseManager>,
     /// The context assembled for this task.
     context: Option<ContextManifest>,
-    /// The decision that chose where it goes.
-    route: Option<RoutingDecision>,
+    /// Serialize requests so approvals and model starts cannot overlap per host.
+    model_gate: tokio::sync::Mutex<()>,
     /// The standing policy in force.
     routing_mode: RoutingMode,
     /// The limits this task runs under.
@@ -514,6 +529,7 @@ impl BrokeredHost {
     fn release_refused(&self, error: &ReleaseError) -> ErrorEnvelope {
         let code = match error {
             ReleaseError::Denied { .. } => ErrorCode::PermissionDenied,
+            ReleaseError::InvalidPayload(code) => *code,
             _ => ErrorCode::Internal,
         };
         ErrorEnvelope::new(
@@ -554,7 +570,23 @@ impl std::fmt::Debug for ToolBroker {
 
 #[async_trait]
 impl WorkerHost for BrokeredHost {
+    async fn read_only_turn(
+        &self,
+        tools: &[String],
+        limits: &crate::ports::ReadOnlyLimits,
+        cancel: &CancellationToken,
+    ) -> Result<crate::ports::ReadOnlyTurn, ErrorEnvelope> {
+        self.run_read_only_turn(tools, limits, cancel).await
+    }
     async fn emit(&self, draft: EventDraft) -> Result<(), ErrorEnvelope> {
+        if matches!(&draft.payload, EventPayload::DiagnosticRecorded { code, .. } if code.starts_with("reference."))
+        {
+            return Err(ErrorEnvelope::new(
+                ErrorCode::PermissionDenied,
+                "Reserved host event",
+                self.journal.correlation_id().clone(),
+            ));
+        }
         // Workers cannot forge lifecycle, approval, release, or completion
         // ledger entries. What is left is an observation about the worker's
         // own conduct, which is the only thing it is the authority on.
@@ -583,181 +615,7 @@ impl WorkerHost for BrokeredHost {
         prompt: &str,
         cancel: &CancellationToken,
     ) -> Result<String, ErrorEnvelope> {
-        // One identifier for the request, the stream, and the frames it
-        // publishes, so a delta can be tied back to the `modelStarted` event
-        // without anyone inventing a second name for the same thing.
-        let stream_id = format!("stream-{}", self.journal.task_id());
-
-        // Fail closed. A model call with no assembled context and no routing
-        // decision is one that cannot be disclosed, so it does not happen.
-        let (Some(manifest), Some(decision)) = (self.context.as_ref(), self.route.as_ref()) else {
-            return Err(ErrorEnvelope::new(
-                ErrorCode::PermissionDenied,
-                "a model request needs an assembled context and a routing decision",
-                self.journal.correlation_id().clone(),
-            ));
-        };
-
-        let mut request = ModelRequest::new(
-            stream_id.clone(),
-            self.journal.task_id().clone(),
-            vec![NormalizedMessage::text(
-                MessageId::new(self.journal.next_id("message")),
-                self.journal.conversation_id().cloned(),
-                MessageRole::User,
-                self.journal.now(),
-                prompt,
-            )],
-            // The release this request was built from. There is no fallback
-            // value: a request that cannot name the context it came from is
-            // one nobody can describe, and describing it is the whole job of
-            // the boundary below. A resumed run that skipped preparation used
-            // to reach here and record `context.unavailable`; now it cannot
-            // reach here at all.
-            manifest.context_manifest_id.clone(),
-        );
-        // What is being sent, for routing and disclosure. Everything a task
-        // carries today is derived from an opened project.
-        request.data_classes = vec![DataClass::Project];
-
-        // Nothing reaches a provider without a release decision. For a local
-        // destination that costs a record and no question; for a cloud one it
-        // is the disclosure and the approval
-        // (`SECURITY_AND_PERMISSIONS.md` §8).
-        let authorized = self
-            .releases
-            .authorize(
-                self.journal.next_id("release"),
-                request,
-                &ReleaseContext {
-                    manifest,
-                    decision,
-                    mode: self.routing_mode,
-                    scope: &self.scope,
-                },
-                self.journal.now(),
-            )
-            .await
-            .map_err(|error| self.release_refused(&error))?;
-
-        // Recorded before the request goes, not after: if the process dies
-        // mid-stream the record still says what left the device.
-        self.journal
-            .append(EventDraft::user(
-                TaskEventKind::ContextReleased,
-                EventPayload::ContextReleased {
-                    plan: Box::new(authorized.plan().clone()),
-                },
-            ))
-            .await?;
-
-        // Only now is it true that a model request has started. Emitted by the
-        // host rather than the worker, and after the release rather than
-        // before it, so a refused release cannot leave a record saying a model
-        // ran (`CORE_CONTRACTS.md` §5.1).
-        self.journal
-            .append(EventDraft::user(
-                TaskEventKind::ModelStarted,
-                EventPayload::ModelStarted {
-                    stream_id: stream_id.clone(),
-                    model_id: decision.model.model_id.clone(),
-                },
-            ))
-            .await?;
-
-        // The provider the decision named, not "the" provider. Failing
-        // closed here keeps the audit record and the execution from coming
-        // apart: a stream served by something other than the model the
-        // release plan discloses would make the disclosure describe a
-        // different act.
-        let provider = self
-            .models
-            .iter()
-            .find(|provider| provider.id().to_string() == decision.model.provider_id)
-            .ok_or_else(|| {
-                ErrorEnvelope::new(
-                    ErrorCode::ProviderUnavailable,
-                    format!(
-                        "no configured provider offers {:?}; the routing decision named one that is gone",
-                        decision.model.provider_id
-                    ),
-                    self.journal.correlation_id().clone(),
-                )
-            })?;
-
-        let mut stream = provider.stream(authorized, cancel.clone()).await?;
-
-        // Deltas are coalesced here and committed once. Persisting every token
-        // would make the durable stream enormous and tell the reader nothing
-        // the final message does not (`CORE_CONTRACTS.md` §5).
-        let mut answer = String::new();
-        let mut stop_reason = None;
-        let mut failure = None;
-        while let Some(event) = stream.recv().await {
-            match event {
-                ModelEvent::TextDelta { text, .. } => {
-                    self.journal.publish_frame(StreamFrame {
-                        stream_id: stream_id.clone(),
-                        offset: answer.len() as u64,
-                        text: text.clone(),
-                    });
-                    answer.push_str(&text);
-                }
-                // A tool call assembled by the model, and what the request
-                // cost, are M6's to act on. Ignored rather than treated as
-                // text, which would put JSON fragments in the answer.
-                ModelEvent::ToolCallDelta { .. } | ModelEvent::Usage { .. } => {}
-                ModelEvent::Completed {
-                    stop_reason: reason,
-                } => {
-                    stop_reason = Some(reason);
-                    break;
-                }
-                ModelEvent::Failed { error } => {
-                    failure = Some(error);
-                    break;
-                }
-            }
-        }
-
-        // The frames are gone the moment they are delivered. Committing the
-        // coalesced answer is what puts the model's reply in the durable
-        // record at all — without it an exported task shows that a model was
-        // asked and never what it said (`CORE_CONTRACTS.md` §5).
-        let status = match stop_reason {
-            Some(StopReason::Stop) => MessageStatus::Committed,
-            // Cut short: the content up to that point is kept and marked, so a
-            // reader can tell a finished answer from a truncated one.
-            _ => MessageStatus::Partial,
-        };
-        let mut message = NormalizedMessage::text(
-            MessageId::new(self.journal.next_id("message")),
-            self.journal.conversation_id().cloned(),
-            MessageRole::Assistant,
-            self.journal.now(),
-            answer.clone(),
-        );
-        message.task_id = Some(self.journal.task_id().clone());
-        message.status = status;
-
-        self.journal
-            .append(EventDraft::user(
-                TaskEventKind::MessageCommitted,
-                EventPayload::MessageCommitted { message },
-            ))
-            .await?;
-
-        if let Some(error) = failure {
-            return Err(error);
-        }
-        if stop_reason.is_none() {
-            return Err(ErrorEnvelope::new(
-                ErrorCode::Internal,
-                "Model stream ended without an outcome",
-                self.journal.correlation_id().clone(),
-            ));
-        }
-        Ok(answer)
+        self.run_model_request(prompt, cancel).await
     }
 
     async fn call_tool_step(
@@ -767,248 +625,8 @@ impl WorkerHost for BrokeredHost {
         arguments: serde_json::Value,
         cancel: &CancellationToken,
     ) -> Result<serde_json::Value, ErrorEnvelope> {
-        let correlation = self.journal.correlation_id().clone();
-        if step_id.is_empty()
-            || step_id.len() > 128
-            || !step_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-        {
-            return Err(ErrorEnvelope::new(
-                ErrorCode::InvalidRequest,
-                "Invalid tool step identity",
-                correlation,
-            ));
-        }
-        // Serialize logical steps, including concurrent duplicate calls.
-        let mut plan = self.tools.resume.lock().await;
-        if cancel.is_cancelled() {
-            return Err(ErrorEnvelope::new(
-                ErrorCode::Cancelled,
-                "Tool call cancelled before execution",
-                correlation,
-            ));
-        }
-        if plan.uncertain.contains(step_id) {
-            return Err(ErrorEnvelope::new(
-                ErrorCode::InterruptedUnsafe,
-                "An earlier effect for this step is uncertain",
-                correlation,
-            ));
-        }
-        let hash = crate::services::checkpoint::request_hash(tool_id, &arguments);
-        if plan
-            .requests
-            .get(step_id)
-            .is_some_and(|previous| previous != &hash)
-        {
-            return Err(ErrorEnvelope::new(
-                ErrorCode::InterruptedUnsafe,
-                "A recorded step cannot be reused with a different tool or arguments",
-                correlation,
-            ));
-        }
-        let invocation_id = InvocationId::new(format!("{}-step-{step_id}", self.journal.task_id()));
-        let correlation = self.journal.correlation_id().clone();
-
-        // 0. Refuse to repeat a step this task already completed.
-        //
-        //    Enforced here rather than left to the worker. A worker that
-        //    forgets to consult the watermark would otherwise duplicate the
-        //    effect, and "resume without repeating a side effect" would be a
-        //    convention rather than a guarantee (`BUILD_ORDER.md` §12).
-        if let Some(completed) = plan.already_done(step_id) {
-            self.journal
-                .append(EventDraft::user(
-                    TaskEventKind::DiagnosticRecorded,
-                    EventPayload::DiagnosticRecorded {
-                        code: "resume.stepSkipped".to_owned(),
-                        summary: format!("{tool_id} was completed before the interruption"),
-                    },
-                ))
-                .await?;
-            return Ok(serde_json::json!({
-                "skipped": true,
-                "reason": "alreadyCompleted",
-                "summary": completed.summary,
-            }));
-        }
-
-        // 1. Resolve. An unknown tool never reaches policy: there is nothing
-        //    to evaluate, and inventing a scope for it would be guessing.
-        let Some((capability, risk_class)) = self.tools.registry.requirements(tool_id) else {
-            return Err(ErrorEnvelope::new(
-                ErrorCode::NotFound,
-                format!("unknown tool {tool_id}"),
-                correlation,
-            ));
-        };
-
-        // 2. Announce the request before it is judged, so the record shows
-        //    what was asked for even when the answer is no.
-        self.journal
-            .append(EventDraft::user(
-                TaskEventKind::ToolRequested,
-                EventPayload::ToolRequested {
-                    invocation_id: invocation_id.clone(),
-                    tool_id: tool_id.to_owned(),
-                    arguments_summary: summarize_arguments(&arguments),
-                    risk_class,
-                    step_id: Some(step_id.to_owned()),
-                    request_hash: Some(hash.clone()),
-                },
-            ))
-            .await?;
-        plan.requests.insert(step_id.to_owned(), hash.clone());
-
-        // 3. Decide.
-        let query = PermissionQuery {
-            tool_id: tool_id.to_owned(),
-            capability,
-            risk_class,
-            scope: self.tools.scope.clone(),
-            persistable: risk_class != RiskClass::Dangerous,
-        };
-        let requested_at = self.tools.clock.now();
-        let authorization = self.tools.permissions.authorize(
-            &query,
-            self.journal.task_id(),
-            &invocation_id,
-            arguments,
-            &requested_at,
-        );
-        let (outcome, authorized) = tokio::select! {
-            result = authorization => result,
-            () = cancel.cancelled() => return Err(ErrorEnvelope::new(ErrorCode::Cancelled,
-                "Cancelled while awaiting permission", correlation)),
-        }
-        .map_err(|error| {
-            ErrorEnvelope::new(
-                ErrorCode::PermissionDenied,
-                error.to_string(),
-                correlation.clone(),
-            )
-        })?;
-
-        // 4. Record the decision — allowed or not. "Every tool invocation
-        //    carries origin, requested capability, scope, risk class, routing
-        //    destination, and approval result in an auditable event"
-        //    (`AGENTS.md`, Security and privacy).
-        self.journal
-            .append(EventDraft::user(
-                TaskEventKind::ApprovalResolved,
-                EventPayload::PermissionDecided {
-                    invocation_id: invocation_id.clone(),
-                    origin: self.tools.origin.clone(),
-                    capability: query.capability.to_string(),
-                    scope: query.scope.clone(),
-                    allowed: outcome.is_allowed(),
-                    reason_code: outcome.reason_code().to_owned(),
-                    grant_kind: authorized.as_ref().map(AuthorizedToolRequest::grant_kind),
-                },
-            ))
-            .await?;
-
-        let Some(authorized) = authorized else {
-            let denial = ErrorEnvelope::new(
-                ErrorCode::PermissionDenied,
-                format!("{tool_id} was not permitted: {}", outcome.reason_code()),
-                correlation,
-            );
-            self.journal
-                .append(EventDraft::user(
-                    TaskEventKind::ToolFailed,
-                    EventPayload::ToolFailed {
-                        invocation_id,
-                        error: denial.clone(),
-                    },
-                ))
-                .await?;
-            // The worker receives a structured refusal, "not an opportunity to
-            // rephrase the same request indefinitely"
-            // (`SECURITY_AND_PERMISSIONS.md` §4).
-            return Err(denial);
-        };
-
-        // 5. Run it.
-        let Some(registered) = self.tools.registry.get(tool_id) else {
-            return Err(ErrorEnvelope::new(
-                ErrorCode::NotFound,
-                "Tool was removed",
-                correlation,
-            ));
-        };
-        let replay_safety = if registered.descriptor.side_effect == SideEffect::None {
-            ReplaySafety::Safe
-        } else {
-            ReplaySafety::Unsafe
-        };
-        if cancel.is_cancelled() {
-            return Err(ErrorEnvelope::new(
-                ErrorCode::Cancelled,
-                "Tool call cancelled before execution",
-                correlation,
-            ));
-        }
-        self.journal
-            .append(EventDraft::user(
-                TaskEventKind::ToolStarted,
-                EventPayload::ToolStarted {
-                    invocation_id: invocation_id.clone(),
-                    tool_id: tool_id.to_owned(),
-                    replay_safety,
-                },
-            ))
-            .await?;
-
-        if replay_safety != ReplaySafety::Safe {
-            plan.uncertain.insert(step_id.to_owned());
-        }
-
-        let outcome = registered.provider.invoke(authorized, cancel.clone()).await;
-        if self.tools.interrupt.is_cancelled() {
-            return Err(ErrorEnvelope::new(
-                ErrorCode::InterruptedUnsafe,
-                "Tool interrupted; inspect the checkpoint before continuing",
-                correlation,
-            ));
-        }
-        match outcome {
-            Ok(outcome) => {
-                self.journal
-                    .append(EventDraft::user(
-                        TaskEventKind::ToolCompleted,
-                        EventPayload::ToolCompleted {
-                            invocation_id,
-                            display_summary: outcome.display_summary.clone(),
-                            side_effect: outcome.side_effect,
-                            truncated: outcome.truncated,
-                        },
-                    ))
-                    .await?;
-                plan.completed.insert(
-                    step_id.to_owned(),
-                    crate::services::checkpoint::CompletedStep {
-                        request_hash: hash,
-                        summary: outcome.display_summary.clone(),
-                    },
-                );
-                plan.uncertain.remove(step_id);
-                Ok(outcome.content)
-            }
-            Err(error) => {
-                self.journal
-                    .append(EventDraft::user(
-                        TaskEventKind::ToolFailed,
-                        EventPayload::ToolFailed {
-                            invocation_id,
-                            error: error.clone(),
-                        },
-                    ))
-                    .await?;
-                Err(error)
-            }
-        }
+        self.run_tool_step(step_id, tool_id, arguments, cancel)
+            .await
     }
 }
 

@@ -131,6 +131,143 @@ fn manager(approver: Arc<dyn Approver>) -> ReleaseManager {
     )
 }
 
+#[test]
+fn release_accounts_for_tool_definitions_and_all_structured_fields() {
+    let mut request = request(&[GOAL]);
+    request.tools.push(NormalizedToolDefinition {
+        name: "builtin.fs.read".into(),
+        description: "Read a file".into(),
+        input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"}}}),
+    });
+    let mut call = NormalizedMessage::text(
+        MessageId::new("call"),
+        None,
+        MessageRole::Assistant,
+        at(),
+        "",
+    );
+    call.parts = vec![MessagePart::ToolCall {
+        invocation_id: InvocationId::new("invocation"),
+        tool_id: "builtin.fs.read".into(),
+        arguments: serde_json::json!({"path":"README.md"}),
+    }];
+    let mut result =
+        NormalizedMessage::text(MessageId::new("result"), None, MessageRole::Tool, at(), "");
+    result.parts = vec![MessagePart::ToolResult {
+        invocation_id: InvocationId::new("invocation"),
+        content: serde_json::json!({"text":"Fixture"}),
+        truncated: true,
+    }];
+    request.messages.extend([call, result]);
+    let content = model_input_content(&request).unwrap();
+    let manifest = ContextManifest::new(
+        "context-1",
+        request.task_id.clone(),
+        DestinationClass::Cloud,
+        content
+            .iter()
+            .enumerate()
+            .map(|(i, content)| {
+                ContextSource::included(
+                    format!("source-{i}"),
+                    if i == 2 {
+                        ContextCategory::ToolResult
+                    } else {
+                        ContextCategory::Conversation
+                    },
+                    DataClass::Project,
+                    content,
+                )
+            })
+            .collect(),
+        at(),
+    );
+    let decision = decision(cloud());
+    let scope = scope();
+    let context = ReleaseContext {
+        manifest: &manifest,
+        decision: &decision,
+        mode: RoutingMode::CloudPreferred,
+        scope: &scope,
+    };
+    let manager = manager(Arc::new(ScriptedApprover::unavailable()));
+    let plan = manager.plan("release", &request, &context, at()).unwrap();
+    assert_eq!(
+        plan.total_bytes,
+        content
+            .iter()
+            .map(|content| content.len() as u64)
+            .sum::<u64>()
+    );
+    assert_eq!(plan.tools_offered, vec!["builtin.fs.read"]);
+    assert_eq!(
+        plan.released
+            .iter()
+            .map(|entry| entry.source_count)
+            .sum::<u32>(),
+        4
+    );
+    for field in [
+        "description",
+        "schema",
+        "tool-id",
+        "invocation-id",
+        "truncated",
+    ] {
+        let mut changed = request.clone();
+        match field {
+            "description" => changed.tools[0].description = "Undisclosed project content".into(),
+            "schema" => {
+                changed.tools[0].input_schema["description"] = "Undisclosed schema content".into()
+            }
+            "tool-id" => {
+                if let MessagePart::ToolCall { tool_id, .. } = &mut changed.messages[1].parts[0] {
+                    *tool_id = "other.tool".into();
+                }
+            }
+            "invocation-id" => {
+                if let MessagePart::ToolCall { invocation_id, .. } =
+                    &mut changed.messages[1].parts[0]
+                {
+                    *invocation_id = InvocationId::new("other");
+                }
+                if let MessagePart::ToolResult { invocation_id, .. } =
+                    &mut changed.messages[2].parts[0]
+                {
+                    *invocation_id = InvocationId::new("other");
+                }
+            }
+            _ => {
+                if let MessagePart::ToolResult { truncated, .. } = &mut changed.messages[2].parts[0]
+                {
+                    *truncated = false;
+                }
+            }
+        }
+        assert!(
+            matches!(
+                manager.plan("changed", &changed, &context, at()),
+                Err(ReleaseError::UndisclosedContent { .. })
+            ),
+            "{field}"
+        );
+    }
+    let mut understated = manifest.clone();
+    understated.sources[0].byte_count = 0;
+    assert!(matches!(
+        manager.plan(
+            "understated",
+            &request,
+            &ReleaseContext {
+                manifest: &understated,
+                ..context
+            },
+            at()
+        ),
+        Err(ReleaseError::UndisclosedContent { .. })
+    ));
+}
+
 #[tokio::test]
 async fn a_local_destination_is_released_without_asking_anyone() {
     // A prompt that fires when nothing is at stake is how people are trained
@@ -534,7 +671,11 @@ impl ModelProvider for CloudEndpoint {
             model_id: "gpt-oss".to_owned(),
             display_name: "gpt-oss".to_owned(),
             location: ModelLocation::Cloud,
-            capabilities: vec![ModelCapability::Text, ModelCapability::Streaming],
+            capabilities: vec![
+                ModelCapability::Text,
+                ModelCapability::Streaming,
+                ModelCapability::Cancellation,
+            ],
             context_limit: None,
             health: Health::Available,
             health_reason_code: None,
@@ -544,12 +685,20 @@ impl ModelProvider for CloudEndpoint {
     async fn stream(
         &self,
         request: AuthorizedModelRequest,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<mpsc::Receiver<ModelEvent>, ErrorEnvelope> {
         self.reached.fetch_add(1, Ordering::SeqCst);
         let (sender, receiver) = mpsc::channel(4);
         let stream_id = request.request().request_id.clone();
         tokio::spawn(async move {
+            if cancel.is_cancelled() {
+                let _ = sender
+                    .send(ModelEvent::Completed {
+                        stop_reason: StopReason::Cancelled,
+                    })
+                    .await;
+                return;
+            }
             let _ = sender
                 .send(ModelEvent::TextDelta {
                     stream_id,

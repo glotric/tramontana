@@ -538,6 +538,7 @@ async fn provider_endpoints_round_trip_and_never_hold_a_credential() {
     // Ordered, so two runs show the same thing.
     let listed = settings.list().await.unwrap();
     assert_eq!(listed, vec![local.clone(), cloud.clone()]);
+    assert!(listed.iter().all(|endpoint| !endpoint.supports_tool_calls));
 
     // Location is derived on the way out, not stored and read back.
     assert_eq!(listed[0].location(), ModelLocation::Local);
@@ -545,12 +546,14 @@ async fn provider_endpoints_round_trip_and_never_hold_a_credential() {
 
     // Saving the same identifier edits rather than duplicates.
     let mut edited = cloud.clone();
+    edited.supports_tool_calls = true;
     edited.enabled = false;
     edited.display_name = "Anthropic (off)".to_owned();
     settings.save(&edited).await.unwrap();
     let listed = settings.list().await.unwrap();
     assert_eq!(listed.len(), 2);
     assert!(!listed[1].enabled);
+    assert!(listed[1].supports_tool_calls);
     assert_eq!(listed[1].display_name, "Anthropic (off)");
 
     // Only the reference is on disk, never a value — there is nowhere in the

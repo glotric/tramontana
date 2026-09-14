@@ -175,6 +175,12 @@ pub fn derive_state(events: &[EventEnvelope]) -> DerivedState {
                 }
             }
             EventPayload::ModelStarted { stream_id, .. } => {
+                // Model calls are serialized by the host. A new model start
+                // supersedes a safely interrupted prior attempt, which must
+                // not accumulate phantom concurrent actions after retries.
+                pending.retain(|_, action: &mut PendingAction| {
+                    action.kind != PendingActionKind::Model
+                });
                 pending.insert(
                     format!("model:{stream_id}"),
                     PendingAction {
@@ -187,7 +193,12 @@ pub fn derive_state(events: &[EventEnvelope]) -> DerivedState {
                 );
             }
             EventPayload::MessageCommitted { message }
-                if message.status == crate::contracts::MessageStatus::Committed =>
+                if message.status == crate::contracts::MessageStatus::Committed
+                    && message.role == crate::contracts::MessageRole::Assistant
+                    && message
+                        .parts
+                        .iter()
+                        .any(|part| matches!(part, crate::contracts::MessagePart::Text { .. })) =>
             {
                 pending.retain(|_, action| action.kind != PendingActionKind::Model);
             }

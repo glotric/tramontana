@@ -1570,7 +1570,7 @@ export type ModelEvent =
   | {
       kind: "textDelta";
       /**
-       * Position within this stream.
+       * Zero-based ordinal shared by text/tool deltas (not a byte offset).
        */
       offset: number;
       /**
@@ -1584,16 +1584,25 @@ export type ModelEvent =
     }
   | {
       /**
-       * Identifies the call being assembled across deltas.
+       * Provider call identifier, supplied on the opening fragment.
        */
-      callId: string;
+      callId?: string;
+      /**
+       * Stable position of this call within the response. Continuations
+       * carry the same index even when the provider omits its identifier.
+       */
+      callIndex: number;
       /**
        * The fragment.
        */
       delta: string;
       kind: "toolCallDelta";
       /**
-       * Position within this stream.
+       * Tool name, supplied on the opening fragment. Never inferred from ID.
+       */
+      name?: string;
+      /**
+       * Zero-based ordinal shared by text/tool deltas (not a byte offset).
        */
       offset: number;
       /**

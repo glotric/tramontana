@@ -24,9 +24,8 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tramontana_core::contracts::{
-    AuthorizedModelRequest, ErrorCode, ErrorEnvelope, Health, MessagePart, MessageRole,
-    ModelCapability, ModelDescriptor, ModelEvent, ModelLocation, ModelRequest, ProviderId,
-    SecretRef, StopReason, Usage,
+    AuthorizedModelRequest, ErrorCode, ErrorEnvelope, Health, ModelCapability, ModelDescriptor,
+    ModelEvent, ModelLocation, ProviderId, SecretRef, StopReason, Usage,
 };
 use tramontana_core::ports::{ModelProvider, SecretResolver};
 
@@ -142,60 +141,6 @@ impl AnthropicProvider {
     fn messages_url(&self) -> String {
         format!("{}/v1/messages", self.base_url)
     }
-
-    /// The request body, in Anthropic's shape.
-    fn body(&self, request: &ModelRequest) -> serde_json::Value {
-        // System content is hoisted out of the conversation. Leaving it as a
-        // `system`-role message is a request error, and silently relabelling
-        // it `user` would change what the model was told.
-        let mut system = Vec::new();
-        let mut messages = Vec::new();
-
-        for message in &request.messages {
-            let text: String = message
-                .parts
-                .iter()
-                .filter_map(|part| match part {
-                    MessagePart::Text { text } => Some(text.as_str()),
-                    // Tool calls and results reach a model in M6, when a
-                    // worker can produce them.
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            match message.role {
-                MessageRole::System => system.push(text),
-                // A tool result has no home in this shape until M6 gives it
-                // one; treating it as user text would put a tool's output in
-                // the conversation as though a person had typed it.
-                MessageRole::Tool => {}
-                MessageRole::User => {
-                    messages.push(serde_json::json!({ "role": "user", "content": text }));
-                }
-                MessageRole::Assistant => {
-                    messages.push(serde_json::json!({ "role": "assistant", "content": text }));
-                }
-            }
-        }
-
-        let mut body = serde_json::json!({
-            "model": self.descriptor.model_id,
-            "messages": messages,
-            "stream": true,
-            // Required by the API, with no server-side default.
-            "max_tokens": request
-                .limits
-                .max_output_tokens
-                .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
-        });
-        if !system.is_empty()
-            && let Some(object) = body.as_object_mut()
-        {
-            object.insert("system".to_owned(), system.join("\n\n").into());
-        }
-        body
-    }
 }
 
 #[async_trait]
@@ -214,6 +159,14 @@ impl ModelProvider for AnthropicProvider {
         cancel: CancellationToken,
     ) -> Result<mpsc::Receiver<ModelEvent>, ErrorEnvelope> {
         let request = authorized.request();
+        tramontana_core::services::validate_model_capabilities(request, &self.descriptor)?;
+        let names = crate::request::WireNames::new(request);
+        let body = crate::request::anthropic_body(
+            request,
+            &self.descriptor.model_id,
+            DEFAULT_MAX_OUTPUT_TOKENS,
+            &names,
+        )?;
 
         // Resolved here and moved straight into the header: never a field on
         // the provider, never a URL, never a process argument.
@@ -225,14 +178,25 @@ impl ModelProvider for AnthropicProvider {
             .header("accept", "text/event-stream")
             .header("anthropic-version", API_VERSION)
             .header("x-api-key", key)
-            .json(&self.body(request));
+            .json(&body);
 
         let stream_id = request.request_id.clone();
         let deadline = Duration::from_millis(request.limits.deadline_ms);
         let (sender, receiver) = mpsc::channel(32);
 
         tokio::spawn(async move {
-            let outcome = pump(builder, &Messages, &stream_id, deadline, &cancel, &sender).await;
+            let outcome = pump(
+                builder,
+                &crate::request::NamedWire {
+                    format: Messages,
+                    names,
+                },
+                &stream_id,
+                deadline,
+                &cancel,
+                &sender,
+            )
+            .await;
             let _ = sender.send(outcome).await;
         });
 
@@ -280,6 +244,51 @@ impl WireFormat for Messages {
                 (events, Signal::Continue)
             }
 
+            "content_block_start" if value["content_block"]["type"] == "tool_use" => {
+                let Some(call_index) = value.get("index").and_then(serde_json::Value::as_u64)
+                else {
+                    return (
+                        events,
+                        Signal::Failed(error(
+                            ErrorCode::ProtocolError,
+                            "A streamed tool call has no valid index",
+                        )),
+                    );
+                };
+                let block = &value["content_block"];
+                if !block.get("input").is_some_and(serde_json::Value::is_object) {
+                    return (
+                        events,
+                        Signal::Failed(error(
+                            ErrorCode::ProtocolError,
+                            "A streamed tool call has invalid initial input",
+                        )),
+                    );
+                }
+                // The opening empty object is a placeholder, not a fragment
+                // to concatenate before the actual input_json_delta bytes.
+                let delta = block
+                    .get("input")
+                    .filter(|input| input.as_object().is_none_or(|object| !object.is_empty()))
+                    .map_or_else(String::new, serde_json::Value::to_string);
+                events.push(ModelEvent::ToolCallDelta {
+                    stream_id: stream_id.to_owned(),
+                    offset: *offset,
+                    call_index,
+                    call_id: block
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    name: block
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    delta,
+                });
+                *offset += 1;
+                (events, Signal::Continue)
+            }
+
             "content_block_delta" => {
                 if let Some(text) = value
                     .get("delta")
@@ -299,6 +308,17 @@ impl WireFormat for Messages {
                 }
                 // A tool call arrives as `input_json_delta` fragments against
                 // the block opened by `content_block_start`.
+                if value["delta"]["type"] == "input_json_delta"
+                    && !value["delta"]["partial_json"].is_string()
+                {
+                    return (
+                        events,
+                        Signal::Failed(error(
+                            ErrorCode::ProtocolError,
+                            "A streamed tool call has invalid argument fragments",
+                        )),
+                    );
+                }
                 if let Some(partial) = value
                     .get("delta")
                     .filter(|delta| {
@@ -308,14 +328,22 @@ impl WireFormat for Messages {
                     .and_then(|delta| delta.get("partial_json"))
                     .and_then(serde_json::Value::as_str)
                 {
-                    let call_id = value
-                        .get("index")
-                        .and_then(serde_json::Value::as_u64)
-                        .map_or_else(|| "call-0".to_owned(), |index| format!("call-{index}"));
+                    let Some(call_index) = value.get("index").and_then(serde_json::Value::as_u64)
+                    else {
+                        return (
+                            events,
+                            Signal::Failed(error(
+                                ErrorCode::ProtocolError,
+                                "A streamed tool call has no valid index",
+                            )),
+                        );
+                    };
                     events.push(ModelEvent::ToolCallDelta {
                         stream_id: stream_id.to_owned(),
                         offset: *offset,
-                        call_id,
+                        call_index,
+                        call_id: None,
+                        name: None,
                         delta: partial.to_owned(),
                     });
                     *offset += 1;

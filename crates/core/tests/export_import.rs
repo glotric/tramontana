@@ -488,6 +488,10 @@ fn the_committed_fixture_stream_survives_an_export_and_import_round_trip() {
 
     let task_id = original[0].task_id.clone();
     let mut request = ExportRequest::at(at(9));
+    // The fixture contains the deliberately bounded tool call/result parts.
+    // Preserve them for this lossless format round-trip test; the default
+    // export remains privacy-preserving and redacts those fields.
+    request.options.include_raw_tool_output = true;
     request.tasks = vec![TaskRecord::new(
         task_id.clone(),
         None,

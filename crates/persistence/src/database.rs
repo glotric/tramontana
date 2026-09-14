@@ -106,6 +106,40 @@ mod tests {
     use crate::repositories::SqliteProjectRepository;
 
     #[tokio::test]
+    async fn capability_migration_preserves_existing_settings_as_unknown() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new().in_memory(true))
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!("../migrations/0004_provider_endpoints.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO provider_endpoint VALUES ('old', 'Existing', 1, 'fixture', '{}', 't', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!("../migrations/0005_model_tool_capability.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let row: (String, String, i64, bool) = sqlx::query_as(
+            "SELECT display_name, config, enabled, supports_tool_calls FROM provider_endpoint WHERE endpoint_id = 'old'"
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(row, ("Existing".into(), "{}".into(), 1, false));
+        assert!(
+            sqlx::query("UPDATE provider_endpoint SET supports_tool_calls = 2")
+                .execute(&pool)
+                .await
+                .is_err()
+        );
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn a_locked_database_becomes_a_normalized_repository_error() {
         let directory = tempfile::tempdir().unwrap();
         let options = SqliteConnectOptions::new()

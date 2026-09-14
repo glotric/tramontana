@@ -222,7 +222,7 @@ async fn a_tool_call_arrives_as_deltas_with_a_stable_call_identity() {
     // naive reader assembles two calls where there was one.
     let endpoint = FakeEndpoint::start(Behavior::Raw(vec![
         serde_json::json!({ "choices": [{ "delta": { "tool_calls": [
-            { "id": "call-abc", "index": 0, "function": { "arguments": "{\"pa" } }
+            { "id": "call-abc", "index": 0, "function": { "name": "builtin.fs.read", "arguments": "{\"pa" } }
         ] } }] })
         .to_string(),
         serde_json::json!({ "choices": [{ "delta": { "tool_calls": [
@@ -240,24 +240,73 @@ async fn a_tool_call_arrives_as_deltas_with_a_stable_call_identity() {
         CancellationToken::new(),
     )
     .await;
-    let deltas: Vec<(String, String)> = events
+    let deltas: Vec<(u64, Option<String>, Option<String>, String)> = events
         .iter()
         .filter_map(|event| match event {
-            ModelEvent::ToolCallDelta { call_id, delta, .. } => {
-                Some((call_id.clone(), delta.clone()))
-            }
+            ModelEvent::ToolCallDelta {
+                call_index,
+                call_id,
+                name,
+                delta,
+                ..
+            } => Some((*call_index, call_id.clone(), name.clone(), delta.clone())),
             _ => None,
         })
         .collect();
 
     assert_eq!(deltas.len(), 2);
-    assert_eq!(deltas[0].0, "call-abc");
-    assert_eq!(
-        deltas[1].0, "call-0",
-        "a continuation frame is keyed by index"
-    );
-    let assembled: String = deltas.iter().map(|(_, delta)| delta.as_str()).collect();
+    assert_eq!(deltas[0].0, deltas[1].0);
+    assert_eq!(deltas[0].1.as_deref(), Some("call-abc"));
+    assert_eq!(deltas[0].2.as_deref(), Some("builtin.fs.read"));
+    assert_eq!(deltas[1].1, None);
+    assert_eq!(deltas[1].2, None);
+    let assembled: String = deltas
+        .iter()
+        .map(|(_, _, _, delta)| delta.as_str())
+        .collect();
     assert_eq!(assembled, "{\"path\":\".\"}");
+    let mut turn = tramontana_core::services::ModelTurnAccumulator::new(
+        "request-1".into(),
+        tramontana_core::contracts::CorrelationId::new("test"),
+        Default::default(),
+    );
+    for event in &events {
+        turn.push(event).unwrap();
+    }
+    let calls = turn.finish().unwrap().tool_calls;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].call_id, "call-abc");
+    assert_eq!(calls[0].name, "builtin.fs.read");
+    assert_eq!(calls[0].arguments, serde_json::json!({"path":"."}));
+}
+
+#[tokio::test]
+async fn malformed_tool_indices_and_fragment_types_fail_closed() {
+    for call in [
+        serde_json::json!({"id":"id","function":{"name":"tool","arguments":"{}"}}),
+        serde_json::json!({"index":-1,"id":"id","function":{"name":"tool","arguments":"{}"}}),
+        serde_json::json!({"index":0,"id":7,"function":{"name":"tool","arguments":"{}"}}),
+        serde_json::json!({"index":0,"id":"id","function":{"name":"tool","arguments":{}}}),
+    ] {
+        let endpoint = FakeEndpoint::start(Behavior::Raw(vec![
+            serde_json::json!({"choices":[{"delta":{"tool_calls":[call]}}]}).to_string(),
+            "[DONE]".into(),
+        ]))
+        .await;
+        let events = drain(
+            &provider(&endpoint, ProviderAuth::None),
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(
+            matches!(events.last(), Some(ModelEvent::Failed {error}) if error.code == tramontana_core::contracts::ErrorCode::ProtocolError)
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ModelEvent::Completed { .. }))
+        );
+    }
 }
 
 #[tokio::test]

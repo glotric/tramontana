@@ -26,6 +26,33 @@ use tramontana_core::contracts::{
 };
 use tramontana_core::ports::{ModelProvider, SecretResolver};
 
+/// Both applications select the same worker. Empty profiles retain the labelled
+/// deterministic diagnostic; configured endpoints use the actual bounded loop.
+#[must_use]
+pub fn assemble_worker(configured: bool) -> Arc<dyn tramontana_core::ports::AgentProvider> {
+    if configured {
+        Arc::new(tramontana_core::services::ReferenceWorker::new(
+            [
+                "builtin.fs.list",
+                "builtin.fs.read",
+                "builtin.fs.search",
+                "builtin.git.status",
+                "builtin.git.diff",
+                "builtin.git.log",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            tramontana_core::ports::ReadOnlyLimits::default(),
+        ))
+    } else {
+        Arc::new(tramontana_core::testing::FakeWorker::calling(
+            "builtin.fs.list",
+            serde_json::json!({"path":"."}),
+        ))
+    }
+}
+
 /// Whether to start runtimes this process would own.
 ///
 /// Listing projects must not load a seven-billion-parameter model. A command
@@ -237,16 +264,20 @@ fn descriptor(
     model_id: &str,
     location: ModelLocation,
 ) -> ModelDescriptor {
+    let mut capabilities = vec![
+        ModelCapability::Text,
+        ModelCapability::Streaming,
+        ModelCapability::Cancellation,
+    ];
+    if endpoint.supports_tool_calls {
+        capabilities.push(ModelCapability::ToolCalls);
+    }
     ModelDescriptor {
         provider_id: endpoint.endpoint_id.clone(),
         model_id: model_id.to_owned(),
         display_name: endpoint.display_name.clone(),
         location,
-        capabilities: vec![
-            ModelCapability::Text,
-            ModelCapability::Streaming,
-            ModelCapability::Cancellation,
-        ],
+        capabilities,
         // Not known without asking the endpoint, and guessing a number the
         // router would then enforce is worse than admitting it is unknown:
         // `context_too_large` is a refusal, and inventing the threshold would
@@ -256,5 +287,41 @@ fn descriptor(
         // A real check is the health probe, not this field.
         health: Health::Available,
         health_reason_code: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_capability_requires_an_explicit_endpoint_fact() {
+        let mut endpoint = ProviderEndpoint::new(
+            "fixture",
+            "Tool-capable sounding name",
+            ProviderConfig::OpenAiCompatible {
+                base_url: "http://127.0.0.1:8080".into(),
+                model_id: "fixture".into(),
+                credential: None,
+            },
+            tramontana_core::contracts::Timestamp::new("2026-09-13T00:00:00Z"),
+        );
+        assert!(
+            !descriptor(&endpoint, "fixture", ModelLocation::Local)
+                .capabilities
+                .contains(&ModelCapability::ToolCalls)
+        );
+        endpoint.supports_tool_calls = true;
+        assert!(
+            descriptor(&endpoint, "fixture", ModelLocation::Local)
+                .capabilities
+                .contains(&ModelCapability::ToolCalls)
+        );
+        endpoint.supports_tool_calls = false;
+        assert!(
+            !descriptor(&endpoint, "fixture", ModelLocation::Cloud)
+                .capabilities
+                .contains(&ModelCapability::ToolCalls)
+        );
     }
 }

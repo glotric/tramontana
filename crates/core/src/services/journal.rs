@@ -55,6 +55,20 @@ impl std::fmt::Debug for TaskJournal {
 }
 
 impl TaskJournal {
+    /// Read the canonical prefix for host-owned reconstruction.
+    pub(crate) async fn replay(&self) -> Result<Vec<EventEnvelope>, ErrorEnvelope> {
+        self.ports
+            .store
+            .replay(&self.task_id, 0)
+            .await
+            .map_err(|_| {
+                ErrorEnvelope::new(
+                    ErrorCode::PersistenceError,
+                    "Task history unavailable",
+                    self.correlation_id.clone(),
+                )
+            })
+    }
     /// Create a journal for a task whose stream is currently at `sequence`.
     #[must_use]
     pub fn new(
@@ -82,21 +96,53 @@ impl TaskJournal {
     /// Returns a normalized error when the store rejects the append, including
     /// a sequence conflict caused by a concurrent writer.
     pub async fn append(&self, draft: EventDraft) -> Result<EventEnvelope, ErrorEnvelope> {
+        self.append_batch(vec![draft])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                ErrorEnvelope::new(
+                    ErrorCode::Internal,
+                    "Empty journal append",
+                    self.correlation_id.clone(),
+                )
+            })
+    }
+
+    /// Commit a small group atomically. Ledger completion and canonical tool
+    /// result must never survive independently. Publish only after durability.
+    pub(crate) async fn append_batch(
+        &self,
+        drafts: Vec<EventDraft>,
+    ) -> Result<Vec<EventEnvelope>, ErrorEnvelope> {
+        if drafts.is_empty() || drafts.len() > 16 {
+            return Err(ErrorEnvelope::new(
+                ErrorCode::InvalidRequest,
+                "Invalid journal batch size",
+                self.correlation_id.clone(),
+            ));
+        }
         let mut sequence = self.sequence.lock().await;
         let expected = *sequence;
 
-        let event = draft.into_envelope(
-            EventId::new(self.ports.ids.next("event")),
-            self.task_id.clone(),
-            self.conversation_id.clone(),
-            expected + 1,
-            self.ports.clock.now(),
-            self.correlation_id.clone(),
-        );
+        let events: Vec<_> = drafts
+            .into_iter()
+            .enumerate()
+            .map(|(index, draft)| {
+                draft.into_envelope(
+                    EventId::new(self.ports.ids.next("event")),
+                    self.task_id.clone(),
+                    self.conversation_id.clone(),
+                    expected + index as u64 + 1,
+                    self.ports.clock.now(),
+                    self.correlation_id.clone(),
+                )
+            })
+            .collect();
 
         self.ports
             .store
-            .append(&self.task_id, expected, vec![event.clone()])
+            .append(&self.task_id, expected, events.clone())
             .await
             .map_err(|error| {
                 let code = match error {
@@ -106,16 +152,18 @@ impl TaskJournal {
                 ErrorEnvelope::new(code, error.to_string(), self.correlation_id.clone())
             })?;
 
-        *sequence = event.sequence;
-        drop(sequence);
+        *sequence = expected + events.len() as u64;
 
         // The event is already canonical. Bring the disposable task-row cache
         // up to date before publishing so a client cannot observe a terminal
         // event and close the process in the small gap before projection.
-        self.ports.projection.record(&event).await;
-        self.publish_persisted(&event);
+        for event in &events {
+            self.ports.projection.record(event).await;
+            self.publish_persisted(event);
+        }
+        drop(sequence);
 
-        Ok(event)
+        Ok(events)
     }
 
     /// Publish an event which is already durable.

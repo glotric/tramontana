@@ -12,6 +12,7 @@
 
 mod anthropic;
 mod openai;
+mod request;
 mod sse;
 mod transport;
 

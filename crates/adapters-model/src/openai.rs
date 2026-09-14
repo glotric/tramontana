@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tramontana_core::contracts::{
     AuthorizedModelRequest, ErrorCode, ErrorEnvelope, Health, ModelCapability, ModelDescriptor,
-    ModelEvent, ModelLocation, ModelRequest, ProviderId, SecretRef, StopReason, Usage,
+    ModelEvent, ModelLocation, ProviderId, SecretRef, StopReason, Usage,
 };
 use tramontana_core::ports::{ModelProvider, SecretResolver};
 
@@ -149,58 +149,6 @@ impl OpenAiCompatibleProvider {
     fn completions_url(&self) -> String {
         format!("{}/v1/chat/completions", self.base_url)
     }
-
-    /// The request body, in the wire format.
-    fn body(&self, request: &ModelRequest) -> serde_json::Value {
-        let messages: Vec<serde_json::Value> = request
-            .messages
-            .iter()
-            .map(|message| {
-                let text: String = message
-                    .parts
-                    .iter()
-                    .filter_map(|part| match part {
-                        tramontana_core::contracts::MessagePart::Text { text } => {
-                            Some(text.as_str())
-                        }
-                        // Tool calls and results reach a model in M6, when a
-                        // worker can produce them. Sending a placeholder now
-                        // would put text in a prompt that no worker wrote.
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                serde_json::json!({ "role": role_of(message.role), "content": text })
-            })
-            .collect();
-
-        let mut body = serde_json::json!({
-            "model": self.descriptor.model_id,
-            "messages": messages,
-            "stream": true,
-            // Asked for explicitly: without it most servers omit usage from a
-            // streamed response, and a cost shown as unknown is worse than one
-            // shown as estimated.
-            "stream_options": { "include_usage": true },
-        });
-        if let Some(limit) = request.limits.max_output_tokens
-            && let Some(object) = body.as_object_mut()
-        {
-            object.insert("max_tokens".to_owned(), limit.into());
-        }
-        body
-    }
-}
-
-/// The wire name for a normalized role.
-fn role_of(role: tramontana_core::contracts::MessageRole) -> &'static str {
-    use tramontana_core::contracts::MessageRole;
-    match role {
-        MessageRole::System => "system",
-        MessageRole::User => "user",
-        MessageRole::Assistant => "assistant",
-        MessageRole::Tool => "tool",
-    }
 }
 
 #[async_trait]
@@ -222,12 +170,15 @@ impl ModelProvider for OpenAiCompatibleProvider {
         // sent was decided in the core; an adapter that could widen the
         // request would make the disclosure a description of something else.
         let request = authorized.request();
+        tramontana_core::services::validate_model_capabilities(request, &self.descriptor)?;
+        let names = crate::request::WireNames::new(request);
+        let body = crate::request::openai_body(request, &self.descriptor.model_id, &names)?;
         let mut builder = self
             .client
             .post(self.completions_url())
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
-            .json(&self.body(request));
+            .json(&body);
 
         // Resolved here and moved into the header. It is never stored on the
         // provider, never in the URL, and never in a process argument.
@@ -247,7 +198,10 @@ impl ModelProvider for OpenAiCompatibleProvider {
         tokio::spawn(async move {
             let outcome = pump(
                 builder,
-                &ChatCompletions,
+                &crate::request::NamedWire {
+                    format: ChatCompletions,
+                    names,
+                },
                 &stream_id,
                 deadline,
                 &cancel,
@@ -330,33 +284,53 @@ impl WireFormat for ChatCompletions {
                 .and_then(serde_json::Value::as_array)
             {
                 for call in calls {
-                    let Some(arguments) = call
-                        .get("function")
+                    let Some(call_index) = call.get("index").and_then(serde_json::Value::as_u64)
+                    else {
+                        return (
+                            events,
+                            Signal::Failed(error(
+                                ErrorCode::ProtocolError,
+                                "A streamed tool call has no valid index",
+                            )),
+                        );
+                    };
+                    let function = call.get("function");
+                    if function.is_some_and(|value| !value.is_null() && !value.is_object())
+                        || [
+                            call.get("id"),
+                            function.and_then(|value| value.get("name")),
+                            function.and_then(|value| value.get("arguments")),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .any(|value| !value.is_null() && !value.is_string())
+                    {
+                        return (
+                            events,
+                            Signal::Failed(error(
+                                ErrorCode::ProtocolError,
+                                "A streamed tool call has invalid field types",
+                            )),
+                        );
+                    }
+                    let arguments = function
                         .and_then(|function| function.get("arguments"))
                         .and_then(serde_json::Value::as_str)
-                    else {
-                        continue;
-                    };
+                        .unwrap_or_default();
+                    let name = function
+                        .and_then(|function| function.get("name"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned);
                     let call_id = call
                         .get("id")
                         .and_then(serde_json::Value::as_str)
-                        .map_or_else(
-                            || {
-                                // Providers omit the id on continuation frames
-                                // and identify the call by its index instead.
-                                call.get("index")
-                                    .and_then(serde_json::Value::as_u64)
-                                    .map_or_else(
-                                        || "call-0".to_owned(),
-                                        |index| format!("call-{index}"),
-                                    )
-                            },
-                            str::to_owned,
-                        );
+                        .map(str::to_owned);
                     events.push(ModelEvent::ToolCallDelta {
                         stream_id: stream_id.to_owned(),
                         offset: *offset,
+                        call_index,
                         call_id,
+                        name,
                         delta: arguments.to_owned(),
                     });
                     *offset += 1;

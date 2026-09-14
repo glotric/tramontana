@@ -46,6 +46,22 @@ pub enum WorkerOutcome {
 /// audit apply uniformly to an embedded worker and an external one.
 #[async_trait]
 pub trait WorkerHost: Send + Sync {
+    /// Run one bounded model/observation turn using canonical task history and
+    /// explicitly selected read-only tools. No worker-supplied message bodies.
+    /// Older hosts fail closed. Budgets and replay remain host-owned.
+    async fn read_only_turn(
+        &self,
+        _tools: &[String],
+        _limits: &super::ReadOnlyLimits,
+        _cancel: &CancellationToken,
+    ) -> Result<super::ReadOnlyTurn, ErrorEnvelope> {
+        Err(ErrorEnvelope::new(
+            crate::contracts::ErrorCode::CapabilityUnsupported,
+            "This host does not support structured read-only turns",
+            crate::contracts::CorrelationId::new("worker-host"),
+        ))
+    }
+
     /// Append a durable event to the task's stream.
     ///
     /// # Errors
@@ -61,6 +77,11 @@ pub trait WorkerHost: Send + Sync {
 
     /// Ask the core to run a model request on the worker's behalf.
     ///
+    /// This legacy text path accepts only the task's initially included goal.
+    /// Each call prepares, routes and authorizes independently; a worker may
+    /// not concatenate new context or tool output into `prompt`. Structured
+    /// history requires the forthcoming host-owned tool-history path.
+    ///
     /// # Errors
     ///
     /// Returns a normalized error when routing, the provider, or cancellation
@@ -74,6 +95,9 @@ pub trait WorkerHost: Send + Sync {
     /// Run a stable logical step. Reusing an ID with changed arguments is refused.
     /// A completed step returns a safe summary with `skipped: true`, not its raw
     /// historical output. Workers must not treat that summary as raw tool data.
+    /// Arguments pass the core's supported schema subset before approval or
+    /// execution. The host records canonical call/result messages, including
+    /// bounded/redacted content and explicit failure results, for new attempts.
     async fn call_tool_step(
         &self,
         step_id: &str,

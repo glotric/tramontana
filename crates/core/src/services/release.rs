@@ -32,7 +32,7 @@ use std::sync::Arc;
 use crate::contracts::{
     ApprovalDecision, ApprovalDecisionKind, ApprovalDetail, ApprovalId, ApprovalRequest,
     AuthorizedModelRequest, Capability, CapabilityScope, ContextCategory, ContextManifest,
-    ContextReleasePlan, DataClass, ExecutionLocation, MessagePart, ModelRequest,
+    ContextReleasePlan, DataClass, ErrorCode, ExecutionLocation, ModelRequest,
     ReleaseAuthorization, ReleaseExclusion, ReleasedCategory, RiskClass, RoutingDecision,
     RoutingMode, SCHEMA_VERSION, SideEffect, Timestamp, content_hash, release_reason,
 };
@@ -76,6 +76,9 @@ pub enum ReleaseError {
     /// name would make the record a guess.
     #[error("the payload carries a part this build cannot describe")]
     OpaquePayloadPart,
+    /// The normalized request cannot be represented safely by this build.
+    #[error("invalid model payload: {0:?}")]
+    InvalidPayload(ErrorCode),
     /// The release was refused.
     #[error("the release was refused: {reason_code}")]
     Denied {
@@ -148,8 +151,9 @@ impl ReleaseManager {
     ///
     /// [`ReleaseError::ManifestMismatch`] when the request and manifest
     /// disagree, [`ReleaseError::UndisclosedContent`] when the payload carries
-    /// something the context never assembled, or
-    /// [`ReleaseError::OpaquePayloadPart`] when a part cannot be described.
+    /// something the context never assembled (or its byte count differs), or
+    /// [`ReleaseError::InvalidPayload`] when the request is malformed,
+    /// unsupported or exceeds input bounds.
     pub fn plan(
         &self,
         release_id: impl Into<String>,
@@ -174,7 +178,8 @@ impl ReleaseManager {
         // Every distinct piece of content the payload carries, by hash. A
         // source repeated across two messages is one release of one source,
         // which is why this is a set rather than a running total.
-        let carried = transmitted_hashes(request)?;
+        let carried = super::model_input::model_input_content(request)
+            .map_err(|error| ReleaseError::InvalidPayload(error.code))?;
 
         // Match the payload against what was assembled. A hash the manifest
         // does not account for is the failure this whole type exists to make
@@ -182,15 +187,18 @@ impl ReleaseManager {
         let mut released: Vec<ReleasedCategory> = Vec::new();
         let mut transmitted_source_ids = Vec::new();
         let mut redactions: Vec<String> = Vec::new();
-        for hash in &carried {
-            let Some(source) = manifest
-                .sources
-                .iter()
-                .find(|source| source.included && &source.content_hash == hash)
-            else {
-                return Err(ReleaseError::UndisclosedContent {
-                    content_hash: hash.clone(),
-                });
+        let mut released_hashes = std::collections::BTreeSet::new();
+        for content in &carried {
+            let hash = content_hash(content);
+            if !released_hashes.insert(hash.clone()) {
+                continue;
+            }
+            let Some(source) = manifest.sources.iter().find(|source| {
+                source.included
+                    && source.content_hash == hash
+                    && source.byte_count == content.len() as u64
+            }) else {
+                return Err(ReleaseError::UndisclosedContent { content_hash: hash });
             };
             match released.iter_mut().find(|entry| {
                 entry.category == source.category && entry.data_class == source.data_class
@@ -399,32 +407,6 @@ impl ReleaseManager {
             mode: context.mode,
         })
     }
-}
-
-/// Every distinct piece of content the payload carries, by content hash.
-///
-/// # Errors
-///
-/// [`ReleaseError::OpaquePayloadPart`] for a part this build cannot describe.
-fn transmitted_hashes(request: &ModelRequest) -> Result<Vec<String>, ReleaseError> {
-    let mut hashes = Vec::new();
-    for message in &request.messages {
-        for part in &message.parts {
-            let content = match part {
-                MessagePart::Text { text } => text.clone(),
-                // Arguments and results are content too: a tool result carried
-                // back into a prompt is project data being released again.
-                MessagePart::ToolCall { arguments, .. } => arguments.to_string(),
-                MessagePart::ToolResult { content, .. } => content.to_string(),
-                MessagePart::Unsupported => return Err(ReleaseError::OpaquePayloadPart),
-            };
-            let hash = content_hash(&content);
-            if !hashes.contains(&hash) {
-                hashes.push(hash);
-            }
-        }
-    }
-    Ok(hashes)
 }
 
 /// The labelled facts shown beneath the prompt summary.

@@ -2080,7 +2080,7 @@
               "type": "string"
             },
             "offset": {
-              "description": "Position within this stream.",
+              "description": "Zero-based ordinal shared by text/tool deltas (not a byte offset).",
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
@@ -2106,8 +2106,14 @@
           "description": "Incremental arguments for a tool call the model is assembling.",
           "properties": {
             "callId": {
-              "description": "Identifies the call being assembled across deltas.",
+              "description": "Provider call identifier, supplied on the opening fragment.",
               "type": "string"
+            },
+            "callIndex": {
+              "description": "Stable position of this call within the response. Continuations\ncarry the same index even when the provider omits its identifier.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
             },
             "delta": {
               "description": "The fragment.",
@@ -2117,8 +2123,12 @@
               "const": "toolCallDelta",
               "type": "string"
             },
+            "name": {
+              "description": "Tool name, supplied on the opening fragment. Never inferred from ID.",
+              "type": "string"
+            },
             "offset": {
-              "description": "Position within this stream.",
+              "description": "Zero-based ordinal shared by text/tool deltas (not a byte offset).",
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
@@ -2132,7 +2142,7 @@
             "kind",
             "streamId",
             "offset",
-            "callId",
+            "callIndex",
             "delta"
           ],
           "type": "object"

@@ -94,9 +94,16 @@ fn main() {
         eprintln!("error: no --port given");
         std::process::exit(2);
     };
-    let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) else {
-        eprintln!("error: could not bind 127.0.0.1:{port}");
-        std::process::exit(3);
+    let listener = match TcpListener::bind(("127.0.0.1", port)) {
+        Ok(listener) => listener,
+        Err(error) => {
+            // The OS error, not only the fact of failure. "could not bind"
+            // alone made a port collision indistinguishable from any other
+            // bind problem, which is how a wrong diagnosis got as far as a
+            // fix before the evidence disagreed with it.
+            eprintln!("error: could not bind 127.0.0.1:{port}: {error}");
+            std::process::exit(3);
+        }
     };
 
     let started = Instant::now();
