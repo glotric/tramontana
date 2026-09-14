@@ -136,7 +136,7 @@ impl BrokeredHost {
                 })
                 .ok_or_else(|| error(ErrorCode::InterruptedUnsafe))?;
             self.reserve(&events, limits, admission, 0, false).await?;
-            self.turn_tool(&step, &name, arguments, deadline, cancel, None)
+            self.turn_tool(&step, &name, arguments, cancel, None)
                 .await?;
             return Ok(ReadOnlyTurn::Observed);
         }
@@ -241,7 +241,6 @@ impl BrokeredHost {
                     &format!("reference-{ordinal}"),
                     &call.name,
                     call.arguments,
-                    deadline,
                     cancel,
                     Some(&turn.text),
                 )
@@ -381,28 +380,18 @@ impl BrokeredHost {
         step: &str,
         name: &str,
         arguments: serde_json::Value,
-        deadline: tokio::time::Instant,
         cancel: &CancellationToken,
         answer: Option<&str>,
     ) -> Result<(), ErrorEnvelope> {
-        if tokio::time::Instant::now() >= deadline {
-            return Err(error(ErrorCode::Timeout));
-        }
+        // Not under the turn's deadline, which bounds the model call. Waiting
+        // for a person is untimed, since cancelling still ends it, and the run
+        // is bounded by the tool itself, backed by the broker's
+        // `TOOL_RUN_LIMIT` (ADR 0027).
         let child = cancel.child_token();
         let _cancel_on_drop = child.clone().drop_guard();
-        let timer_cancel = child.clone();
-        let timer = tokio::spawn(async move {
-            tokio::time::sleep_until(deadline).await;
-            timer_cancel.cancel();
-        });
-        let result = self
-            .run_tool_step_with_answer(step, name, arguments, &child, answer)
-            .await;
-        timer.abort();
-        if !cancel.is_cancelled() && tokio::time::Instant::now() >= deadline {
-            return Err(error(ErrorCode::Timeout));
-        }
-        result.map(|_| ())
+        self.run_tool_step_with_answer(step, name, arguments, &child, answer)
+            .await
+            .map(|_| ())
     }
 }
 

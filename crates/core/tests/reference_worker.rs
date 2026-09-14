@@ -327,6 +327,32 @@ async fn start(service: &TaskService, project: bool) -> TaskId {
         .await
         .unwrap()
 }
+/// Like [`finished`], for a paused clock that must pass a long timer: it steps
+/// in tenths of a second rather than milliseconds.
+async fn finished_within(
+    service: &TaskService,
+    task: &TaskId,
+    limit: Duration,
+) -> Vec<EventEnvelope> {
+    timeout(limit, async {
+        loop {
+            let events = service.replay_task_events(task, 0).await.unwrap();
+            if events.last().is_some_and(|event| {
+                matches!(
+                    event.kind,
+                    TaskEventKind::TaskCompleted
+                        | TaskEventKind::TaskFailed
+                        | TaskEventKind::TaskCancelled
+                )
+            }) {
+                return events;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
 async fn finished(service: &TaskService, task: &TaskId) -> Vec<EventEnvelope> {
     timeout(Duration::from_secs(35), async {
         loop {
@@ -573,17 +599,62 @@ async fn silent_tools_obey_timeouts_and_explicit_cancellation() {
         let service = h.service(RoutingMode::LocalOnly);
         let task = start(&service, true).await;
         tool.entered.notified().await;
+        let entered = tokio::time::Instant::now();
         if explicit {
             service.cancel_task(&task).await.unwrap();
         }
-        let events = finished(&service, &task).await;
+        let events = finished_within(&service, &task, TOOL_RUN_LIMIT * 2).await;
         if explicit {
             assert_eq!(events.last().unwrap().kind, TaskEventKind::TaskCancelled);
         } else {
+            // Stopped by the broker's backstop, not the turn's deadline,
+            // which bounds only the model call (ADR 0027).
             fail(&events, ErrorCode::Timeout);
+            assert!(entered.elapsed() >= TOOL_RUN_LIMIT);
         }
         assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
     }
+}
+
+/// A person who takes their time.
+struct SlowApprover(Duration);
+#[async_trait]
+impl Approver for SlowApprover {
+    async fn ask(
+        &self,
+        _request: &ApprovalRequest,
+    ) -> Result<ApprovalDecisionKind, PermissionError> {
+        tokio::time::sleep(self.0).await;
+        Ok(ApprovalDecisionKind::AllowOnce)
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_approval_and_a_long_tool_run_are_not_cut_off_by_the_turn() {
+    // Each takes twice the turn's deadline: a person reading the request, then
+    // a run as long as a real test suite's.
+    let turn = Duration::from_millis(ReadOnlyLimits::default().turn_ms);
+    let mut write = HeldWrite::declaring(ReplaySafety::Safe);
+    write.run_for = Some(turn * 2);
+    let write = Arc::new(write);
+    let h = writing(
+        Arc::new(Model::new(Scenario::Write)),
+        write.clone(),
+        ToolAdmission::READ_WRITE,
+        Arc::new(SlowApprover(turn * 2)),
+    );
+    let service = h.service(RoutingMode::LocalOnly);
+    let started = tokio::time::Instant::now();
+    let task = start(&service, true).await;
+    let events = finished_within(&service, &task, turn * 10).await;
+
+    assert_eq!(
+        events.last().unwrap().kind,
+        TaskEventKind::TaskCompleted,
+        "{events:?}"
+    );
+    assert_eq!(write.inner.value("greeting").as_deref(), Some("hello"));
+    assert!(started.elapsed() >= turn * 4);
 }
 
 #[tokio::test]
@@ -694,6 +765,8 @@ struct HeldWrite {
     /// Report the change under this path instead, as a tool whose file name
     /// carries a credential would.
     reported_path: Option<&'static str>,
+    /// Take this long to run, as a real test suite would.
+    run_for: Option<Duration>,
 }
 impl HeldWrite {
     fn declaring(safety: ReplaySafety) -> Self {
@@ -703,6 +776,7 @@ impl HeldWrite {
             calls: AtomicUsize::new(0),
             entered: Notify::new(),
             reported_path: None,
+            run_for: None,
         }
     }
 }
@@ -723,6 +797,9 @@ impl ToolProvider for HeldWrite {
         self.entered.notify_one();
         if self.hold.load(Ordering::SeqCst) {
             std::future::pending::<()>().await;
+        }
+        if let Some(duration) = self.run_for {
+            tokio::time::sleep(duration).await;
         }
         let mut outcome = self.inner.invoke(request, cancel).await?;
         if let Some(path) = self.reported_path {

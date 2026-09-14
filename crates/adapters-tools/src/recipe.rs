@@ -41,8 +41,8 @@ impl Default for RecipeTools {
 }
 
 impl RecipeTools {
-    /// Ten minutes and 32 KiB of each stream. A worker's own turn deadline
-    /// applies as well, and is usually the shorter.
+    /// Ten minutes and 32 KiB of each stream. A worker's turn deadline bounds
+    /// its model calls, not this run (ADR 0027).
     #[must_use]
     pub fn new() -> Self {
         Self::with_limits(Duration::from_secs(600), 32 * 1024)

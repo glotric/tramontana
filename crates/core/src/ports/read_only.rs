@@ -58,7 +58,10 @@ pub struct ReadOnlyLimits {
     pub steps: u64,
     /// Maximum tool invocations (one slot is reserved per turn).
     pub tools: u64,
-    /// Total reserved active time, excluding time while stopped.
+    /// Total reserved model time, excluding time while stopped: each turn
+    /// reserves `turn_ms`. Approval waits and tool runs are not charged to
+    /// it; the step and tool limits bound how many runs a task makes
+    /// (ADR 0027).
     pub time_ms: u64,
     /// Cumulative serialized model input.
     pub input_bytes: u64,
@@ -66,7 +69,8 @@ pub struct ReadOnlyLimits {
     pub output_bytes: u64,
     /// Cumulative model output token reservations.
     pub output_tokens: u64,
-    /// Deadline for one complete turn, including approval and tools.
+    /// Deadline for one model call. Waiting for approval is not timed, and a
+    /// tool run is bounded by the tool and [`TOOL_RUN_LIMIT`] (ADR 0027).
     pub turn_ms: u64,
     /// Maximum model content bytes per turn.
     pub turn_bytes: usize,
@@ -89,6 +93,15 @@ impl Default for ReadOnlyLimits {
         }
     }
 }
+
+/// The longest the broker lets one tool run.
+///
+/// A tool is expected to bound itself: the built-in file and Git tools stop
+/// at 15 seconds, a recipe at ten minutes. This only stops one that does not,
+/// so it is longer than any of them. It is not the turn's deadline, which
+/// bounds the model call, and waiting for a person to approve the run is not
+/// counted (ADR 0027).
+pub const TOOL_RUN_LIMIT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 /// A host-owned turn either produces observations or a final answer.
 #[derive(Debug, Clone, PartialEq, Eq)]

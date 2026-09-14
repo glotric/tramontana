@@ -302,10 +302,16 @@ impl BrokeredHost {
         if replay_safety != ReplaySafety::Safe {
             plan.uncertain.insert(step_id.into());
         }
+        // A tool bounds its own run: the file and Git tools at 15 seconds, a
+        // recipe at ten minutes. The backstop only stops one that does not,
+        // and the tool is told to stop as well as abandoned (ADR 0027).
+        let run = cancel.child_token();
+        let _stop_on_exit = run.clone().drop_guard();
         tokio::select! {
             biased;
             () = cancel.cancelled() => Err(self.tool_error(ErrorCode::Cancelled)),
-            result = registered.provider.invoke(authorized, cancel.clone()) => result,
+            result = registered.provider.invoke(authorized, run.clone()) => result,
+            () = tokio::time::sleep(crate::ports::TOOL_RUN_LIMIT) => Err(self.tool_error(ErrorCode::Timeout)),
         }
     }
 
