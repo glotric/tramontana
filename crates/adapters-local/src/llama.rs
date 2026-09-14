@@ -202,13 +202,26 @@ pub async fn probe_version(binary: &Path) -> Result<ProbedVersion, StartError> {
 /// than as zero — "we could not tell" and "it is ancient" are different facts,
 /// and only one of them should refuse to start.
 fn build_number(reported: &str) -> Option<u64> {
+    // Current banners name the build: "version: 0.4.1-dev (build 10964,
+    // commit b29c606e2)". The version there is a release number, and reading
+    // it as a build made every current runtime look older than the minimum.
+    if let Some(after) = reported.split("(build ").nth(1) {
+        return leading_number(after).map(|(number, _)| number);
+    }
+    // Earlier ones put the build first: "version: 3527 (a1b2c3d)". A dotted
+    // number with no build is a release, which says nothing about the build.
     let after = reported.split("version:").nth(1)?;
-    let digits: String = after
-        .trim_start()
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    digits.parse().ok()
+    match leading_number(after.trim_start())? {
+        (_, Some('.')) => None,
+        (number, _) => Some(number),
+    }
+}
+
+/// The number `text` starts with, and the character after it.
+fn leading_number(text: &str) -> Option<(u64, Option<char>)> {
+    let digits: String = text.chars().take_while(char::is_ascii_digit).collect();
+    let number = digits.parse().ok()?;
+    Some((number, text[digits.len()..].chars().next()))
 }
 
 /// A running `llama-server` this process owns.
@@ -750,6 +763,13 @@ mod tests {
             Some(3527)
         );
         assert_eq!(build_number("llama-server version: 9999"), Some(9999));
+        // The banner of b10964, the release V3 runs on.
+        assert_eq!(
+            build_number(
+                "version: 0.4.1-dev (build 10964, commit b29c606e2)\nbuilt with AppleClang 21.0.0.21000101 for Darwin arm64"
+            ),
+            Some(10964)
+        );
     }
 
     #[test]
@@ -759,6 +779,8 @@ mod tests {
         assert_eq!(build_number("some future format"), None);
         assert_eq!(build_number(""), None);
         assert_eq!(build_number("version: unknown"), None);
+        // A release number is not a build number.
+        assert_eq!(build_number("version: 0.5.0 (commit abcdef0)"), None);
     }
 
     #[test]
