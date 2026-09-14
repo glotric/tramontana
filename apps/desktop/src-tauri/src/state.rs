@@ -67,14 +67,18 @@ impl AppState {
         let database = Database::open(path)
             .await
             .map_err(|error| format!("could not open {}: {error}", path.display()))?;
-        // Read-only tools, behind the permission boundary. The registry says
-        // a tool exists; only the permission manager says it may run. The CLI
-        // assembles the identical set, so the two adapters cannot drift into
-        // offering different tools under different policy.
+        // Filesystem and Git tools, behind the permission boundary. The
+        // registry says a tool exists; only the permission manager says it may
+        // run. The CLI assembles the identical set, including the same
+        // recovery store beside the profile, so the two adapters cannot drift
+        // into offering different tools under different policy.
         let approvals = Arc::new(InMemoryApprovalStore::new());
         let (registry, permissions, releases) = assemble_tool_plane(
             vec![
-                Arc::new(FilesystemTools::new()) as Arc<dyn ToolProvider>,
+                Arc::new(
+                    FilesystemTools::new()
+                        .with_recovery_store(tramontana_composition::recovery_store(path)),
+                ) as Arc<dyn ToolProvider>,
                 Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
             ],
             Arc::clone(&approvals) as Arc<dyn ApprovalStore>,

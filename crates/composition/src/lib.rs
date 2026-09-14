@@ -47,7 +47,12 @@ pub fn assemble_worker(
             "builtin.git.log",
         ];
         if admission == ToolAdmission::ReadWrite {
-            tools.extend(["builtin.fs.create", "builtin.fs.patch", "builtin.fs.move"]);
+            tools.extend([
+                "builtin.fs.create",
+                "builtin.fs.patch",
+                "builtin.fs.move",
+                "builtin.fs.delete",
+            ]);
         }
         Arc::new(
             tramontana_core::services::ReferenceWorker::new(
@@ -62,6 +67,28 @@ pub fn assemble_worker(
             serde_json::json!({"path":"."}),
         ))
     }
+}
+
+/// Where a profile keeps the files its tasks deleted, so a delete can be undone.
+///
+/// Beside the profile's database and named after it: one store per profile,
+/// outside every project. The suffix is appended rather than swapped for the
+/// extension, so no profile name can make the store and the database collide
+/// (ADR 0023).
+///
+/// ```
+/// let store = tramontana_composition::recovery_store(std::path::Path::new("data/p.sqlite"));
+/// assert_eq!(store, std::path::Path::new("data/p.sqlite.recovery"));
+/// let odd = tramontana_composition::recovery_store(std::path::Path::new("data/x.recovery"));
+/// assert_eq!(odd, std::path::Path::new("data/x.recovery.recovery"));
+/// ```
+#[must_use]
+pub fn recovery_store(profile: &std::path::Path) -> std::path::PathBuf {
+    let mut name = profile
+        .file_name()
+        .map_or_else(|| std::ffi::OsString::from("profile"), ToOwned::to_owned);
+    name.push(".recovery");
+    profile.with_file_name(name)
 }
 
 /// Whether to start runtimes this process would own.

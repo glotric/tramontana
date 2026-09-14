@@ -1,8 +1,9 @@
 //! Deterministic, project-scoped tools.
 //!
 //! Every tool here was read-only until M7, which adds the first writes:
-//! `builtin.fs.create`, `builtin.fs.patch` and `builtin.fs.move`. They share
-//! four properties that matter more than what any one of them does:
+//! `builtin.fs.create`, `builtin.fs.patch`, `builtin.fs.move` and
+//! `builtin.fs.delete`. They share four properties that matter more than what
+//! any one of them does:
 //!
 //! - **The granted scope is the authority.** Each tool re-checks containment
 //!   against [`AuthorizedToolRequest::granted_scope`] rather than trusting the
@@ -18,7 +19,9 @@
 //!   (ADR 0019). A patch goes further and proves a replay is its own edit, by
 //!   reversing it and comparing hashes (ADR 0020). A move links the file under
 //!   its new name before unlinking the old, so it never replaces a file and
-//!   never leaves one without a name (ADR 0022).
+//!   never leaves one without a name (ADR 0022). A delete keeps a verified
+//!   copy in the profile's recovery store before it removes anything, and is
+//!   not offered where there is no store (ADR 0023).
 
 mod filesystem;
 mod git;

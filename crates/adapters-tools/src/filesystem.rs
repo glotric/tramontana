@@ -10,10 +10,13 @@ use crate::identity::FileIdentity;
 use crate::limits::{ReadLimits, looks_binary};
 use crate::scope::{primary_root, relative_to_grant, resolve_within_grant, same_root};
 
-/// Read-only filesystem inspection, scoped to a project's approved roots.
+/// Filesystem tools scoped to a project's approved roots: reads, and writes
+/// that check before they act.
 #[derive(Debug, Clone)]
 pub struct FilesystemTools {
     limits: ReadLimits,
+    /// Where deleted files are kept. Without one, delete is not offered.
+    recovery: Option<std::path::PathBuf>,
 }
 
 impl Default for FilesystemTools {
@@ -28,13 +31,28 @@ impl FilesystemTools {
     pub fn new() -> Self {
         Self {
             limits: ReadLimits::default(),
+            recovery: None,
         }
     }
 
     /// Tools with explicit limits.
     #[must_use]
     pub fn with_limits(limits: ReadLimits) -> Self {
-        Self { limits }
+        Self {
+            limits,
+            recovery: None,
+        }
+    }
+
+    /// Keep deleted files in `directory`, and offer the delete tool.
+    ///
+    /// Deletion is offered only when there is somewhere to recover from
+    /// (`SECURITY_AND_PERMISSIONS.md` §5). The directory should belong to the
+    /// profile, outside every project; it is created on first use.
+    #[must_use]
+    pub fn with_recovery_store(mut self, directory: std::path::PathBuf) -> Self {
+        self.recovery = Some(directory);
+        self
     }
 }
 
@@ -45,6 +63,7 @@ pub(crate) const SEARCH: &str = "builtin.fs.search";
 pub(crate) const CREATE: &str = "builtin.fs.create";
 pub(crate) const PATCH: &str = "builtin.fs.patch";
 pub(crate) const MOVE: &str = "builtin.fs.move";
+pub(crate) const DELETE: &str = "builtin.fs.delete";
 
 /// The largest file the patch tool will edit, before or after the edit.
 const MAX_PATCH_BYTES: usize = 1024 * 1024;
@@ -68,6 +87,12 @@ const MAX_CREATE_BYTES: usize = 1024 * 1024;
 /// Proving that the file is the one the caller read means hashing it, and so
 /// reading it; this bounds that read.
 const MAX_MOVE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The largest file the delete tool will delete.
+///
+/// A deleted file is kept whole in the recovery store once its hash has been
+/// checked; this bounds both the copy and the reads behind the checks.
+const MAX_DELETE_BYTES: u64 = 64 * 1024 * 1024;
 
 fn invalid(request: &AuthorizedToolRequest, message: impl Into<String>) -> ErrorEnvelope {
     ErrorEnvelope::new(
@@ -139,7 +164,7 @@ impl ToolProvider for FilesystemTools {
     }
 
     fn list_tools(&self) -> Vec<ToolDescriptor> {
-        vec![
+        let mut tools = vec![
             descriptor(
                 LIST,
                 "List directory",
@@ -229,7 +254,27 @@ impl ToolProvider for FilesystemTools {
                     "additionalProperties": false,
                 }),
             ),
-        ]
+        ];
+        // A delete nobody could recover from is not offered at all.
+        if self.recovery.is_some() {
+            tools.push(write_descriptor(
+                DELETE,
+                "Delete file",
+                "Delete a file inside the project, keeping a copy it can be recovered from. \
+                 `expectedHash` must be the `contentHash` a read returned for the file: the delete \
+                 is refused if the file has changed since. Only regular files are deleted.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "expectedHash": { "type": "string" },
+                    },
+                    "required": ["path", "expectedHash"],
+                    "additionalProperties": false,
+                }),
+            ));
+        }
+        tools
     }
 
     async fn invoke(
@@ -251,6 +296,7 @@ impl ToolProvider for FilesystemTools {
                 CREATE => self.create(&request, &cancel),
                 PATCH => self.patch(&request, &cancel),
                 MOVE => self.move_file(&request, &cancel),
+                DELETE => self.delete(&request, &cancel),
                 other => Err(invalid(&request, format!("unknown tool {other}"))),
             }
         };
@@ -1357,4 +1403,261 @@ fn moved_already(
         side_effect: SideEffect::None,
         truncated: false,
     })
+}
+
+impl FilesystemTools {
+    /// Delete one regular file, keeping a verified copy to recover it from.
+    ///
+    /// The bytes the caller read — proven by `expectedHash` — are written to a
+    /// content-addressed recovery store, read back and checked, and only then
+    /// is the file removed. Immediately before removal the path must still
+    /// name that file, holding those bytes, so what is removed is what was
+    /// kept (ADR 0023).
+    ///
+    /// Safe to replay: with the file gone and the store holding exactly those
+    /// bytes, the step was already applied and is reported with no side
+    /// effect. A file that is gone with no copy kept was not deleted by this
+    /// step, and is reported as not found.
+    fn delete(
+        &self,
+        request: &AuthorizedToolRequest,
+        cancel: &CancellationToken,
+    ) -> Result<ToolOutcome, ErrorEnvelope> {
+        let correlation = CorrelationId::new(request.invocation_id().as_str());
+        let fail = |code: ErrorCode, message: String| {
+            ErrorEnvelope::new(code, message, correlation.clone())
+        };
+
+        let Some(store) = &self.recovery else {
+            return Err(fail(
+                ErrorCode::CapabilityUnsupported,
+                "deleting needs a recovery store, and none is configured".to_owned(),
+            ));
+        };
+        let relative = request_path(request)?;
+        let expected = argument(request, "expectedHash")?;
+        if !valid_hash(expected) {
+            return Err(invalid(
+                request,
+                "`expectedHash` must be the 64-character lowercase `contentHash` a read returned",
+            ));
+        }
+        let target = resolve_within_grant(request, &relative)?;
+        if target.file_name().is_none() {
+            return Err(invalid(request, "the path must name a file"));
+        }
+        let display = relative_to_grant(request, &target);
+        let kept = store.join(&expected[..2]).join(expected);
+
+        let metadata = match std::fs::symlink_metadata(&target) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return if copy_holds(&kept, expected) {
+                    Ok(deleted(&display, expected, true))
+                } else {
+                    Err(fail(
+                        ErrorCode::NotFound,
+                        format!("{display} does not exist"),
+                    ))
+                };
+            }
+            Err(error) => {
+                return Err(fail(
+                    ErrorCode::ToolFailed,
+                    format!("could not inspect {display}: {}", error.kind()),
+                ));
+            }
+        };
+        // Never a symlink or a directory: only a file's own bytes can be kept.
+        if !metadata.file_type().is_file() {
+            return Err(fail(
+                ErrorCode::Conflict,
+                format!("{display} is not a regular file; only files are deleted"),
+            ));
+        }
+        if metadata.len() > MAX_DELETE_BYTES {
+            return Err(fail(
+                ErrorCode::LimitExceeded,
+                format!("{display} is larger than {MAX_DELETE_BYTES} bytes"),
+            ));
+        }
+        let (bytes, held) = read_verified(request, &target)?;
+        if content_hash_bytes(&bytes) != expected {
+            return Err(fail(
+                ErrorCode::Conflict,
+                format!(
+                    "{display} has changed since it was read; read it again before deleting it"
+                ),
+            ));
+        }
+
+        keep(request, &kept, &bytes, expected)?;
+        drop(bytes);
+
+        // Past the copy, cancelling still removes nothing; a spare copy in the
+        // store is harmless.
+        if cancel.is_cancelled() {
+            return Err(cancelled(request));
+        }
+
+        // Immediately before removing: the path must still resolve inside the
+        // grant, to the file that was read, holding the bytes that were kept.
+        // Otherwise the removal could take something that has no copy.
+        let unchanged = resolve_within_grant(request, &relative).is_ok()
+            && FileIdentity::of_path(&target).is_some_and(|now| now == held)
+            && std::fs::read(&target).is_ok_and(|now| content_hash_bytes(&now) == expected);
+        // Released before the removal, which Windows may refuse while the
+        // file is held open.
+        drop(held);
+        if !unchanged {
+            return Err(fail(
+                ErrorCode::Conflict,
+                format!("{display} changed while it was being deleted; nothing was removed"),
+            ));
+        }
+        if let Err(error) = std::fs::remove_file(&target) {
+            return Err(fail(
+                ErrorCode::ToolFailed,
+                format!("could not delete {display}: {}", error.kind()),
+            ));
+        }
+        if let Some(parent) = target.parent() {
+            sync_directory(parent);
+        }
+        Ok(deleted(&display, expected, false))
+    }
+}
+
+/// The outcome of a delete, made now or found already made.
+///
+/// Names the copy by its hash, never by where the store is: an absolute path
+/// names a machine and usually a person (`PROJECT_FORMAT.md` §3).
+fn deleted(display: &str, hash: &str, already: bool) -> ToolOutcome {
+    ToolOutcome {
+        content: serde_json::json!({
+            "path": display,
+            "contentHash": hash,
+            "recoverable": true,
+            "alreadyApplied": already,
+        }),
+        display_summary: if already {
+            format!("{display} was already deleted, and a copy is kept; nothing changed")
+        } else {
+            format!("Deleted {display}; a copy is kept for recovery")
+        },
+        side_effect: if already {
+            SideEffect::None
+        } else {
+            SideEffect::LocalReversible
+        },
+        truncated: false,
+    }
+}
+
+/// Put `bytes` in the recovery store as `kept`, unless it is already there.
+///
+/// Written under a temporary name, synced, read back and hashed, and only then
+/// renamed into place: a copy that is not provably those bytes is never relied
+/// on. A different file already under this hash is an inconsistency, and
+/// nothing is deleted on the strength of it.
+fn keep(
+    request: &AuthorizedToolRequest,
+    kept: &std::path::Path,
+    bytes: &[u8],
+    expected: &str,
+) -> Result<(), ErrorEnvelope> {
+    let fail = |message: String| {
+        ErrorEnvelope::new(
+            ErrorCode::ToolFailed,
+            message,
+            CorrelationId::new(request.invocation_id().as_str()),
+        )
+    };
+    if std::fs::symlink_metadata(kept).is_ok() {
+        return if copy_holds(kept, expected) {
+            Ok(())
+        } else {
+            Err(fail(
+                "the recovery store already holds a different file under this hash; nothing was \
+                 deleted"
+                    .to_owned(),
+            ))
+        };
+    }
+    let Some(directory) = kept.parent() else {
+        return Err(fail("the recovery store has no directory".to_owned()));
+    };
+    create_private_directory(directory).map_err(|error| {
+        fail(format!(
+            "could not prepare the recovery store: {}",
+            error.kind()
+        ))
+    })?;
+    let temp = directory.join(temp_name(request.invocation_id()));
+    let _ = std::fs::remove_file(&temp);
+    let verified = write_private_synced(&temp, bytes)
+        .and_then(|()| std::fs::read(&temp))
+        .map(|back| content_hash_bytes(&back) == expected);
+    match verified {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = std::fs::remove_file(&temp);
+            return Err(fail(
+                "the copy in the recovery store did not read back intact; nothing was deleted"
+                    .to_owned(),
+            ));
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            return Err(fail(format!(
+                "could not keep a copy in the recovery store: {}",
+                error.kind()
+            )));
+        }
+    }
+    if let Err(error) = std::fs::rename(&temp, kept) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(fail(format!(
+            "could not keep a copy in the recovery store: {}",
+            error.kind()
+        )));
+    }
+    sync_directory(directory);
+    Ok(())
+}
+
+/// Whether the store holds exactly the bytes with this hash as `kept`.
+fn copy_holds(kept: &std::path::Path, expected: &str) -> bool {
+    std::fs::symlink_metadata(kept)
+        .is_ok_and(|metadata| metadata.file_type().is_file() && metadata.len() <= MAX_DELETE_BYTES)
+        && std::fs::read(kept).is_ok_and(|bytes| content_hash_bytes(&bytes) == expected)
+}
+
+/// Create the store's directories for this user alone, where the platform has
+/// such permissions: they hold copies of project files.
+fn create_private_directory(directory: &std::path::Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    builder.create(directory)
+}
+
+/// [`write_synced`], readable and writable by this user alone where the
+/// platform has such permissions.
+fn write_private_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }

@@ -111,7 +111,11 @@ async fn open_with(
     // says a tool exists; only the permission manager says it may run.
     let (registry, permissions, releases) = assemble_tool_plane(
         vec![
-            Arc::new(FilesystemTools::new()) as Arc<dyn ToolProvider>,
+            // Deleted files are kept beside the profile, so a delete can be undone.
+            Arc::new(
+                FilesystemTools::new()
+                    .with_recovery_store(tramontana_composition::recovery_store(path)),
+            ) as Arc<dyn ToolProvider>,
             Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
         ],
         Arc::new(InMemoryApprovalStore::new()) as Arc<dyn ApprovalStore>,
