@@ -1,8 +1,8 @@
 //! Deterministic, project-scoped tools.
 //!
-//! Every tool here was read-only until M7, which adds the first write,
-//! `builtin.fs.create`. They share four properties that matter more than what
-//! any one of them does:
+//! Every tool here was read-only until M7, which adds the first writes,
+//! `builtin.fs.create` and `builtin.fs.patch`. They share four properties that
+//! matter more than what any one of them does:
 //!
 //! - **The granted scope is the authority.** Each tool re-checks containment
 //!   against [`AuthorizedToolRequest::granted_scope`] rather than trusting the
@@ -15,7 +15,8 @@
 //! - **A write checks before it acts.** It never overwrites what it did not
 //!   expect, and it reports an effect it finds already made as applied, so
 //!   recovery can re-invoke an interrupted write without applying it twice
-//!   (ADR 0019).
+//!   (ADR 0019). A patch goes further and proves a replay is its own edit, by
+//!   reversing it and comparing hashes (ADR 0020).
 
 mod filesystem;
 mod git;

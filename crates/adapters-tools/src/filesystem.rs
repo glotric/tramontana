@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use tramontana_core::contracts::{
     AuthorizedToolRequest, CorrelationId, ErrorCode, ErrorEnvelope, InvocationId, ProviderId,
-    ReplaySafety, RiskClass, SideEffect, ToolDescriptor, content_hash,
+    ReplaySafety, RiskClass, SideEffect, ToolDescriptor, content_hash, content_hash_bytes,
 };
 use tramontana_core::ports::{ToolOutcome, ToolProvider};
 
@@ -43,6 +43,18 @@ pub(crate) const LIST: &str = "builtin.fs.list";
 pub(crate) const READ: &str = "builtin.fs.read";
 pub(crate) const SEARCH: &str = "builtin.fs.search";
 pub(crate) const CREATE: &str = "builtin.fs.create";
+pub(crate) const PATCH: &str = "builtin.fs.patch";
+
+/// The largest file the patch tool will edit, before or after the edit.
+const MAX_PATCH_BYTES: usize = 1024 * 1024;
+
+/// How many places a replay check will examine.
+///
+/// Verifying that an edit was already applied means reversing it at each
+/// place its replacement text occurs and hashing the result. Past this many
+/// places that costs more than it is worth, so the tool reports a conflict
+/// rather than claim an effect it could not afford to verify.
+const MAX_REPLAY_CANDIDATES: usize = 64;
 
 /// The largest file the create tool will write.
 ///
@@ -173,6 +185,25 @@ impl ToolProvider for FilesystemTools {
                     "additionalProperties": false,
                 }),
             ),
+            write_descriptor(
+                PATCH,
+                "Patch file",
+                "Replace one exact occurrence of `oldText` with `newText` in an existing text \
+                 file. `expectedHash` must be the `contentHash` a read returned for the file: the \
+                 edit is refused if the file has changed since. `oldText` must occur exactly \
+                 once; include surrounding lines to make it unique, or to delete text.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "expectedHash": { "type": "string" },
+                        "oldText": { "type": "string" },
+                        "newText": { "type": "string" },
+                    },
+                    "required": ["path", "expectedHash", "oldText", "newText"],
+                    "additionalProperties": false,
+                }),
+            ),
         ]
     }
 
@@ -193,6 +224,7 @@ impl ToolProvider for FilesystemTools {
                 READ => self.read(&request),
                 SEARCH => self.search(&request),
                 CREATE => self.create(&request, &cancel),
+                PATCH => self.patch(&request, &cancel),
                 other => Err(invalid(&request, format!("unknown tool {other}"))),
             }
         };
@@ -284,6 +316,7 @@ impl FilesystemTools {
                     "path": relative,
                     "binary": true,
                     "byteCount": bytes.len(),
+                    "contentHash": content_hash_bytes(&bytes),
                 }),
                 display_summary: format!("{relative} is binary ({} bytes)", bytes.len()),
                 side_effect: SideEffect::None,
@@ -310,6 +343,10 @@ impl FilesystemTools {
                 "path": relative,
                 "text": text,
                 "byteCount": full_len,
+                // Of the whole file as it is on disk, even when the text above
+                // is cut short: it is the precondition a patch checks, so it
+                // must describe exactly the bytes a patch would replace.
+                "contentHash": content_hash_bytes(&bytes),
                 "truncated": truncated,
             }),
             display_summary: if truncated {
@@ -449,10 +486,10 @@ fn walk(
 ///
 /// [`ErrorCode::NotFound`] when the file cannot be opened, and
 /// [`ErrorCode::PermissionDenied`] when the checks disagree.
-fn read_verifying_identity(
+fn read_verified(
     request: &AuthorizedToolRequest,
     path: &std::path::Path,
-) -> Result<Vec<u8>, ErrorEnvelope> {
+) -> Result<(Vec<u8>, FileIdentity), ErrorEnvelope> {
     use std::io::Read as _;
 
     let correlation = CorrelationId::new(request.invocation_id().as_str());
@@ -500,7 +537,15 @@ fn read_verifying_identity(
             correlation,
         )
     })?;
-    Ok(bytes)
+    Ok((bytes, held))
+}
+
+/// [`read_verified`], for callers that need only the bytes.
+fn read_verifying_identity(
+    request: &AuthorizedToolRequest,
+    path: &std::path::Path,
+) -> Result<Vec<u8>, ErrorEnvelope> {
+    read_verified(request, path).map(|(bytes, _)| bytes)
 }
 
 /// The `path` argument as the caller supplied it.
@@ -729,4 +774,268 @@ fn sync_directory(directory: &std::path::Path) {
     }
     #[cfg(not(unix))]
     let _ = directory;
+}
+
+impl FilesystemTools {
+    /// Replace one exact occurrence of text in an existing file, atomically.
+    ///
+    /// The precondition is a hash of the whole file as the caller last read it
+    /// — `expectedHash`, from the read tool's `contentHash`. A file that has
+    /// changed since is never edited on the strength of an old reading.
+    ///
+    /// Safe to replay because a changed hash is examined before it is refused.
+    /// If the file is exactly what this edit would have made of the expected
+    /// original — reversing it at one of the places its replacement occurs
+    /// gives back that original's hash — the step was already applied and is
+    /// reported with no side effect. Anything else is a conflict (ADR 0020).
+    fn patch(
+        &self,
+        request: &AuthorizedToolRequest,
+        cancel: &CancellationToken,
+    ) -> Result<ToolOutcome, ErrorEnvelope> {
+        let correlation = CorrelationId::new(request.invocation_id().as_str());
+        let fail = |code: ErrorCode, message: String| {
+            ErrorEnvelope::new(code, message, correlation.clone())
+        };
+
+        let relative = request_path(request)?;
+        let expected = argument(request, "expectedHash")?;
+        let old_text = argument(request, "oldText")?;
+        let new_text = argument(request, "newText")?;
+        if expected.len() != 64
+            || !expected
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(invalid(
+                request,
+                "`expectedHash` must be the 64-character lowercase `contentHash` a read returned",
+            ));
+        }
+        // Both non-empty: an empty replacement would make every byte position a
+        // candidate when verifying a replay. A deletion names its context.
+        if old_text.is_empty() || new_text.is_empty() {
+            return Err(invalid(
+                request,
+                "`oldText` and `newText` must both be non-empty; to delete text, include \
+                 the lines around it in both",
+            ));
+        }
+        if old_text == new_text {
+            return Err(invalid(
+                request,
+                "`oldText` and `newText` are identical, so there is nothing to change",
+            ));
+        }
+
+        let target = resolve_within_grant(request, &relative)?;
+        let display = relative_to_grant(request, &target);
+        let metadata = std::fs::symlink_metadata(&target).map_err(|error| {
+            let code = if error.kind() == std::io::ErrorKind::NotFound {
+                ErrorCode::NotFound
+            } else {
+                ErrorCode::ToolFailed
+            };
+            fail(
+                code,
+                format!("could not inspect {display}: {}", error.kind()),
+            )
+        })?;
+        // Never through a symlink, and never anything but a regular file.
+        if !metadata.file_type().is_file() {
+            return Err(fail(
+                ErrorCode::Conflict,
+                format!("{display} is not a regular file"),
+            ));
+        }
+        if metadata.len() > MAX_PATCH_BYTES as u64 {
+            return Err(fail(
+                ErrorCode::LimitExceeded,
+                format!("{display} is larger than {MAX_PATCH_BYTES} bytes"),
+            ));
+        }
+
+        let (bytes, held) = read_verified(request, &target)?;
+        if looks_binary(&bytes) {
+            return Err(invalid(request, format!("{display} is binary, not text")));
+        }
+        let Ok(current) = std::str::from_utf8(&bytes) else {
+            return Err(invalid(
+                request,
+                format!("{display} is not valid UTF-8 text"),
+            ));
+        };
+        let current_hash = content_hash_bytes(&bytes);
+
+        if current_hash != expected {
+            // Not the file the caller read. Either this edit was already
+            // applied — a replay after an interruption — or something else
+            // changed it, and only the first is proven by the hashes.
+            return if already_applied(current, old_text, new_text, expected) {
+                Ok(ToolOutcome {
+                    content: serde_json::json!({
+                        "path": display,
+                        "contentHash": current_hash,
+                        "alreadyApplied": true,
+                    }),
+                    display_summary: format!("{display} already has this edit; nothing changed"),
+                    side_effect: SideEffect::None,
+                    truncated: false,
+                })
+            } else {
+                Err(fail(
+                    ErrorCode::Conflict,
+                    format!(
+                        "{display} has changed since it was read; read it again before editing"
+                    ),
+                ))
+            };
+        }
+
+        let occurrences = current.matches(old_text).count();
+        if occurrences != 1 {
+            return Err(invalid(
+                request,
+                if occurrences == 0 {
+                    format!("`oldText` does not occur in {display}")
+                } else {
+                    format!(
+                        "`oldText` occurs {occurrences} times in {display}; include more \
+                         surrounding text so it names one place"
+                    )
+                },
+            ));
+        }
+        let at = current.find(old_text).unwrap_or_default();
+        let updated = format!(
+            "{}{new_text}{}",
+            &current[..at],
+            &current[at + old_text.len()..]
+        );
+        if updated.len() > MAX_PATCH_BYTES {
+            return Err(fail(
+                ErrorCode::LimitExceeded,
+                format!("the edited {display} would be larger than {MAX_PATCH_BYTES} bytes"),
+            ));
+        }
+        let line = current[..at].matches('\n').count() + 1;
+
+        let parent = target
+            .parent()
+            .ok_or_else(|| invalid(request, "the path must name a file"))?;
+        let temp = parent.join(temp_name(request.invocation_id()));
+        let _ = std::fs::remove_file(&temp);
+        let prepared = write_synced(&temp, updated.as_bytes())
+            // The replacement is a new file and would get default permissions.
+            // Keeping the original's is deliberate (`SECURITY_AND_PERMISSIONS.md` §5).
+            .and_then(|()| std::fs::set_permissions(&temp, metadata.permissions()));
+        if let Err(error) = prepared {
+            let _ = std::fs::remove_file(&temp);
+            return Err(fail(
+                ErrorCode::ToolFailed,
+                format!("could not write {display}: {}", error.kind()),
+            ));
+        }
+        let Some(written) = FileIdentity::of_path(&temp) else {
+            let _ = std::fs::remove_file(&temp);
+            return Err(fail(
+                ErrorCode::PermissionDenied,
+                "cannot verify the written file's identity on this platform".to_owned(),
+            ));
+        };
+
+        // The last point at which cancelling leaves nothing behind.
+        if cancel.is_cancelled() {
+            let _ = std::fs::remove_file(&temp);
+            return Err(cancelled(request));
+        }
+
+        // Immediately before replacing: the path must still resolve inside the
+        // grant, to the very file that was read, still holding the bytes that
+        // were hashed. An edit computed from an old reading must not land on
+        // top of a file that moved or changed in the meantime.
+        let unchanged = resolve_within_grant(request, &relative).is_ok()
+            && FileIdentity::of_path(&target).is_some_and(|now| now == held)
+            && std::fs::read(&target).is_ok_and(|now| content_hash_bytes(&now) == expected);
+        // Released before the rename: Windows will not replace a file that is
+        // still held open.
+        drop(held);
+        if !unchanged {
+            let _ = std::fs::remove_file(&temp);
+            return Err(fail(
+                ErrorCode::Conflict,
+                format!("{display} changed while the edit was being prepared; nothing was written"),
+            ));
+        }
+
+        if let Err(error) = std::fs::rename(&temp, &target) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(fail(
+                ErrorCode::ToolFailed,
+                format!("could not replace {display}: {}", error.kind()),
+            ));
+        }
+
+        // After replacing: the path must resolve inside the grant, to the file
+        // just written (`SECURITY_AND_PERMISSIONS.md` §5).
+        let inside = resolve_within_grant(request, &relative).is_ok();
+        let ours = FileIdentity::of_path(&target).is_some_and(|now| now == written);
+        if !inside || !ours {
+            return Err(fail(
+                ErrorCode::PermissionDenied,
+                format!(
+                    "{display} changed while it was being replaced; the result could not be verified"
+                ),
+            ));
+        }
+        sync_directory(parent);
+
+        Ok(ToolOutcome {
+            content: serde_json::json!({
+                "path": display,
+                "line": line,
+                "bytesBefore": bytes.len(),
+                "bytesAfter": updated.len(),
+                "previousHash": expected,
+                "contentHash": content_hash_bytes(updated.as_bytes()),
+                "alreadyApplied": false,
+            }),
+            display_summary: format!("Patched {display} at line {line}"),
+            side_effect: SideEffect::LocalReversible,
+            truncated: false,
+        })
+    }
+}
+
+/// Whether `current` is exactly what one application of this edit would have
+/// made of the file whose hash is `expected`.
+///
+/// Reverses the edit at each place `new_text` occurs — overlapping places
+/// included, since the true one may overlap another — and compares hashes. So
+/// "already applied" rests on the original's hash, not on the replacement
+/// merely appearing somewhere. The reconstructed original must also satisfy
+/// the edit's own precondition, `old_text` exactly once, or this edit could
+/// never have produced `current`. Past `MAX_REPLAY_CANDIDATES` places the
+/// answer is no: an unverifiable claim is not made.
+fn already_applied(current: &str, old_text: &str, new_text: &str, expected: &str) -> bool {
+    let mut places = Vec::new();
+    let mut from = 0;
+    while let Some(found) = current[from..].find(new_text) {
+        let at = from + found;
+        places.push(at);
+        if places.len() > MAX_REPLAY_CANDIDATES {
+            return false;
+        }
+        // One character on, not one match on, so overlapping places are seen.
+        from = at + current[at..].chars().next().map_or(1, char::len_utf8);
+    }
+    places.into_iter().any(|at| {
+        let original = format!(
+            "{}{old_text}{}",
+            &current[..at],
+            &current[at + new_text.len()..]
+        );
+        content_hash_bytes(original.as_bytes()) == expected
+            && original.matches(old_text).count() == 1
+    })
 }

@@ -154,8 +154,18 @@ impl ContextSource {
 /// one file agree about what it was.
 #[must_use]
 pub fn content_hash(content: &str) -> String {
+    content_hash_bytes(content.as_bytes())
+}
+
+/// Hash of raw bytes, by the same function as [`content_hash`].
+///
+/// For content that is not guaranteed to be text — a file on disk that a
+/// write tool must verify before replacing it — so the hash a read reports and
+/// the hash a patch checks are computed the same way, from the same bytes.
+#[must_use]
+pub fn content_hash_bytes(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    configuration_hex(&Sha256::digest(content.as_bytes()))
+    configuration_hex(&Sha256::digest(bytes))
 }
 
 /// Everything assembled for one destination.
@@ -383,5 +393,15 @@ mod tests {
         // agree about what it was.
         assert_eq!(content_hash("same"), content_hash("same"));
         assert_ne!(content_hash("same"), content_hash("different"));
+    }
+
+    #[test]
+    fn text_and_byte_hashes_agree() {
+        // A read reports one and a patch checks the other; if they ever
+        // diverged, every patch would be refused as a stale reading.
+        assert_eq!(
+            content_hash("héllo"),
+            content_hash_bytes("héllo".as_bytes())
+        );
     }
 }

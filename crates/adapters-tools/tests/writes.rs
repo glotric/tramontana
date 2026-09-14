@@ -93,8 +93,12 @@ fn the_create_tool_declares_a_modifying_write_that_is_safe_to_replay() {
     assert_eq!(create.side_effect, SideEffect::LocalReversible);
     assert_eq!(create.capability, "filesystem.write");
     assert_eq!(create.replay_safety, ReplaySafety::Safe);
-    // Adding a write tool must not quietly widen the read tools.
-    for read in tools.iter().filter(|tool| tool.tool_id != CREATE) {
+    // Adding a write tool must not quietly widen the read tools. Named, not
+    // "everything but create": the first version assumed create was the only
+    // write, and failed the moment patch became a second one.
+    for read in tools.iter().filter(|tool| {
+        ["builtin.fs.list", "builtin.fs.read", "builtin.fs.search"].contains(&tool.tool_id.as_str())
+    }) {
         assert_eq!(read.risk_class, RiskClass::Read, "{}", read.tool_id);
         assert_eq!(read.side_effect, SideEffect::None, "{}", read.tool_id);
     }

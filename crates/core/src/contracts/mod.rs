@@ -44,6 +44,7 @@ pub use configuration::{
 };
 pub use context::{
     ContextCategory, ContextManifest, ContextSource, DestinationClass, content_hash,
+    content_hash_bytes,
 };
 pub use descriptor::{
     AgentDescriptor, CheckpointSupport, Health, IntegrationMode, ModelCapability, ModelControl,
