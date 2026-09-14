@@ -52,6 +52,7 @@ async fn authorize(
             vec![root.display().to_string()],
         ),
         persistable: true,
+        details: Vec::new(),
     };
     let (_, authorized) = manager
         .authorize(

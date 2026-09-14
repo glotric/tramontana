@@ -3,25 +3,49 @@ use serde::{Deserialize, Serialize};
 
 /// Which tools a turn may offer a model.
 ///
-/// Read-only unless a composition root asks for more. Admission only makes a
-/// tool offerable: every write the model then asks for is still a separate
-/// permission decision. No level offers a dangerous, irreversible or external
-/// tool (ADR 0021).
+/// Read-only unless a composition root asks for more, and each switch is
+/// asked for on its own. Admission only makes a tool offerable: every write
+/// or recipe the model then asks for is still its own permission decision.
+/// Beyond configured recipes, nothing dangerous, irreversible or external is
+/// offered at any level (ADRs 0021 and 0025).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ToolAdmission {
-    /// Reads with no side effect: the M6 catalogue.
-    #[default]
-    ReadOnly,
-    /// Reads, plus writes whose effect is local and reversible.
-    ReadWrite,
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolAdmission {
+    /// Writes whose effect is local and reversible.
+    #[serde(default)]
+    pub writes: bool,
+    /// The project's configured recipes: the one dangerous tool a model may
+    /// be offered, named by id and approved on every run (ADR 0025).
+    #[serde(default)]
+    pub recipes: bool,
 }
 
 impl ToolAdmission {
-    /// Whether this is the read-only level.
+    /// Reads with no side effect: the M6 catalogue.
+    pub const READ_ONLY: Self = Self {
+        writes: false,
+        recipes: false,
+    };
+
+    /// Reads, plus writes whose effect is local and reversible.
+    pub const READ_WRITE: Self = Self {
+        writes: true,
+        recipes: false,
+    };
+
+    /// This level, with the project's recipes admitted as well.
+    #[must_use]
+    pub const fn with_recipes(self) -> Self {
+        Self {
+            recipes: true,
+            ..self
+        }
+    }
+
+    /// Whether nothing beyond reads is admitted.
     #[must_use]
     pub fn is_read_only(&self) -> bool {
-        *self == Self::ReadOnly
+        !self.writes && !self.recipes
     }
 }
 

@@ -267,6 +267,7 @@ impl TaskDriver {
                 clock: Arc::clone(&self.clock),
                 resume: Arc::new(tokio::sync::Mutex::new(self.resume.clone())),
                 interrupt: self.interrupt.clone(),
+                configuration: self.configuration.clone().map(Arc::new),
             },
         };
 
@@ -560,6 +561,9 @@ pub(crate) struct ToolBroker {
     /// What a resumed run must not do again.
     pub(crate) resume: Arc<tokio::sync::Mutex<ResumePlan>>,
     pub(crate) interrupt: CancellationToken,
+    /// The configuration the task started with, which recipes are resolved
+    /// against (ADR 0025). `None` for a projectless task, which has none.
+    pub(crate) configuration: Option<Arc<EffectiveConfiguration>>,
 }
 
 impl std::fmt::Debug for ToolBroker {
@@ -576,8 +580,13 @@ impl WorkerHost for BrokeredHost {
         limits: &crate::ports::ReadOnlyLimits,
         cancel: &CancellationToken,
     ) -> Result<crate::ports::ReadOnlyTurn, ErrorEnvelope> {
-        self.run_turn(tools, crate::ports::ToolAdmission::ReadOnly, limits, cancel)
-            .await
+        self.run_turn(
+            tools,
+            crate::ports::ToolAdmission::READ_ONLY,
+            limits,
+            cancel,
+        )
+        .await
     }
     async fn governed_turn(
         &self,

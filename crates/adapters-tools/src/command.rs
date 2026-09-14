@@ -35,29 +35,12 @@ use tokio_util::sync::CancellationToken;
 /// for it would hand the deadline to a process the broker no longer owns.
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
 
-/// Variables a general command may inherit, when they are set: enough to find
-/// programs, a home, a locale and a temporary directory. None is meant to
-/// carry a credential; anything else must be passed deliberately.
-pub const BASE_ENVIRONMENT: &[&str] = &[
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    // Windows needs these to start most programs at all.
-    "SystemRoot",
-    "windir",
-    "PATHEXT",
-    "USERPROFILE",
-    "APPDATA",
-    "LOCALAPPDATA",
-    "ProgramData",
-];
+/// Variables a general command may inherit, when they are set.
+///
+/// Defined in the core, because the approval prompt for a recipe names them:
+/// what a person is shown and what a command receives come from one list
+/// (ADR 0025).
+pub use tramontana_core::services::COMMAND_ENVIRONMENT as BASE_ENVIRONMENT;
 
 /// One command, fully described before anything runs.
 #[derive(Debug, Clone)]

@@ -48,6 +48,7 @@ async fn authorize_write(roots: &[&Path], arguments: serde_json::Value) -> Autho
                 .collect(),
         ),
         persistable: true,
+        details: Vec::new(),
     };
     let (_, authorized) = manager
         .authorize(

@@ -126,7 +126,7 @@ fn read_write_admission_adds_local_reversible_writes_and_nothing_worse() {
     let catalogue = ModelToolCatalogue::select(
         &both,
         &["fixture.fs.write", "fixture.fs.read"],
-        ToolAdmission::ReadWrite,
+        ToolAdmission::READ_WRITE,
     )
     .unwrap();
     assert_eq!(
@@ -139,7 +139,7 @@ fn read_write_admission_adds_local_reversible_writes_and_nothing_worse() {
     );
     // The same write, not asked for, is not offered.
     assert_eq!(
-        ModelToolCatalogue::select(&both, &["fixture.fs.write"], ToolAdmission::ReadOnly)
+        ModelToolCatalogue::select(&both, &["fixture.fs.write"], ToolAdmission::READ_ONLY)
             .unwrap_err()
             .code,
         ErrorCode::CapabilityUnsupported
@@ -164,7 +164,7 @@ fn read_write_admission_adds_local_reversible_writes_and_nothing_worse() {
             ModelToolCatalogue::select(
                 &registry(vec![tool]),
                 &["fixture.fs.write"],
-                ToolAdmission::ReadWrite
+                ToolAdmission::READ_WRITE
             )
             .unwrap_err()
             .code,
@@ -178,7 +178,7 @@ fn read_write_admission_adds_local_reversible_writes_and_nothing_worse() {
         ModelToolCatalogue::select(
             &registry(vec![stuck]),
             &["fixture.fs.write"],
-            ToolAdmission::ReadWrite
+            ToolAdmission::READ_WRITE
         )
         .unwrap_err()
         .code,
@@ -244,4 +244,98 @@ fn registration_rejects_duplicate_batch_ids_and_false_ownership_atomically() {
         }
         assert!(registry.descriptors().is_empty());
     }
+}
+
+/// A provider under a chosen id, so a test can play the built-in one.
+struct Named(&'static str, Vec<ToolDescriptor>);
+#[async_trait]
+impl ToolProvider for Named {
+    fn id(&self) -> ProviderId {
+        ProviderId::new(self.0)
+    }
+    fn list_tools(&self) -> Vec<ToolDescriptor> {
+        self.1.clone()
+    }
+    async fn invoke(
+        &self,
+        _: AuthorizedToolRequest,
+        _: CancellationToken,
+    ) -> Result<ToolOutcome, ErrorEnvelope> {
+        unreachable!("catalogue selection must never invoke tools")
+    }
+}
+
+fn dangerous(tool_id: &str, provider: &str) -> ToolDescriptor {
+    ToolDescriptor {
+        tool_id: tool_id.into(),
+        provider_id: provider.into(),
+        display_name: "Run".into(),
+        description: "Runs a command.".into(),
+        input_schema: json!({"type":"object","properties":{"recipe":{"type":"string"}},"required":["recipe"],"additionalProperties":false}),
+        risk_class: RiskClass::Dangerous,
+        side_effect: SideEffect::External,
+        capability: "command.recipe".into(),
+        supports_cancellation: true,
+        replay_safety: ReplaySafety::Unsafe,
+    }
+}
+
+#[test]
+fn recipes_are_the_one_dangerous_tool_offered_and_only_when_admitted() {
+    let mut builtin = ToolRegistry::new();
+    builtin
+        .register(Arc::new(Named(
+            "builtin",
+            vec![
+                dangerous(RECIPE_TOOL_ID, "builtin"),
+                dangerous("builtin.shell.run", "builtin"),
+            ],
+        )))
+        .unwrap();
+    let select = |registry: &ToolRegistry, tool: &str, admission: ToolAdmission| {
+        ModelToolCatalogue::select(registry, &[tool], admission).map(|_| ())
+    };
+    let refused = |result: Result<(), ErrorEnvelope>| result.unwrap_err().code;
+
+    // Offered only when recipes were asked for; writes do not bring them.
+    assert!(
+        select(
+            &builtin,
+            RECIPE_TOOL_ID,
+            ToolAdmission::READ_ONLY.with_recipes()
+        )
+        .is_ok()
+    );
+    for admission in [ToolAdmission::READ_ONLY, ToolAdmission::READ_WRITE] {
+        assert_eq!(
+            refused(select(&builtin, RECIPE_TOOL_ID, admission)),
+            ErrorCode::CapabilityUnsupported,
+            "{admission:?}"
+        );
+    }
+    // The exception is the recipe tool, not "dangerous tools".
+    assert_eq!(
+        refused(select(
+            &builtin,
+            "builtin.shell.run",
+            ToolAdmission::READ_WRITE.with_recipes()
+        )),
+        ErrorCode::CapabilityUnsupported
+    );
+    // Nor can another provider borrow the id.
+    let mut borrowed = ToolRegistry::new();
+    borrowed
+        .register(Arc::new(Named(
+            "fixture",
+            vec![dangerous(RECIPE_TOOL_ID, "fixture")],
+        )))
+        .unwrap();
+    assert_eq!(
+        refused(select(
+            &borrowed,
+            RECIPE_TOOL_ID,
+            ToolAdmission::READ_WRITE.with_recipes()
+        )),
+        ErrorCode::CapabilityUnsupported
+    );
 }

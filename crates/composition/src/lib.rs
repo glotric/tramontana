@@ -29,9 +29,10 @@ use tramontana_core::ports::{ModelProvider, SecretResolver, ToolAdmission};
 /// Both applications select the same worker. Empty profiles retain the labelled
 /// deterministic diagnostic; configured endpoints use the actual bounded loop.
 ///
-/// `admission` is the caller's choice, never a default: writes are offered to
-/// the model only when a person asked for them, and each one is still approved
-/// as it happens (ADR 0021). The diagnostic worker ignores it.
+/// `admission` is the caller's choice, never a default: writes and recipes are
+/// each offered to the model only when a person asked for them, and every one
+/// is still approved as it happens (ADRs 0021 and 0025). The diagnostic worker
+/// ignores it.
 #[must_use]
 pub fn assemble_worker(
     configured: bool,
@@ -46,13 +47,16 @@ pub fn assemble_worker(
             "builtin.git.diff",
             "builtin.git.log",
         ];
-        if admission == ToolAdmission::ReadWrite {
+        if admission.writes {
             tools.extend([
                 "builtin.fs.create",
                 "builtin.fs.patch",
                 "builtin.fs.move",
                 "builtin.fs.delete",
             ]);
+        }
+        if admission.recipes {
+            tools.push(tramontana_core::services::RECIPE_TOOL_ID);
         }
         Arc::new(
             tramontana_core::services::ReferenceWorker::new(

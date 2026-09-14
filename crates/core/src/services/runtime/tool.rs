@@ -220,12 +220,24 @@ impl BrokeredHost {
         cancel: &CancellationToken,
     ) -> Result<ToolOutcome, ErrorEnvelope> {
         let descriptor = &registered.descriptor;
+        // A recipe is resolved here, before anyone is asked: the prompt shows
+        // exactly the command the tool will be handed, and a name the project
+        // does not declare is refused without a question (ADR 0025).
+        let (arguments, details) = if descriptor.tool_id == crate::services::RECIPE_TOOL_ID {
+            let resolved =
+                crate::services::recipe::resolve(self.tools.configuration.as_deref(), &arguments)
+                    .map_err(|code| self.tool_error(code))?;
+            (resolved.arguments, resolved.details)
+        } else {
+            (arguments, Vec::new())
+        };
         let query = PermissionQuery {
             tool_id: descriptor.tool_id.clone(),
             capability: Capability::new(&descriptor.capability),
             risk_class: descriptor.risk_class,
             scope: self.tools.scope.clone(),
             persistable: descriptor.risk_class != RiskClass::Dangerous,
+            details,
         };
         let now = self.tools.clock.now();
         let authorization = self.tools.permissions.authorize(

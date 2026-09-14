@@ -27,12 +27,13 @@ impl ReferenceWorker {
         Self {
             tools,
             limits,
-            admission: ToolAdmission::ReadOnly,
+            admission: ToolAdmission::READ_ONLY,
         }
     }
 
     /// Offer the selected tools at `admission` instead of read-only. Writes
-    /// are still approved one at a time; this only lets the model ask.
+    /// and recipes are still approved one at a time; this only lets the model
+    /// ask.
     #[must_use]
     pub fn admitting(mut self, admission: ToolAdmission) -> Self {
         self.admission = admission;
@@ -45,9 +46,11 @@ impl AgentProvider for ReferenceWorker {
         AgentDescriptor {
             agent_provider_id: "builtin".into(),
             agent_id: REFERENCE_AGENT_ID.into(),
-            display_name: match self.admission {
-                ToolAdmission::ReadOnly => "Embedded read-only worker",
-                ToolAdmission::ReadWrite => "Embedded read-write worker",
+            display_name: match (self.admission.writes, self.admission.recipes) {
+                (false, false) => "Embedded read-only worker",
+                (true, false) => "Embedded read-write worker",
+                (false, true) => "Embedded read-only worker that runs recipes",
+                (true, true) => "Embedded read-write worker that runs recipes",
             }
             .into(),
             integration_mode: IntegrationMode::Embedded,

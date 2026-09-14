@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tramontana_adapters_tools::{FilesystemTools, GitTools};
+use tramontana_adapters_tools::{FilesystemTools, GitTools, RecipeTools};
 use tramontana_composition::{ModelPlane, Supervision, assemble_models};
 use tramontana_core::ports::AgentProvider;
 use tramontana_core::ports::EventStore;
@@ -68,7 +68,7 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
         path,
         chunk_delay_ms,
         Supervision::Skip,
-        tramontana_core::ports::ToolAdmission::ReadOnly,
+        tramontana_core::ports::ToolAdmission::READ_ONLY,
     )
     .await
     .map(|(service, _plane)| service)
@@ -117,12 +117,15 @@ async fn open_with(
                     .with_recovery_store(tramontana_composition::recovery_store(path)),
             ) as Arc<dyn ToolProvider>,
             Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
+            // The project's own commands, run only as the core resolved them.
+            Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
         ],
         Arc::new(InMemoryApprovalStore::new()) as Arc<dyn ApprovalStore>,
         // Prompts on a terminal, and refuses when there is no terminal to
         // prompt on. A read inside an approved project is permitted without
-        // asking; a write is asked about every time it runs, and is offered
-        // to a model at all only under `--allow-writes`.
+        // asking; a write or a recipe is asked about every time it runs, and
+        // is offered to a model at all only under `--allow-writes` or
+        // `--allow-recipes`.
         Arc::new(TerminalApprover::new()) as Arc<dyn Approver>,
         Arc::new(UuidIdSource::new()),
     )
@@ -226,7 +229,7 @@ pub(crate) fn worker_named(agent_id: &str) -> Option<Arc<dyn AgentProvider>> {
         tramontana_core::services::REFERENCE_AGENT_ID => {
             Some(tramontana_composition::assemble_worker(
                 true,
-                tramontana_core::ports::ToolAdmission::ReadOnly,
+                tramontana_core::ports::ToolAdmission::READ_ONLY,
             ))
         }
         tramontana_core::testing::RECEIVING_AGENT_ID => {

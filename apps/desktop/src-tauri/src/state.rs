@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tauri::AppHandle;
-use tramontana_adapters_tools::{FilesystemTools, GitTools};
+use tramontana_adapters_tools::{FilesystemTools, GitTools, RecipeTools};
 use tramontana_core::ports::EventStore;
 use tramontana_core::ports::{
     ApprovalStore, Approver, ModelProvider, ProviderSettingsRepository, SecretResolver,
@@ -80,6 +80,9 @@ impl AppState {
                         .with_recovery_store(tramontana_composition::recovery_store(path)),
                 ) as Arc<dyn ToolProvider>,
                 Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
+                // Registered so both adapters hold the same set; never offered
+                // to a model here, where admission stays read-only.
+                Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
             ],
             Arc::clone(&approvals) as Arc<dyn ApprovalStore>,
             Arc::clone(&approver) as Arc<dyn Approver>,
@@ -140,7 +143,7 @@ impl AppState {
                 // write, so it never offers a model a write (ADR 0021).
                 worker: tramontana_composition::assemble_worker(
                     has_configured,
-                    tramontana_core::ports::ToolAdmission::ReadOnly,
+                    tramontana_core::ports::ToolAdmission::READ_ONLY,
                 ),
             },
             Arc::new(SystemClock::new()),

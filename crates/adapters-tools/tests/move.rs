@@ -55,6 +55,7 @@ async fn authorize(
                 .collect(),
         ),
         persistable: true,
+        details: Vec::new(),
     };
     let (_, authorized) = manager
         .authorize(

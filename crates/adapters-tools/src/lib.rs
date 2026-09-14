@@ -34,6 +34,7 @@ mod filesystem;
 mod git;
 mod identity;
 mod limits;
+mod recipe;
 mod scope;
 
 pub use command::{
@@ -42,3 +43,4 @@ pub use command::{
 pub use filesystem::FilesystemTools;
 pub use git::GitTools;
 pub use limits::ReadLimits;
+pub use recipe::RecipeTools;

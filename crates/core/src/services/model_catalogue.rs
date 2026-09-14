@@ -3,12 +3,12 @@ use std::collections::BTreeSet;
 
 use crate::contracts::{
     CorrelationId, DataClass, ErrorCode, ErrorEnvelope, NormalizedToolDefinition, RiskClass,
-    SideEffect,
+    SideEffect, ToolDescriptor,
 };
 
 use crate::ports::ToolAdmission;
 
-use super::{ModelContentProvenance, ToolRegistry, model_context, model_input};
+use super::{ModelContentProvenance, RECIPE_TOOL_ID, ToolRegistry, model_context, model_input};
 
 /// Definitions selected by core from a registry snapshot, not supplied by a worker.
 /// No provider handles, grants, arguments or execution methods are exposed.
@@ -31,7 +31,7 @@ impl ModelToolCatalogue {
         registry: &ToolRegistry,
         selected: &[&str],
     ) -> Result<Self, ErrorEnvelope> {
-        Self::select(registry, selected, ToolAdmission::ReadOnly)
+        Self::select(registry, selected, ToolAdmission::READ_ONLY)
     }
 
     /// Select exactly these tools in stable canonical-name order. Empty means
@@ -59,7 +59,7 @@ impl ModelToolCatalogue {
                 .get(name)
                 .ok_or_else(|| error(ErrorCode::NotFound))?;
             let descriptor = &registered.descriptor;
-            if !admits(admission, descriptor.risk_class, descriptor.side_effect)
+            if !admits(admission, descriptor)
                 || !descriptor.supports_cancellation
                 || descriptor.provider_id != registered.provider.id().as_str()
             {
@@ -131,16 +131,21 @@ fn error(code: ErrorCode) -> ErrorEnvelope {
     )
 }
 
-/// Whether a tool of this risk and effect may be offered at `admission`.
+/// Whether this tool may be offered at `admission`.
 ///
-/// Both facts must agree: a "modify" tool that declares an external or
-/// irreversible effect is not a local write, whatever its risk class says.
-/// Nothing dangerous, irreversible or external is offered at any level
-/// (ADR 0021).
-fn admits(admission: ToolAdmission, risk: RiskClass, effect: SideEffect) -> bool {
-    match (risk, effect) {
+/// Risk class and side effect must agree: a "modify" tool that declares an
+/// external or irreversible effect is not a local write, whatever its risk
+/// class says. Nothing dangerous, irreversible or external is offered at any
+/// level (ADR 0021) — with one exception, matched by exact id and the built-in
+/// provider so no other tool can borrow it: the project's configured recipes,
+/// which a model can only name and a person approves on every run (ADR 0025).
+fn admits(admission: ToolAdmission, descriptor: &ToolDescriptor) -> bool {
+    if descriptor.tool_id == RECIPE_TOOL_ID && descriptor.provider_id == "builtin" {
+        return admission.recipes;
+    }
+    match (descriptor.risk_class, descriptor.side_effect) {
         (RiskClass::Read, SideEffect::None) => true,
-        (RiskClass::Modify, SideEffect::LocalReversible) => admission == ToolAdmission::ReadWrite,
+        (RiskClass::Modify, SideEffect::LocalReversible) => admission.writes,
         _ => false,
     }
 }

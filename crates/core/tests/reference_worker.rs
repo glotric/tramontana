@@ -10,6 +10,7 @@ use tokio::{
     time::{Duration, timeout},
 };
 use tokio_util::sync::CancellationToken;
+use tramontana_core::config::{ConfigurationSelection, RawSource};
 use tramontana_core::{contracts::*, ports::*, services::*, testing::*};
 
 #[derive(Clone, Copy, Debug)]
@@ -25,6 +26,10 @@ enum Scenario {
     Length,
     ExcessUsage,
     Write,
+    /// Names the project's declared `test` recipe.
+    Recipe,
+    /// Names a recipe the project does not declare.
+    UndeclaredRecipe,
 }
 struct Model {
     scenario: Scenario,
@@ -104,7 +109,12 @@ impl ModelProvider for Model {
                 .await
                 .unwrap();
         }
-        if has_result && matches!(self.scenario, Scenario::Answer | Scenario::Write) {
+        if has_result
+            && matches!(
+                self.scenario,
+                Scenario::Answer | Scenario::Write | Scenario::Recipe
+            )
+        {
             sender
                 .send(ModelEvent::TextDelta {
                     stream_id,
@@ -155,6 +165,7 @@ impl ModelProvider for Model {
                             match self.scenario {
                                 Scenario::Unknown => "builtin.fs.write",
                                 Scenario::Write => FAKE_WRITE_TOOL_ID,
+                                Scenario::Recipe | Scenario::UndeclaredRecipe => RECIPE_TOOL_ID,
                                 _ => "fake.tool.echo",
                             }
                             .into(),
@@ -162,6 +173,8 @@ impl ModelProvider for Model {
                         delta: match self.scenario {
                             Scenario::Invalid => "{\"value\":42}",
                             Scenario::Write => "{\"key\":\"greeting\",\"value\":\"hello\"}",
+                            Scenario::Recipe => "{\"recipe\":\"test\"}",
+                            Scenario::UndeclaredRecipe => "{\"recipe\":\"deploy\"}",
                             _ => "{\"value\":\"repository fact\"}",
                         }
                         .into(),
@@ -707,7 +720,7 @@ impl ToolProvider for HeldWrite {
 }
 fn reference(admission: ToolAdmission) -> Arc<dyn AgentProvider> {
     let mut tools = vec!["fake.tool.echo".to_owned()];
-    if admission == ToolAdmission::ReadWrite {
+    if admission.writes {
         tools.push(FAKE_WRITE_TOOL_ID.to_owned());
     }
     Arc::new(ReferenceWorker::new(tools, ReadOnlyLimits::default()).admitting(admission))
@@ -734,6 +747,232 @@ fn offered(model: &Model) -> Vec<String> {
         .collect()
 }
 
+/// The built-in recipe tool as the broker sees it, recording exactly what it
+/// was handed instead of running anything.
+struct FakeRecipe {
+    received: Mutex<Vec<serde_json::Value>>,
+}
+impl FakeRecipe {
+    fn new() -> Self {
+        Self {
+            received: Mutex::new(Vec::new()),
+        }
+    }
+    fn received(&self) -> Vec<serde_json::Value> {
+        self.received.lock().unwrap().clone()
+    }
+}
+#[async_trait]
+impl ToolProvider for FakeRecipe {
+    fn id(&self) -> ProviderId {
+        ProviderId::new("builtin")
+    }
+    fn list_tools(&self) -> Vec<ToolDescriptor> {
+        vec![ToolDescriptor {
+            tool_id: RECIPE_TOOL_ID.to_owned(),
+            provider_id: "builtin".to_owned(),
+            display_name: "Run recipe".to_owned(),
+            description: "Run a declared recipe by id.".to_owned(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "recipe": { "type": "string" } },
+                "required": ["recipe"],
+                "additionalProperties": false,
+            }),
+            risk_class: RiskClass::Dangerous,
+            side_effect: SideEffect::External,
+            capability: "command.recipe".to_owned(),
+            supports_cancellation: true,
+            replay_safety: ReplaySafety::Unsafe,
+        }]
+    }
+    async fn invoke(
+        &self,
+        request: AuthorizedToolRequest,
+        _cancel: CancellationToken,
+    ) -> Result<ToolOutcome, ErrorEnvelope> {
+        self.received
+            .lock()
+            .unwrap()
+            .push(request.arguments().clone());
+        Ok(ToolOutcome {
+            content: serde_json::json!({ "recipe": "test", "exitCode": 0, "succeeded": true }),
+            display_summary: "Recipe `test` passed".to_owned(),
+            side_effect: SideEffect::External,
+            truncated: false,
+        })
+    }
+}
+fn with_recipes(
+    model: Arc<Model>,
+    recipe: Arc<FakeRecipe>,
+    admission: ToolAdmission,
+    approver: Arc<dyn Approver>,
+) -> Harness {
+    let mut tools = vec!["fake.tool.echo".to_owned()];
+    if admission.recipes {
+        tools.push(RECIPE_TOOL_ID.to_owned());
+    }
+    Harness::with(
+        model,
+        vec![Arc::new(Tool::new()) as Arc<dyn ToolProvider>, recipe],
+        Arc::new(ReferenceWorker::new(tools, ReadOnlyLimits::default()).admitting(admission)),
+        approver,
+    )
+}
+/// A task in a project whose `project.md` declares one recipe.
+async fn start_with_recipes(service: &TaskService) -> TaskId {
+    let project = service
+        .create_project("Fixture", vec!["/fixture".into()])
+        .await
+        .unwrap();
+    service
+        .resolve_configuration(
+            &project.project_id,
+            vec![RawSource {
+                relative_path: ".tramontana/project.md".to_owned(),
+                kind: ConfigurationKind::ProjectOverview,
+                content: b"---\nid: fixture\nrecipes:\n  test: [cargo, test, --workspace]\n---\n# Fixture\n"
+                    .to_vec(),
+            }],
+            &ConfigurationSelection::default(),
+        )
+        .await
+        .unwrap();
+    let conversation = service
+        .create_conversation(Some(project.project_id), "Run the tests")
+        .await
+        .unwrap();
+    service
+        .start_task(StartTaskRequest {
+            conversation_id: Some(conversation.conversation_id),
+            goal: "Run the tests.".into(),
+        })
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn an_approved_recipe_runs_exactly_the_declared_command() {
+    let model = Arc::new(Model::new(Scenario::Recipe));
+    let recipe = Arc::new(FakeRecipe::new());
+    let approver = Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce));
+    let h = with_recipes(
+        model.clone(),
+        recipe.clone(),
+        ToolAdmission::READ_ONLY.with_recipes(),
+        approver.clone(),
+    );
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start_with_recipes(&service).await;
+    let events = finished(&service, &task).await;
+
+    assert_eq!(
+        events.last().unwrap().kind,
+        TaskEventKind::TaskCompleted,
+        "{events:?}"
+    );
+    assert!(offered(&model).contains(&RECIPE_TOOL_ID.to_owned()));
+    // The person saw the exact command, and where it came from, first.
+    let asked = approver.asked();
+    assert_eq!(asked.len(), 1);
+    let shown: Vec<(&str, &str)> = asked[0]
+        .details
+        .iter()
+        .map(|detail| (detail.label.as_str(), detail.value.as_str()))
+        .collect();
+    assert!(
+        shown.contains(&("Command", "cargo test --workspace")),
+        "{shown:?}"
+    );
+    assert!(
+        shown.contains(&("Declared in", ".tramontana/project.md")),
+        "{shown:?}"
+    );
+    assert_eq!(asked[0].risk_class, RiskClass::Dangerous);
+    // Never "always for this project": every run is its own question.
+    assert!(
+        !asked[0]
+            .eligible_decisions
+            .contains(&ApprovalDecisionKind::AllowProject)
+    );
+    // And the tool was handed exactly that command, not the model's words.
+    let received = recipe.received();
+    assert_eq!(received.len(), 1);
+    assert_eq!(
+        received[0]["run"],
+        serde_json::json!(["cargo", "test", "--workspace"])
+    );
+    assert_eq!(
+        received[0]["inherit"],
+        serde_json::json!(COMMAND_ENVIRONMENT)
+    );
+}
+
+#[tokio::test]
+async fn a_recipe_the_project_does_not_declare_is_refused_before_anyone_is_asked() {
+    let model = Arc::new(Model::new(Scenario::UndeclaredRecipe));
+    let recipe = Arc::new(FakeRecipe::new());
+    let approver = Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce));
+    let h = with_recipes(
+        model,
+        recipe.clone(),
+        ToolAdmission::READ_ONLY.with_recipes(),
+        approver.clone(),
+    );
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start_with_recipes(&service).await;
+
+    fail(&finished(&service, &task).await, ErrorCode::NotFound);
+    assert!(approver.asked().is_empty());
+    assert!(recipe.received().is_empty());
+}
+
+#[tokio::test]
+async fn recipes_are_not_offered_unless_admitted_and_never_run_unapproved() {
+    // Writes do not bring recipes with them.
+    let model = Arc::new(Model::new(Scenario::Recipe));
+    let recipe = Arc::new(FakeRecipe::new());
+    let approver = Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce));
+    let h = with_recipes(
+        model.clone(),
+        recipe.clone(),
+        ToolAdmission::READ_WRITE,
+        approver.clone(),
+    );
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start_with_recipes(&service).await;
+    fail(
+        &finished(&service, &task).await,
+        ErrorCode::PermissionDenied,
+    );
+    assert!(!offered(&model).contains(&RECIPE_TOOL_ID.to_owned()));
+    assert!(approver.asked().is_empty());
+    assert!(recipe.received().is_empty());
+
+    // Admitted, but nobody says yes.
+    for approver in [
+        ScriptedApprover::always(ApprovalDecisionKind::Deny),
+        ScriptedApprover::unavailable(),
+    ] {
+        let model = Arc::new(Model::new(Scenario::Recipe));
+        let recipe = Arc::new(FakeRecipe::new());
+        let h = with_recipes(
+            model,
+            recipe.clone(),
+            ToolAdmission::READ_ONLY.with_recipes(),
+            Arc::new(approver),
+        );
+        let service = h.service(RoutingMode::LocalOnly);
+        let task = start_with_recipes(&service).await;
+        fail(
+            &finished(&service, &task).await,
+            ErrorCode::PermissionDenied,
+        );
+        assert!(recipe.received().is_empty());
+    }
+}
+
 #[tokio::test]
 async fn an_admitted_write_is_offered_and_runs_once_approved() {
     let model = Arc::new(Model::new(Scenario::Write));
@@ -742,7 +981,7 @@ async fn an_admitted_write_is_offered_and_runs_once_approved() {
     let h = writing(
         model.clone(),
         write.clone(),
-        ToolAdmission::ReadWrite,
+        ToolAdmission::READ_WRITE,
         approver.clone(),
     );
     let service = h.service(RoutingMode::LocalOnly);
@@ -771,7 +1010,7 @@ async fn a_write_nobody_approved_never_runs() {
         let h = writing(
             model,
             write.clone(),
-            ToolAdmission::ReadWrite,
+            ToolAdmission::READ_WRITE,
             Arc::new(approver),
         );
         let service = h.service(RoutingMode::LocalOnly);
@@ -794,7 +1033,7 @@ async fn a_read_only_worker_is_never_offered_a_write() {
     let h = writing(
         model.clone(),
         write.clone(),
-        ToolAdmission::ReadOnly,
+        ToolAdmission::READ_ONLY,
         approver.clone(),
     );
     let service = h.service(RoutingMode::LocalOnly);
@@ -858,13 +1097,13 @@ impl AgentProvider for Disguised {
 async fn a_resume_cannot_change_what_the_model_may_be_offered() {
     for (started, resumed, scenario) in [
         (
-            ToolAdmission::ReadWrite,
-            ToolAdmission::ReadOnly,
+            ToolAdmission::READ_WRITE,
+            ToolAdmission::READ_ONLY,
             Scenario::Write,
         ),
         (
-            ToolAdmission::ReadOnly,
-            ToolAdmission::ReadWrite,
+            ToolAdmission::READ_ONLY,
+            ToolAdmission::READ_WRITE,
             Scenario::Answer,
         ),
     ] {
@@ -960,7 +1199,7 @@ async fn an_interrupted_write_is_retried_only_when_it_declared_that_safe() {
         let h = writing(
             model.clone(),
             write.clone(),
-            ToolAdmission::ReadWrite,
+            ToolAdmission::READ_WRITE,
             approver,
         );
         let service = h.service(RoutingMode::LocalOnly);

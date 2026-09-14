@@ -61,6 +61,15 @@ pub(crate) struct TaskArgs {
     #[arg(long)]
     allow_writes: bool,
 
+    /// Let the reference worker ask to run the project's recipes, the
+    /// commands `.tramontana/project.md` declares under `recipes:`.
+    ///
+    /// The model can only name a recipe. Every run is asked about on the
+    /// terminal, showing the exact command, and is refused when there is no
+    /// terminal to ask on. Without this flag the model is never offered one.
+    #[arg(long)]
+    allow_recipes: bool,
+
     /// Emit each event as a JSON line instead of a formatted table.
     #[arg(long)]
     json: bool,
@@ -128,6 +137,9 @@ struct TaskResumeArgs {
     /// resume cannot add or drop what the model may be offered.
     #[arg(long)]
     allow_writes: bool,
+    /// Resume with recipes allowed. Must match how the task was started.
+    #[arg(long)]
+    allow_recipes: bool,
     #[arg(long)]
     json: bool,
     #[arg(long, default_value_t = 120)]
@@ -185,27 +197,30 @@ pub(crate) async fn execute(mut args: TaskArgs) -> ExitCode {
     }
 }
 
-/// What the reference worker may offer its model, from `--allow-writes`.
-fn admission(allow_writes: bool) -> tramontana_core::ports::ToolAdmission {
-    if allow_writes {
-        tramontana_core::ports::ToolAdmission::ReadWrite
-    } else {
-        tramontana_core::ports::ToolAdmission::ReadOnly
+/// What the reference worker may offer its model, from `--allow-writes` and
+/// `--allow-recipes`: two separate choices, neither implying the other.
+fn admission(allow_writes: bool, allow_recipes: bool) -> tramontana_core::ports::ToolAdmission {
+    tramontana_core::ports::ToolAdmission {
+        writes: allow_writes,
+        recipes: allow_recipes,
     }
 }
 
 async fn run(args: TaskArgs) -> ExitCode {
     let profile = wiring::profile_path(args.profile);
-    let (service, mut models) =
-        match wiring::open_running(&profile, args.chunk_delay_ms, admission(args.allow_writes))
-            .await
-        {
-            Ok(service) => service,
-            Err(message) => {
-                eprintln!("error: {message}");
-                return ExitCode::FAILURE;
-            }
-        };
+    let (service, mut models) = match wiring::open_running(
+        &profile,
+        args.chunk_delay_ms,
+        admission(args.allow_writes, args.allow_recipes),
+    )
+    .await
+    {
+        Ok(service) => service,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     let conversation_id = args.conversation_id.map(ConversationId::new);
     if let Some(conversation_id) = &conversation_id {
@@ -411,7 +426,7 @@ async fn resume(args: TaskResumeArgs) -> ExitCode {
     let (service, _models) = match wiring::open_running(
         &wiring::profile_path(args.profile),
         args.chunk_delay_ms,
-        admission(args.allow_writes),
+        admission(args.allow_writes, args.allow_recipes),
     )
     .await
     {
@@ -506,7 +521,7 @@ async fn handoff(args: HandoffArgs) -> ExitCode {
     let (service, _models) = match wiring::open_running(
         &wiring::profile_path(args.profile),
         args.chunk_delay_ms,
-        tramontana_core::ports::ToolAdmission::ReadOnly,
+        tramontana_core::ports::ToolAdmission::READ_ONLY,
     )
     .await
     {

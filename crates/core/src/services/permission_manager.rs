@@ -337,5 +337,8 @@ fn describe(query: &PermissionQuery) -> Vec<ApprovalDetail> {
             value: "yes".to_owned(),
         });
     }
+    // What the core resolved for this request, such as a recipe's exact
+    // command: a person approves what will run, not a tool's name.
+    details.extend(query.details.iter().cloned());
     details
 }
