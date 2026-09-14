@@ -47,6 +47,7 @@ fn read_query() -> PermissionQuery {
         risk_class: RiskClass::Read,
         scope: scope(&["/work/project"]),
         persistable: true,
+        details: Vec::new(),
     }
 }
 

@@ -256,6 +256,17 @@ pub enum EventPayload {
         side_effect: super::SideEffect,
         /// Whether output was cut short by a limit.
         truncated: bool,
+        /// The files this invocation changed, as the tool reported them.
+        /// Absent from records written before tools reported changes
+        /// (ADR 0026).
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        changes: Vec<super::FileChange>,
+    },
+    /// Something the task produced, recorded as Tramontana's own fact.
+    #[serde(rename_all = "camelCase")]
+    ArtifactRecorded {
+        /// The artifact.
+        artifact: super::ArtifactRecord,
     },
     /// A checkpoint was written.
     ///
@@ -281,6 +292,9 @@ pub enum EventPayload {
     TaskCompleted {
         /// Secret-free summary of the outcome.
         summary: String,
+        /// Artifacts the task recorded, such as the files it changed.
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        artifacts: Vec<super::ArtifactId>,
     },
     /// The task failed.
     #[serde(rename_all = "camelCase")]
@@ -549,6 +563,7 @@ mod tests {
         let completed = envelope(
             EventPayload::TaskCompleted {
                 summary: "done".into(),
+                artifacts: Vec::new(),
             },
             TaskEventKind::TaskCompleted,
         );
@@ -621,6 +636,7 @@ mod tests {
         let mut event = envelope(
             EventPayload::TaskCompleted {
                 summary: "done".into(),
+                artifacts: Vec::new(),
             },
             TaskEventKind::TaskCompleted,
         );

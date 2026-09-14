@@ -157,6 +157,25 @@ pub struct ConfigurationSource {
     /// survives a round trip through an older one (`CONFIGURATION.md` §5).
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub unknown_keys: Vec<String>,
+    /// Commands the project declares. Read from `.tramontana/project.md`
+    /// only; declaring one grants nothing (ADR 0025).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub recipes: Vec<Recipe>,
+}
+
+/// A command a project declares for a person to approve running, such as its
+/// test suite.
+///
+/// An argument list with the program first, never a command line: no shell
+/// ever sees it. Each run is its own approval, showing exactly this list
+/// (ADR 0025).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Recipe {
+    /// Stable id, unique within the project.
+    pub id: String,
+    /// The program, then its arguments.
+    pub run: Vec<String>,
 }
 
 /// Everything loaded for a project, in precedence order.
@@ -204,6 +223,24 @@ impl EffectiveConfiguration {
             .iter()
             .any(|d| d.severity == DiagnosticSeverity::Error)
     }
+
+    /// The recipe `id`, with the source that declares it.
+    ///
+    /// Only an enabled `.tramontana/project.md` declares recipes; a recipe
+    /// anywhere else was never recorded.
+    #[must_use]
+    pub fn recipe(&self, id: &str) -> Option<(&Recipe, &ConfigurationSource)> {
+        self.sources
+            .iter()
+            .filter(|source| source.kind == ConfigurationKind::ProjectOverview && source.enabled)
+            .find_map(|source| {
+                source
+                    .recipes
+                    .iter()
+                    .find(|recipe| recipe.id == id)
+                    .map(|recipe| (recipe, source))
+            })
+    }
 }
 
 /// Hash the ordered source list.
@@ -232,6 +269,18 @@ fn manifest_hash(sources: &[ConfigurationSource]) -> String {
         }
         for capability in &source.requested_capabilities {
             hasher.update(capability.as_bytes());
+            hasher.update([0]);
+        }
+        // The text hash already covers recipes; hashing them again makes the
+        // manifest name the exact commands it would run. Nothing is added for
+        // a source without recipes, so earlier manifests keep their hashes.
+        for recipe in &source.recipes {
+            hasher.update(recipe.id.as_bytes());
+            hasher.update([0]);
+            for argument in &recipe.run {
+                hasher.update(argument.as_bytes());
+                hasher.update([1]);
+            }
             hasher.update([0]);
         }
     }
@@ -279,6 +328,47 @@ mod tests {
             byte_count: 0,
             redactions: Vec::new(),
             unknown_keys: Vec::new(),
+            recipes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_recipe_is_found_only_in_an_enabled_project_overview_and_is_part_of_the_manifest() {
+        let test = || Recipe {
+            id: "test".into(),
+            run: vec!["cargo".into(), "test".into()],
+        };
+        let mut overview = source(
+            ".tramontana/project.md",
+            ConfigurationKind::ProjectOverview,
+            "a",
+        );
+        let without =
+            EffectiveConfiguration::new(vec![overview.clone()], Vec::new(), Timestamp::new("t"));
+        overview.recipes = vec![test()];
+        let with =
+            EffectiveConfiguration::new(vec![overview.clone()], Vec::new(), Timestamp::new("t"));
+
+        assert_eq!(with.recipe("test").map(|(recipe, _)| recipe), Some(&test()));
+        assert!(with.recipe("build").is_none());
+        // The manifest names the exact commands it would run.
+        assert_ne!(with.manifest_hash, without.manifest_hash);
+        let mut changed = overview.clone();
+        changed.recipes[0].run.push("--release".into());
+        assert_ne!(
+            EffectiveConfiguration::new(vec![changed], Vec::new(), Timestamp::new("t"))
+                .manifest_hash,
+            with.manifest_hash
+        );
+
+        let mut disabled = overview.clone();
+        disabled.enabled = false;
+        let mut skill = overview;
+        skill.kind = ConfigurationKind::Skill;
+        for elsewhere in [disabled, skill] {
+            let configuration =
+                EffectiveConfiguration::new(vec![elsewhere], Vec::new(), Timestamp::new("t"));
+            assert!(configuration.recipe("test").is_none());
         }
     }
 

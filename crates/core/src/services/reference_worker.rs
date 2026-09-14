@@ -4,12 +4,13 @@ use crate::contracts::{
     NetworkControl, ToolControl,
 };
 use crate::ports::{
-    AgentProvider, ReadOnlyLimits, ReadOnlyTurn, WorkerHost, WorkerOutcome, WorkerRequest,
+    AgentProvider, ReadOnlyLimits, ReadOnlyTurn, ToolAdmission, WorkerHost, WorkerOutcome,
+    WorkerRequest,
 };
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-/// Stable identity of the embedded read-only worker.
+/// Stable identity of the embedded reference worker.
 pub const REFERENCE_AGENT_ID: &str = "builtin.reference";
 
 /// Sequential model/observation loop, with no private transcript or provider handles.
@@ -17,12 +18,26 @@ pub const REFERENCE_AGENT_ID: &str = "builtin.reference";
 pub struct ReferenceWorker {
     tools: Vec<String>,
     limits: ReadOnlyLimits,
+    admission: ToolAdmission,
 }
 impl ReferenceWorker {
     /// Choose explicit registered read-only tools and bounded session limits.
     #[must_use]
     pub fn new(tools: Vec<String>, limits: ReadOnlyLimits) -> Self {
-        Self { tools, limits }
+        Self {
+            tools,
+            limits,
+            admission: ToolAdmission::READ_ONLY,
+        }
+    }
+
+    /// Offer the selected tools at `admission` instead of read-only. Writes
+    /// and recipes are still approved one at a time; this only lets the model
+    /// ask.
+    #[must_use]
+    pub fn admitting(mut self, admission: ToolAdmission) -> Self {
+        self.admission = admission;
+        self
     }
 }
 #[async_trait]
@@ -31,7 +46,13 @@ impl AgentProvider for ReferenceWorker {
         AgentDescriptor {
             agent_provider_id: "builtin".into(),
             agent_id: REFERENCE_AGENT_ID.into(),
-            display_name: "Embedded read-only worker".into(),
+            display_name: match (self.admission.writes, self.admission.recipes) {
+                (false, false) => "Embedded read-only worker",
+                (true, false) => "Embedded read-write worker",
+                (false, true) => "Embedded read-only worker that runs recipes",
+                (true, true) => "Embedded read-write worker that runs recipes",
+            }
+            .into(),
             integration_mode: IntegrationMode::Embedded,
             model_control: ModelControl::TramontanaBrokered,
             tool_control: ToolControl::TramontanaBrokered,
@@ -55,7 +76,7 @@ impl AgentProvider for ReferenceWorker {
                 return Ok(WorkerOutcome::Cancelled);
             }
             match host
-                .read_only_turn(&self.tools, &self.limits, &cancel)
+                .governed_turn(&self.tools, self.admission, &self.limits, &cancel)
                 .await?
             {
                 ReadOnlyTurn::Observed => {}

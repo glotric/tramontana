@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tauri::AppHandle;
-use tramontana_adapters_tools::{FilesystemTools, GitTools};
+use tramontana_adapters_tools::{FilesystemTools, GitTools, RecipeTools};
 use tramontana_core::ports::EventStore;
 use tramontana_core::ports::{
     ApprovalStore, Approver, ModelProvider, ProviderSettingsRepository, SecretResolver,
@@ -67,15 +67,22 @@ impl AppState {
         let database = Database::open(path)
             .await
             .map_err(|error| format!("could not open {}: {error}", path.display()))?;
-        // Read-only tools, behind the permission boundary. The registry says
-        // a tool exists; only the permission manager says it may run. The CLI
-        // assembles the identical set, so the two adapters cannot drift into
-        // offering different tools under different policy.
+        // Filesystem and Git tools, behind the permission boundary. The
+        // registry says a tool exists; only the permission manager says it may
+        // run. The CLI assembles the identical set, including the same
+        // recovery store beside the profile, so the two adapters cannot drift
+        // into offering different tools under different policy.
         let approvals = Arc::new(InMemoryApprovalStore::new());
         let (registry, permissions, releases) = assemble_tool_plane(
             vec![
-                Arc::new(FilesystemTools::new()) as Arc<dyn ToolProvider>,
+                Arc::new(
+                    FilesystemTools::new()
+                        .with_recovery_store(tramontana_composition::recovery_store(path)),
+                ) as Arc<dyn ToolProvider>,
                 Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
+                // Registered so both adapters hold the same set; never offered
+                // to a model here, where admission stays read-only.
+                Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
             ],
             Arc::clone(&approvals) as Arc<dyn ApprovalStore>,
             Arc::clone(&approver) as Arc<dyn Approver>,
@@ -131,8 +138,13 @@ impl AppState {
                 tools: Arc::clone(&registry),
                 permissions: Arc::clone(&permissions),
                 releases: Arc::clone(&releases),
-                // Same strategy and governed tool plane as the CLI.
-                worker: tramontana_composition::assemble_worker(has_configured),
+                // Same strategy and governed tool plane as the CLI. Read-only:
+                // the desktop has no way yet for a person to say a task may
+                // write, so it never offers a model a write (ADR 0021).
+                worker: tramontana_composition::assemble_worker(
+                    has_configured,
+                    tramontana_core::ports::ToolAdmission::READ_ONLY,
+                ),
             },
             Arc::new(SystemClock::new()),
             Arc::new(UuidIdSource::new()),

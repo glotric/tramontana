@@ -68,6 +68,19 @@ pub(crate) fn resolve_within_grant(
     )))
 }
 
+/// Whether one granted root contains both paths.
+///
+/// Each path must already have passed [`resolve_within_grant`]; this adds that
+/// they are inside the *same* root, so an operation on the pair cannot carry
+/// anything from one approved folder into another.
+pub(crate) fn same_root(request: &AuthorizedToolRequest, a: &Path, b: &Path) -> bool {
+    request.granted_scope().roots.iter().any(|granted| {
+        canonicalize_root(Path::new(granted)).is_ok_and(|root| {
+            contains(&root, a).unwrap_or(false) && contains(&root, b).unwrap_or(false)
+        })
+    })
+}
+
 /// Express a path relative to the granted root, for display.
 ///
 /// Durable events and approval prompts must not carry absolute paths: one

@@ -49,6 +49,7 @@ async fn authorize(
             roots.iter().map(|r| r.display().to_string()).collect(),
         ),
         persistable: true,
+        details: Vec::new(),
     };
 
     let (_, authorized) = manager

@@ -135,7 +135,9 @@ impl BrokeredHost {
                 .await?;
         }
         plan.requests.insert(step_id.into(), hash.clone());
-        let replay_safe = registered.descriptor.side_effect == SideEffect::None;
+        // The tool's declaration, not an inference from its side effect
+        // (ADR 0019). Only a step declared safe may leave `uncertain` on failure.
+        let replay_safe = registered.descriptor.replay_safety == ReplaySafety::Safe;
         let result = self
             .execute_tool(
                 registered,
@@ -161,6 +163,18 @@ impl BrokeredHost {
                 self.journal.append_batch(vec![
                     EventDraft::user(TaskEventKind::ToolCompleted, EventPayload::ToolCompleted {
                         invocation_id: invocation.clone(), display_summary: summary.clone(), side_effect: outcome.side_effect, truncated: outcome.truncated,
+                        // What the tool says it changed, under the same
+                        // redaction as its summary (ADR 0026).
+                        changes: outcome
+                            .changes
+                            .iter()
+                            .cloned()
+                            .map(|mut change| {
+                                change.path = redact(&change.path).text;
+                                change.from = change.from.map(|from| redact(&from).text);
+                                change
+                            })
+                            .collect(),
                     }),
                     self.tool_message(MessageRole::Tool, MessagePart::ToolResult {
                         invocation_id: invocation,
@@ -218,12 +232,24 @@ impl BrokeredHost {
         cancel: &CancellationToken,
     ) -> Result<ToolOutcome, ErrorEnvelope> {
         let descriptor = &registered.descriptor;
+        // A recipe is resolved here, before anyone is asked: the prompt shows
+        // exactly the command the tool will be handed, and a name the project
+        // does not declare is refused without a question (ADR 0025).
+        let (arguments, details) = if descriptor.tool_id == crate::services::RECIPE_TOOL_ID {
+            let resolved =
+                crate::services::recipe::resolve(self.tools.configuration.as_deref(), &arguments)
+                    .map_err(|code| self.tool_error(code))?;
+            (resolved.arguments, resolved.details)
+        } else {
+            (arguments, Vec::new())
+        };
         let query = PermissionQuery {
             tool_id: descriptor.tool_id.clone(),
             capability: Capability::new(&descriptor.capability),
             risk_class: descriptor.risk_class,
             scope: self.tools.scope.clone(),
             persistable: descriptor.risk_class != RiskClass::Dangerous,
+            details,
         };
         let now = self.tools.clock.now();
         let authorization = self.tools.permissions.authorize(
@@ -256,11 +282,11 @@ impl BrokeredHost {
         if cancel.is_cancelled() {
             return Err(self.tool_error(ErrorCode::Cancelled));
         }
-        let replay_safety = if descriptor.side_effect == SideEffect::None {
-            ReplaySafety::Safe
-        } else {
-            ReplaySafety::Unsafe
-        };
+        // Recorded before execution, from the tool's own declaration. Until
+        // M7 this was inferred — no side effect meant safe, anything else
+        // unsafe — which could not express a write that is safe to replay
+        // because it verifies the world first (ADR 0019).
+        let replay_safety = descriptor.replay_safety;
         self.journal
             .append(EventDraft::user(
                 TaskEventKind::ToolStarted,
@@ -276,10 +302,16 @@ impl BrokeredHost {
         if replay_safety != ReplaySafety::Safe {
             plan.uncertain.insert(step_id.into());
         }
+        // A tool bounds its own run: the file and Git tools at 15 seconds, a
+        // recipe at ten minutes. The backstop only stops one that does not,
+        // and the tool is told to stop as well as abandoned (ADR 0027).
+        let run = cancel.child_token();
+        let _stop_on_exit = run.clone().drop_guard();
         tokio::select! {
             biased;
             () = cancel.cancelled() => Err(self.tool_error(ErrorCode::Cancelled)),
-            result = registered.provider.invoke(authorized, cancel.clone()) => result,
+            result = registered.provider.invoke(authorized, run.clone()) => result,
+            () = tokio::time::sleep(crate::ports::TOOL_RUN_LIMIT) => Err(self.tool_error(ErrorCode::Timeout)),
         }
     }
 

@@ -11,8 +11,8 @@ use crate::contracts::{
     AuthorizedToolRequest, CancellationOrigin, CapabilityScope, ContextManifest, DataClass,
     EffectiveConfiguration, ErrorCode, ErrorEnvelope, EventDraft, EventPayload, HandoffBundle,
     InvocationId, MessageId, MessageRole, MessageStatus, ModelRequest, NormalizedMessage,
-    PermissionOrigin, ReplaySafety, RiskClass, RoutingDecision, RoutingMode, SideEffect,
-    StopReason, StreamFrame, TaskCheckpoint, TaskEventKind, TaskState,
+    PermissionOrigin, ReplaySafety, RiskClass, RoutingDecision, RoutingMode, StopReason,
+    StreamFrame, TaskCheckpoint, TaskEventKind, TaskState,
 };
 use crate::ports::{AgentProvider, ModelProvider, WorkerHost, WorkerOutcome, WorkerRequest};
 use crate::ports::{Clock, PermissionQuery};
@@ -267,6 +267,7 @@ impl TaskDriver {
                 clock: Arc::clone(&self.clock),
                 resume: Arc::new(tokio::sync::Mutex::new(self.resume.clone())),
                 interrupt: self.interrupt.clone(),
+                configuration: self.configuration.clone().map(Arc::new),
             },
         };
 
@@ -417,16 +418,50 @@ impl TaskDriver {
         self.journal.append(draft).await.map(|_| ())
     }
 
+    /// Record what this task changed, from its own `toolCompleted` events.
+    ///
+    /// On every ending — completed, failed or cancelled — because a task that
+    /// stopped half-way is exactly when a person needs to know what it
+    /// touched. Built from the whole task record, so a resumed task's summary
+    /// includes what it did before the interruption. Nothing is recorded when
+    /// nothing changed (ADR 0026).
+    async fn record_changes(&self) -> Option<crate::contracts::ArtifactId> {
+        let events = self.journal.replay().await.ok()?;
+        let changes: Vec<crate::contracts::FileChange> = events
+            .iter()
+            .flat_map(|event| match &event.payload {
+                EventPayload::ToolCompleted { changes, .. } => changes.clone(),
+                _ => Vec::new(),
+            })
+            .collect();
+        if changes.is_empty() {
+            return None;
+        }
+        let artifact = crate::contracts::ArtifactRecord::changed_files(
+            crate::contracts::ArtifactId::new(self.journal.next_id("artifact")),
+            changes,
+        );
+        let artifact_id = artifact.artifact_id.clone();
+        self.record(EventDraft::user(
+            TaskEventKind::ArtifactRecorded,
+            EventPayload::ArtifactRecorded { artifact },
+        ))
+        .await
+        .ok()?;
+        Some(artifact_id)
+    }
+
     async fn finish_completed(&self, from: TaskState, summary: String) {
         if self
             .change_state(from, TaskState::Completed, "worker.completed")
             .await
             .is_ok()
         {
+            let artifacts = self.record_changes().await.into_iter().collect();
             let _ = self
                 .record(EventDraft::user(
                     TaskEventKind::TaskCompleted,
-                    EventPayload::TaskCompleted { summary },
+                    EventPayload::TaskCompleted { summary, artifacts },
                 ))
                 .await;
         }
@@ -453,6 +488,7 @@ impl TaskDriver {
             .await
             .is_ok()
         {
+            let _ = self.record_changes().await;
             let _ = self
                 .record(EventDraft::user(
                     TaskEventKind::TaskFailed,
@@ -485,6 +521,7 @@ impl TaskDriver {
             .await
             .is_ok()
         {
+            let _ = self.record_changes().await;
             let _ = self
                 .record(EventDraft::user(
                     TaskEventKind::TaskCancelled,
@@ -560,6 +597,9 @@ pub(crate) struct ToolBroker {
     /// What a resumed run must not do again.
     pub(crate) resume: Arc<tokio::sync::Mutex<ResumePlan>>,
     pub(crate) interrupt: CancellationToken,
+    /// The configuration the task started with, which recipes are resolved
+    /// against (ADR 0025). `None` for a projectless task, which has none.
+    pub(crate) configuration: Option<Arc<EffectiveConfiguration>>,
 }
 
 impl std::fmt::Debug for ToolBroker {
@@ -576,7 +616,22 @@ impl WorkerHost for BrokeredHost {
         limits: &crate::ports::ReadOnlyLimits,
         cancel: &CancellationToken,
     ) -> Result<crate::ports::ReadOnlyTurn, ErrorEnvelope> {
-        self.run_read_only_turn(tools, limits, cancel).await
+        self.run_turn(
+            tools,
+            crate::ports::ToolAdmission::READ_ONLY,
+            limits,
+            cancel,
+        )
+        .await
+    }
+    async fn governed_turn(
+        &self,
+        tools: &[String],
+        admission: crate::ports::ToolAdmission,
+        limits: &crate::ports::ReadOnlyLimits,
+        cancel: &CancellationToken,
+    ) -> Result<crate::ports::ReadOnlyTurn, ErrorEnvelope> {
+        self.run_turn(tools, admission, limits, cancel).await
     }
     async fn emit(&self, draft: EventDraft) -> Result<(), ErrorEnvelope> {
         if matches!(&draft.payload, EventPayload::DiagnosticRecorded { code, .. } if code.starts_with("reference."))

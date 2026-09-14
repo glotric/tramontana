@@ -30,6 +30,7 @@ pub fn event_at(task_id: &TaskId, sequence: u64) -> EventEnvelope {
         TaskEventKind::TaskCompleted,
         EventPayload::TaskCompleted {
             summary: format!("event {sequence}"),
+            artifacts: Vec::new(),
         },
     )
     .into_envelope(
@@ -666,6 +667,99 @@ pub async fn unavailable_store_contract(vault: &dyn SecretVault) {
             code,
             crate::contracts::ErrorCode::CredentialMissing,
             "an unreachable store reported a missing credential"
+        );
+    }
+}
+
+/// Assert that a tool declaring `safe` replay can in fact be replayed.
+///
+/// Recovery re-invokes a step whose tool declared `replaySafety: safe`, with
+/// the same arguments, after an interruption (`CORE_CONTRACTS.md` §11). So
+/// "safe" is a promise about the world rather than the tool's intentions: a
+/// second identical invocation must succeed, leave things as the first left
+/// them, and report that it changed nothing. A write tool that reports safe
+/// when it is not breaks the resume promise silently (`BUILD_ORDER.md` §16),
+/// so every tool making that claim with a side effect is held to this.
+///
+/// `arguments` must describe a change the tool has not yet made under
+/// `roots`. Every invocation carries a *different* invocation id, so
+/// idempotence has to come from the state of the world rather than from the
+/// tool recognising a retry.
+///
+/// # Panics
+///
+/// Panics with the failing expectation, which is how a test reports.
+#[allow(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "this is a test suite; a panic is the failure report"
+)]
+pub async fn idempotent_tool_contract(
+    provider: &dyn crate::ports::ToolProvider,
+    tool_id: &str,
+    arguments: serde_json::Value,
+    roots: Vec<String>,
+) {
+    use crate::contracts::{
+        AuthorizedTarget, AuthorizedToolRequest, Capability, CapabilityScope, GrantKind,
+        GrantedAuthority, InvocationId, ProjectId, SideEffect,
+    };
+
+    let descriptor = provider
+        .list_tools()
+        .into_iter()
+        .find(|tool| tool.tool_id == tool_id)
+        .expect("the provider offers the tool under test");
+    assert_eq!(
+        descriptor.replay_safety,
+        ReplaySafety::Safe,
+        "{tool_id} does not declare safe replay, so this contract does not apply to it"
+    );
+
+    let attempt = |label: &str| {
+        AuthorizedToolRequest::new(
+            AuthorizedTarget {
+                invocation_id: InvocationId::new(format!("contract-{label}")),
+                task_id: TaskId::new("task-contract"),
+                tool_id: tool_id.to_owned(),
+                arguments: arguments.clone(),
+            },
+            GrantedAuthority {
+                capability: Capability::new(descriptor.capability.clone()),
+                scope: CapabilityScope::project(ProjectId::new("project-contract"), roots.clone()),
+                kind: GrantKind::Once,
+                approval_id: None,
+            },
+        )
+    };
+
+    let first = provider
+        .invoke(attempt("first"), CancellationToken::new())
+        .await
+        .expect("the first invocation succeeds");
+    if descriptor.side_effect != SideEffect::None {
+        assert_ne!(
+            first.side_effect,
+            SideEffect::None,
+            "{tool_id}: the first invocation did not make the change its arguments describe"
+        );
+    }
+
+    // Twice, so a tool that merely toggles state cannot pass by accident.
+    for label in ["replay", "second-replay"] {
+        let replay = provider
+            .invoke(attempt(label), CancellationToken::new())
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{tool_id}: replaying a safe step failed on its own earlier effect: {error:?}"
+                )
+            });
+        assert_eq!(
+            replay.side_effect,
+            SideEffect::None,
+            "{tool_id}: a replay changed something again ({})",
+            replay.display_summary
         );
     }
 }

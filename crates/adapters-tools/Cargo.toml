@@ -1,6 +1,6 @@
 [package]
 name = "tramontana-adapters-tools"
-description = "Deterministic, project-scoped tools: filesystem and Git inspection."
+description = "Deterministic, project-scoped tools: filesystem, Git, and the command broker."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,15 +12,23 @@ repository.workspace = true
 tramontana-core = { workspace = true }
 tramontana-platform = { workspace = true }
 async-trait = { workspace = true }
+process-wrap = { workspace = true }
 same-file = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["process", "time"] }
+tokio = { workspace = true, features = ["process", "time", "rt", "io-util"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+# Starts real process trees for the command broker's tests. A test fixture
+# rather than a shipped tool: the desktop application packages the Tauri
+# binary and nothing from here.
+[[bin]]
+name = "tramontana-process-tree-fixture"
+path = "src/bin/process_tree_fixture.rs"
 
 [lints]
 workspace = true

@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 
 use crate::contracts::{
-    ApprovalDecision, ApprovalDecisionKind, ApprovalId, ApprovalRequest, Capability,
-    CapabilityScope, ProjectGrant, ProjectId, RiskClass, Timestamp,
+    ApprovalDecision, ApprovalDecisionKind, ApprovalDetail, ApprovalId, ApprovalRequest,
+    Capability, CapabilityScope, ProjectGrant, ProjectId, RiskClass, Timestamp,
 };
 
 /// Why a permission operation failed.
@@ -113,6 +113,10 @@ pub struct PermissionQuery {
     /// "Not offered for operations classified as non-persistable"
     /// (`SECURITY_AND_PERMISSIONS.md` §4).
     pub persistable: bool,
+    /// What exactly would run, where the core resolved more than a tool's
+    /// name — a recipe's command, say — for the prompt to show. Never a
+    /// secret, never raw file content.
+    pub details: Vec<ApprovalDetail>,
 }
 
 /// Why a request was allowed or refused.

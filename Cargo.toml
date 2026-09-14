@@ -36,6 +36,14 @@ tramontana-platform = { path = "crates/platform" }
 anyhow = "1.0.104"
 async-trait = "0.1.92"
 clap = { version = "4.6.6", features = ["derive"] }
+# Owning a command's whole process tree — a process group on Unix, a job object
+# on Windows — without `unsafe` in this workspace (ADR 0024).
+process-wrap = { version = "10.0.0", default-features = false, features = [
+    "tokio1",
+    "process-group",
+    "job-object",
+    "kill-on-drop",
+] }
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

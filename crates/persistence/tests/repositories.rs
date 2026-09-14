@@ -444,6 +444,47 @@ async fn what_was_redacted_from_an_instruction_file_survives_a_round_trip() {
 }
 
 #[tokio::test]
+async fn a_projects_recipes_survive_a_round_trip() {
+    // A resumed task reads its configuration back from here and runs a recipe
+    // only as this record describes it. Recipes lost on the way to storage
+    // would leave a resumed task with none (ADR 0025).
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(&directory, "recipes").await;
+    let projects = SqliteProjectRepository::new(db.clone());
+    let configurations = SqliteConfigurationRepository::new(db);
+    let project_id = ProjectId::new("p1");
+    projects
+        .create(&ProjectRecord::new(
+            project_id.clone(),
+            "p1",
+            vec!["/projects/p1".to_owned()],
+            at(0),
+        ))
+        .await
+        .unwrap();
+
+    let manifest = tramontana_core::config::resolve(
+        vec![tramontana_core::config::RawSource {
+            relative_path: ".tramontana/project.md".to_owned(),
+            kind: ConfigurationKind::ProjectOverview,
+            content: b"---\nid: p1\nrecipes:\n  test: [cargo, test]\n---\n# P1\n".to_vec(),
+        }],
+        at(1),
+    );
+    assert_eq!(
+        manifest
+            .recipe("test")
+            .map(|(recipe, _)| recipe.run.clone()),
+        Some(vec!["cargo".to_owned(), "test".to_owned()])
+    );
+
+    configurations.save(&project_id, &manifest).await.unwrap();
+    let loaded = configurations.latest(&project_id).await.unwrap().unwrap();
+
+    assert_eq!(loaded, manifest);
+}
+
+#[tokio::test]
 async fn configuration_manifests_round_trip_and_are_scoped_by_project() {
     let directory = tempfile::tempdir().unwrap();
     let db = database(&directory, "configuration").await;

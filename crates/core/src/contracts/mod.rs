@@ -14,6 +14,7 @@
 //!   as unsupported rather than failing the parse;
 //! - secrets are never serialized — only an opaque [`SecretRef`].
 
+mod artifact;
 mod checkpoint;
 mod configuration;
 mod context;
@@ -33,6 +34,10 @@ mod routing;
 mod task;
 mod time;
 
+pub use artifact::{
+    ArtifactContent, ArtifactProducer, ArtifactRecord, ArtifactRelation, CHANGED_FILES_MEDIA_TYPE,
+    FileChange, FileChangeKind,
+};
 pub use checkpoint::{
     CheckpointWorker, PendingAction, PendingActionKind, ReplaySafety, ResumeEligibility,
     ResumeMode, TaskCheckpoint,
@@ -40,10 +45,11 @@ pub use checkpoint::{
 pub(crate) use configuration::hex as configuration_hex;
 pub use configuration::{
     ConfigurationDiagnostic, ConfigurationKind, ConfigurationSource, DiagnosticSeverity,
-    EffectiveConfiguration,
+    EffectiveConfiguration, Recipe,
 };
 pub use context::{
     ContextCategory, ContextManifest, ContextSource, DestinationClass, content_hash,
+    content_hash_bytes,
 };
 pub use descriptor::{
     AgentDescriptor, CheckpointSupport, Health, IntegrationMode, ModelCapability, ModelControl,
@@ -60,8 +66,8 @@ pub use export::{
     OmissionCategory,
 };
 pub use ids::{
-    AgentId, AgentProviderId, ApprovalId, CheckpointId, ConversationId, CorrelationId, EventId,
-    InvocationId, MessageId, ModelId, ProjectId, ProviderId, TaskId, WorkerSessionId,
+    AgentId, AgentProviderId, ApprovalId, ArtifactId, CheckpointId, ConversationId, CorrelationId,
+    EventId, InvocationId, MessageId, ModelId, ProjectId, ProviderId, TaskId, WorkerSessionId,
 };
 pub use message::{MessagePart, MessageRole, MessageStatus, NormalizedMessage};
 pub use model::{

@@ -12,7 +12,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{RiskClass, SideEffect};
+use super::{ReplaySafety, RiskClass, SideEffect};
 
 /// Something a model can do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -213,6 +213,23 @@ pub struct ToolDescriptor {
     pub capability: String,
     /// Whether it honors cancellation.
     pub supports_cancellation: bool,
+    /// What re-invoking the same step, with the same arguments, would do.
+    ///
+    /// Declared by the tool rather than inferred from [`Self::side_effect`]. A
+    /// tool that writes can still be safe to replay if it verifies the world
+    /// before acting — creating a file only if it is absent, and reporting an
+    /// identical existing file as already applied — and a tool with no side
+    /// effect may still decline the claim.
+    ///
+    /// Recovery trusts this value: a step declared `safe` is re-invoked on
+    /// resume, and anything else leaves the task for a person to reconcile.
+    /// An over-claim therefore breaks the resume promise silently
+    /// (`BUILD_ORDER.md` §16), which is why every tool declaring `safe` with a
+    /// side effect must pass `testing::contract_suites::idempotent_tool_contract`.
+    ///
+    /// Absent means `unknown`, never `safe`.
+    #[serde(default)]
+    pub replay_safety: ReplaySafety,
 }
 
 #[cfg(test)]

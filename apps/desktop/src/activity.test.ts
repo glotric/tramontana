@@ -47,6 +47,36 @@ describe("activity rendering", () => {
     ).toBe("fake.echo (read) — 1 argument(s): value");
   });
 
+  it("says which files a task changed, in the words the CLI uses", () => {
+    const detail = describeEvent(
+      event(9, {
+        kind: "artifactRecorded",
+        artifact: {
+          artifactId: "artifact-1",
+          label: "Files this task changed",
+          producedBy: "tramontana",
+          relation: "taskSummary",
+          mediaType: "application/vnd.tramontana.changed-files+json",
+          dataClass: "project",
+          contentHash: "abc",
+          byteCount: 10,
+          content: {
+            kind: "changedFiles",
+            changes: [
+              { change: "created", path: "src/new.rs", contentHash: "h1", alreadyApplied: false },
+              { change: "moved", path: "docs/b.md", from: "b.md", alreadyApplied: false },
+              { change: "modified", path: "README.md", alreadyApplied: true },
+            ],
+          },
+        },
+      }),
+    ).detail;
+
+    expect(detail).toBe(
+      "3 file change(s): created src/new.rs, moved b.md to docs/b.md, modified README.md (already so)",
+    );
+  });
+
   it("says a release left the device, and on whose authority", () => {
     // A person scanning the activity list must not have to open anything to
     // learn that their project data went to a third party.

@@ -21,6 +21,7 @@ mod model_turn;
 mod permission_manager;
 mod preparation;
 mod projection;
+mod recipe;
 mod redaction;
 mod reference_worker;
 mod release;
@@ -53,6 +54,7 @@ pub use model_turn::{ModelToolCall, ModelTurn, ModelTurnAccumulator, ModelTurnLi
 pub use permission_manager::PermissionManager;
 pub use preparation::assemble_context;
 pub use projection::TaskProjectionWriter;
+pub use recipe::{COMMAND_ENVIRONMENT, RECIPE_TOOL_ID};
 pub use redaction::{
     PLACEHOLDER, Redacted, carries_credential, reason as redaction_reason, redact, redacted_hash,
 };

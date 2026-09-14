@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use crate::contracts::Recipe;
+
 /// The documented front-matter subset (`CONFIGURATION.md` §5).
 ///
 /// Only these keys carry meaning. Anything else is preserved in
@@ -34,6 +36,9 @@ pub struct FrontMatter {
     pub max_steps: Option<i64>,
     /// Portable project format version.
     pub format_version: Option<i64>,
+    /// Commands the project declares, in declaration order. Meaningful only in
+    /// `.tramontana/project.md`; declaring one grants nothing (ADR 0025).
+    pub recipes: Vec<Recipe>,
     /// Keys this build does not recognize, preserved for portability.
     pub unknown_keys: Vec<String>,
 }
@@ -65,6 +70,14 @@ pub enum FrontMatterError {
     /// An identifier does not satisfy the portable identifier grammar.
     #[error("`id` must match [a-z0-9][a-z0-9._-]*")]
     InvalidId,
+    /// A recipe is malformed.
+    #[error("recipe `{id}` {reason}")]
+    InvalidRecipe {
+        /// The recipe's key as written.
+        id: String,
+        /// What is wrong with it.
+        reason: &'static str,
+    },
     /// The document exceeds a safety limit.
     #[error("front matter exceeds the {limit} limit")]
     TooLarge {
@@ -222,6 +235,7 @@ fn parse(block: &str) -> Result<FrontMatter, FrontMatterError> {
             "format_version" => {
                 parsed.format_version = Some(integer(value, "format_version")?);
             }
+            "recipes" => parsed.recipes = recipes(value)?,
             "inputs" => {
                 let yaml_rust2::Yaml::Array(items) = value else {
                     return Err(FrontMatterError::WrongType {
@@ -240,6 +254,82 @@ fn parse(block: &str) -> Result<FrontMatter, FrontMatterError> {
     }
 
     Ok(parsed)
+}
+
+/// Largest number of recipes one project may declare.
+const MAX_RECIPES: usize = 32;
+
+/// Largest number of arguments in one recipe, program included.
+const MAX_RECIPE_ARGUMENTS: usize = 64;
+
+/// Largest single recipe argument, in bytes.
+const MAX_RECIPE_ARGUMENT_BYTES: usize = 4096;
+
+/// Read `recipes`: a mapping of recipe ids to argument lists, program first.
+///
+/// An argument list and never a command line, so no shell ever parses it and
+/// there is no quoting to get wrong (`SECURITY_AND_PERMISSIONS.md` §6). A
+/// plain string such as `test: cargo test` is refused rather than split:
+/// splitting it would be exactly the shell-like parsing this avoids. Numbers
+/// are accepted as text, so `[cargo, test, --jobs, 4]` needs no quotes.
+fn recipes(value: &yaml_rust2::Yaml) -> Result<Vec<Recipe>, FrontMatterError> {
+    use yaml_rust2::Yaml;
+
+    let Yaml::Hash(entries) = value else {
+        return Err(FrontMatterError::WrongType {
+            key: "recipes",
+            expected: "a mapping of recipe ids to argument lists",
+        });
+    };
+    if entries.len() > MAX_RECIPES {
+        return Err(FrontMatterError::TooLarge {
+            limit: "recipe count",
+        });
+    }
+    let mut recipes = Vec::with_capacity(entries.len());
+    for (key, arguments) in entries {
+        let Some(id) = key.as_str() else {
+            return Err(FrontMatterError::NonStringKey);
+        };
+        let invalid = |reason| FrontMatterError::InvalidRecipe {
+            id: id.to_owned(),
+            reason,
+        };
+        if !valid_id(id) {
+            return Err(invalid("needs an id matching [a-z0-9][a-z0-9._-]*"));
+        }
+        let Yaml::Array(items) = arguments else {
+            return Err(invalid("must be a list of arguments, program first"));
+        };
+        if items.len() > MAX_RECIPE_ARGUMENTS {
+            return Err(FrontMatterError::TooLarge {
+                limit: "recipe argument count",
+            });
+        }
+        let run = items
+            .iter()
+            .map(|item| match item {
+                Yaml::String(text) | Yaml::Real(text) => Some(text.clone()),
+                Yaml::Integer(number) => Some(number.to_string()),
+                _ => None,
+            })
+            .collect::<Option<Vec<String>>>()
+            .ok_or_else(|| invalid("has an argument that is not text"))?;
+        if run.first().is_none_or(String::is_empty) {
+            return Err(invalid("names no program"));
+        }
+        if run
+            .iter()
+            .any(|argument| argument.len() > MAX_RECIPE_ARGUMENT_BYTES || argument.contains('\0'))
+        {
+            return Err(invalid("has an argument that is too long or contains NUL"));
+        }
+        recipes.push(Recipe {
+            id: id.to_owned(),
+            run,
+        });
+    }
+    Ok(recipes)
 }
 
 fn string_array(
@@ -374,6 +464,67 @@ mod tests {
         )
         .unwrap();
         assert!(matter.unknown_keys.is_empty(), "{:?}", matter.unknown_keys);
+    }
+
+    #[test]
+    fn recipes_are_argument_lists_in_declaration_order() {
+        let (matter, _) = split_front_matter(
+            "---\nid: p\nrecipes:\n  test: [cargo, test, --jobs, 4]\n  format: [cargo, fmt]\n---\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            matter.recipes,
+            vec![
+                Recipe {
+                    id: "test".into(),
+                    run: vec!["cargo".into(), "test".into(), "--jobs".into(), "4".into()],
+                },
+                Recipe {
+                    id: "format".into(),
+                    run: vec!["cargo".into(), "fmt".into()],
+                },
+            ]
+        );
+        assert!(matter.unknown_keys.is_empty(), "{:?}", matter.unknown_keys);
+    }
+
+    #[test]
+    fn a_recipe_that_is_not_a_plain_argument_list_is_refused() {
+        let recipe = |id: &str, reason| FrontMatterError::InvalidRecipe {
+            id: id.to_owned(),
+            reason,
+        };
+        for (block, expected) in [
+            (
+                "recipes: [cargo, test]",
+                FrontMatterError::WrongType {
+                    key: "recipes",
+                    expected: "a mapping of recipe ids to argument lists",
+                },
+            ),
+            (
+                "recipes:\n  Test: [cargo, test]",
+                recipe("Test", "needs an id matching [a-z0-9][a-z0-9._-]*"),
+            ),
+            // A command line would need shell-like splitting to mean anything.
+            (
+                "recipes:\n  test: cargo test",
+                recipe("test", "must be a list of arguments, program first"),
+            ),
+            ("recipes:\n  test: []", recipe("test", "names no program")),
+            ("recipes:\n  test: ['']", recipe("test", "names no program")),
+            (
+                "recipes:\n  test: [cargo, {flag: on}]",
+                recipe("test", "has an argument that is not text"),
+            ),
+        ] {
+            assert_eq!(
+                split_front_matter(&format!("---\n{block}\n---\n")).unwrap_err(),
+                expected,
+                "{block}"
+            );
+        }
     }
 
     #[test]

@@ -209,6 +209,7 @@ mod tests {
             side_effect: SideEffect::None,
             capability: capability.to_owned(),
             supports_cancellation: true,
+            replay_safety: crate::contracts::ReplaySafety::Safe,
         }
     }
 

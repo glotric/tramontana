@@ -164,7 +164,8 @@ fn summarize(payload: &EventPayload) -> Option<String> {
             Some(format!("Tool failed: {:?}: {}", error.code, error.message))
         }
         EventPayload::DiagnosticRecorded { code, summary } => Some(format!("{code}: {summary}")),
-        EventPayload::TaskCompleted { summary } => Some(format!("Completed: {summary}")),
+        EventPayload::ArtifactRecorded { artifact } => Some(format!("{}.", artifact.summary())),
+        EventPayload::TaskCompleted { summary, .. } => Some(format!("Completed: {summary}")),
         EventPayload::TaskFailed { error } => {
             Some(format!("Failed: {:?}: {}", error.code, error.message))
         }

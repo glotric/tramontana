@@ -158,6 +158,7 @@ fn revealing_request() -> ExportRequest {
                 display_summary: "Read 40 lines".to_owned(),
                 side_effect: SideEffect::None,
                 truncated: false,
+                changes: Vec::new(),
             },
             TaskEventKind::ToolCompleted,
         ),

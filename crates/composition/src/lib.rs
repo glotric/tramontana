@@ -24,33 +24,75 @@ use tramontana_core::contracts::{
     ErrorEnvelope, Health, ModelCapability, ModelDescriptor, ModelLocation, ProviderConfig,
     ProviderEndpoint,
 };
-use tramontana_core::ports::{ModelProvider, SecretResolver};
+use tramontana_core::ports::{ModelProvider, SecretResolver, ToolAdmission};
 
 /// Both applications select the same worker. Empty profiles retain the labelled
 /// deterministic diagnostic; configured endpoints use the actual bounded loop.
+///
+/// `admission` is the caller's choice, never a default: writes and recipes are
+/// each offered to the model only when a person asked for them, and every one
+/// is still approved as it happens (ADRs 0021 and 0025). The diagnostic worker
+/// ignores it.
 #[must_use]
-pub fn assemble_worker(configured: bool) -> Arc<dyn tramontana_core::ports::AgentProvider> {
+pub fn assemble_worker(
+    configured: bool,
+    admission: ToolAdmission,
+) -> Arc<dyn tramontana_core::ports::AgentProvider> {
     if configured {
-        Arc::new(tramontana_core::services::ReferenceWorker::new(
-            [
-                "builtin.fs.list",
-                "builtin.fs.read",
-                "builtin.fs.search",
-                "builtin.git.status",
-                "builtin.git.diff",
-                "builtin.git.log",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
-            tramontana_core::ports::ReadOnlyLimits::default(),
-        ))
+        let mut tools = vec![
+            "builtin.fs.list",
+            "builtin.fs.read",
+            "builtin.fs.search",
+            "builtin.git.status",
+            "builtin.git.diff",
+            "builtin.git.log",
+        ];
+        if admission.writes {
+            tools.extend([
+                "builtin.fs.create",
+                "builtin.fs.patch",
+                "builtin.fs.move",
+                "builtin.fs.delete",
+            ]);
+        }
+        if admission.recipes {
+            tools.push(tramontana_core::services::RECIPE_TOOL_ID);
+        }
+        Arc::new(
+            tramontana_core::services::ReferenceWorker::new(
+                tools.into_iter().map(str::to_owned).collect(),
+                tramontana_core::ports::ReadOnlyLimits::default(),
+            )
+            .admitting(admission),
+        )
     } else {
         Arc::new(tramontana_core::testing::FakeWorker::calling(
             "builtin.fs.list",
             serde_json::json!({"path":"."}),
         ))
     }
+}
+
+/// Where a profile keeps the files its tasks deleted, so a delete can be undone.
+///
+/// Beside the profile's database and named after it: one store per profile,
+/// outside every project. The suffix is appended rather than swapped for the
+/// extension, so no profile name can make the store and the database collide
+/// (ADR 0023).
+///
+/// ```
+/// let store = tramontana_composition::recovery_store(std::path::Path::new("data/p.sqlite"));
+/// assert_eq!(store, std::path::Path::new("data/p.sqlite.recovery"));
+/// let odd = tramontana_composition::recovery_store(std::path::Path::new("data/x.recovery"));
+/// assert_eq!(odd, std::path::Path::new("data/x.recovery.recovery"));
+/// ```
+#[must_use]
+pub fn recovery_store(profile: &std::path::Path) -> std::path::PathBuf {
+    let mut name = profile
+        .file_name()
+        .map_or_else(|| std::ffi::OsString::from("profile"), ToOwned::to_owned);
+    name.push(".recovery");
+    profile.with_file_name(name)
 }
 
 /// Whether to start runtimes this process would own.

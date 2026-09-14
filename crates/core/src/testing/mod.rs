@@ -36,6 +36,6 @@ pub use repositories::{
     InMemoryProjectRepository, InMemoryTaskRepository,
 };
 pub use secret::InMemorySecretVault;
-pub use tool::{FAKE_TOOL_ID, FakeToolProvider};
+pub use tool::{FAKE_TOOL_ID, FAKE_WRITE_TOOL_ID, FakeToolProvider, FakeWriteTool};
 pub use tool_plane::{AssembledPlane, assemble_tool_plane};
 pub use worker::{FAKE_AGENT_ID, FakeWorker};
