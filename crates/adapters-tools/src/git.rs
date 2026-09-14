@@ -182,9 +182,11 @@ fn arguments_for(tool_id: &str) -> Option<&'static [&'static str]> {
             "--branch",
             "--ignore-submodules=all",
         ]),
-        // `--no-color` keeps the output plain; `--no-ext-diff` and
-        // `--no-textconv` stop the repository's configuration from running
-        // an external diff program or a text converter.
+        // A per-file summary, then the patch itself: which files changed and
+        // by how much, then what changed in them. `--no-color` keeps the
+        // output plain; `--no-ext-diff` and `--no-textconv` stop the
+        // repository's configuration from running an external diff program
+        // or a text converter.
         DIFF => Some(&[
             "--no-pager",
             "diff",
@@ -193,6 +195,7 @@ fn arguments_for(tool_id: &str) -> Option<&'static [&'static str]> {
             "--no-textconv",
             "--ignore-submodules=all",
             "--stat",
+            "--patch",
         ]),
         LOG => Some(&[
             "--no-pager",
@@ -234,7 +237,13 @@ impl ToolProvider for GitTools {
     fn list_tools(&self) -> Vec<ToolDescriptor> {
         vec![
             descriptor(STATUS, "Git status", "Show the working tree status."),
-            descriptor(DIFF, "Git diff", "Show a summary of uncommitted changes."),
+            descriptor(
+                DIFF,
+                "Git diff",
+                "Show uncommitted changes to tracked files: which files changed and by how much, \
+                 then the patch itself. A new file Git does not track yet is listed by \
+                 builtin.git.status instead.",
+            ),
             descriptor(LOG, "Git log", "Show recent commits."),
         ]
     }
@@ -400,7 +409,8 @@ mod tests {
                     "--no-ext-diff",
                     "--no-textconv",
                     "--ignore-submodules=all",
-                    "--stat"
+                    "--stat",
+                    "--patch"
                 ][..]
             )
         );
