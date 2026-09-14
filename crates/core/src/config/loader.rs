@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use crate::config::front_matter::split_front_matter;
 use crate::contracts::{
     ConfigurationDiagnostic, ConfigurationKind, ConfigurationSource, DiagnosticSeverity,
-    EffectiveConfiguration, Timestamp,
+    EffectiveConfiguration, Recipe, Timestamp,
 };
 
 /// A file an adapter discovered, before it has been interpreted.
@@ -113,6 +113,7 @@ fn interpret(
         byte_count,
         redactions,
         unknown_keys: Vec::new(),
+        recipes: Vec::new(),
     };
 
     if raw.content.len() > MAX_SOURCE_BYTES {
@@ -156,6 +157,12 @@ fn interpret(
                 None
             };
             source.unknown_keys = matter.unknown_keys.clone();
+            source.recipes = recipes_for(
+                raw.kind,
+                &raw.relative_path,
+                matter.recipes.clone(),
+                diagnostics,
+            );
             // Absent `enabled` means enabled; the example files in this
             // repository set it to false deliberately.
             source.enabled = matter.enabled.unwrap_or(true);
@@ -444,6 +451,51 @@ fn depth(path: &str) -> usize {
     path.matches('/').count()
 }
 
+/// Keep the recipes a source may declare.
+///
+/// Only `.tramontana/project.md` declares recipes; anywhere else they are
+/// reported and ignored, so a skill or a nested `AGENTS.md` cannot slip a
+/// command in. A recipe whose text lost a credential to redaction is dropped
+/// with an error: a command must never carry one, and running what is left
+/// would run something nobody wrote (ADR 0025).
+fn recipes_for(
+    kind: ConfigurationKind,
+    path: &str,
+    recipes: Vec<Recipe>,
+    diagnostics: &mut Vec<ConfigurationDiagnostic>,
+) -> Vec<Recipe> {
+    if recipes.is_empty() {
+        return recipes;
+    }
+    if kind != ConfigurationKind::ProjectOverview {
+        diagnostics.push(warning(
+            path,
+            "recipes are read only from `.tramontana/project.md`; ignored here",
+        ));
+        return Vec::new();
+    }
+    recipes
+        .into_iter()
+        .filter(|recipe| {
+            let carried = recipe
+                .run
+                .iter()
+                .any(|argument| argument.contains(crate::services::PLACEHOLDER));
+            if carried {
+                diagnostics.push(error(
+                    path,
+                    format!(
+                        "recipe `{}` contains a credential, which a command must never carry; \
+                         it was not recorded",
+                        recipe.id
+                    ),
+                ));
+            }
+            !carried
+        })
+        .collect()
+}
+
 fn warning(path: &str, message: impl Into<String>) -> ConfigurationDiagnostic {
     ConfigurationDiagnostic {
         severity: DiagnosticSeverity::Warning,
@@ -478,6 +530,72 @@ mod tests {
 
     fn at() -> Timestamp {
         Timestamp::new("2026-01-01T00:00:00.000Z")
+    }
+
+    #[test]
+    fn a_project_overview_records_its_recipes() {
+        let resolved = resolve(
+            vec![raw(
+                ".tramontana/project.md",
+                ConfigurationKind::ProjectOverview,
+                "---\nid: p\nrecipes:\n  test: [cargo, test]\n---\n# P\n",
+            )],
+            at(),
+        );
+
+        let (recipe, source) = resolved.recipe("test").unwrap();
+        assert_eq!(recipe.run, vec!["cargo", "test"]);
+        assert_eq!(source.relative_path, ".tramontana/project.md");
+        assert!(
+            resolved.diagnostics.is_empty(),
+            "{:?}",
+            resolved.diagnostics
+        );
+    }
+
+    #[test]
+    fn recipes_declared_anywhere_else_are_ignored_with_a_warning() {
+        // A skill, an agent profile or a nested AGENTS.md must not be a way
+        // to slip a command into the project.
+        let resolved = resolve(
+            vec![raw(
+                ".tramontana/skills/review.md",
+                ConfigurationKind::Skill,
+                "---\nid: review\nrecipes:\n  test: [cargo, test]\n---\n# Review\n",
+            )],
+            at(),
+        );
+
+        assert!(resolved.sources[0].recipes.is_empty());
+        assert!(resolved.recipe("test").is_none());
+        assert!(resolved.diagnostics.iter().any(|d| {
+            d.severity == DiagnosticSeverity::Warning && d.message.contains("recipes are read only")
+        }));
+    }
+
+    #[test]
+    fn a_recipe_carrying_a_credential_is_dropped_and_its_neighbours_are_kept() {
+        // Synthetic token. Redaction happens before parsing, so what is left
+        // is not what anyone wrote, and must not run.
+        let resolved = resolve(
+            vec![raw(
+                ".tramontana/project.md",
+                ConfigurationKind::ProjectOverview,
+                "---\nid: p\nrecipes:\n  test: [cargo, test]\n  \
+                 deploy: [deploy, \"--token=ghp_0123456789abcdefghijklmnopqrstuvwxyz\"]\n---\n",
+            )],
+            at(),
+        );
+
+        assert!(resolved.recipe("test").is_some());
+        assert!(resolved.recipe("deploy").is_none());
+        assert!(resolved.diagnostics.iter().any(|d| {
+            d.severity == DiagnosticSeverity::Error && d.message.contains("recipe `deploy`")
+        }));
+        assert!(
+            resolved.sources[0].enabled,
+            "one bad recipe disables nothing else"
+        );
     }
 
     #[test]

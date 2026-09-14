@@ -283,6 +283,13 @@
           "format": "int64",
           "type": "integer"
         },
+        "recipes": {
+          "description": "Commands the project declares. Read from `.tramontana/project.md`\nonly; declaring one grants nothing (ADR 0025).",
+          "items": {
+            "$ref": "#/$defs/Recipe"
+          },
+          "type": "array"
+        },
         "redactions": {
           "description": "Stable codes for credentials removed from this source at ingestion.",
           "items": {
@@ -2611,6 +2618,27 @@
         "name",
         "roots",
         "createdAt"
+      ],
+      "type": "object"
+    },
+    "Recipe": {
+      "description": "A command a project declares for a person to approve running, such as its\ntest suite.\n\nAn argument list with the program first, never a command line: no shell\never sees it. Each run is its own approval, showing exactly this list\n(ADR 0025).",
+      "properties": {
+        "id": {
+          "description": "Stable id, unique within the project.",
+          "type": "string"
+        },
+        "run": {
+          "description": "The program, then its arguments.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "run"
       ],
       "type": "object"
     },

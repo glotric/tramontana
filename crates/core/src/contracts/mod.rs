@@ -40,7 +40,7 @@ pub use checkpoint::{
 pub(crate) use configuration::hex as configuration_hex;
 pub use configuration::{
     ConfigurationDiagnostic, ConfigurationKind, ConfigurationSource, DiagnosticSeverity,
-    EffectiveConfiguration,
+    EffectiveConfiguration, Recipe,
 };
 pub use context::{
     ContextCategory, ContextManifest, ContextSource, DestinationClass, content_hash,

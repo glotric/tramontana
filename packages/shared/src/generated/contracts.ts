@@ -235,6 +235,11 @@ export interface ConfigurationSource {
    */
   priority?: number;
   /**
+   * Commands the project declares. Read from `.tramontana/project.md`
+   * only; declaring one grants nothing (ADR 0025).
+   */
+  recipes?: Recipe[];
+  /**
    * Stable codes for credentials removed from this source at ingestion.
    */
   redactions?: string[];
@@ -1886,6 +1891,25 @@ export interface ProjectRecord {
    * Contract schema version.
    */
   schemaVersion: number;
+}
+
+/**
+ * A command a project declares for a person to approve running, such as its
+ * test suite.
+ *
+ * An argument list with the program first, never a command line: no shell
+ * ever sees it. Each run is its own approval, showing exactly this list
+ * (ADR 0025).
+ */
+export interface Recipe {
+  /**
+   * Stable id, unique within the project.
+   */
+  id: string;
+  /**
+   * The program, then its arguments.
+   */
+  run: string[];
 }
 
 /**
