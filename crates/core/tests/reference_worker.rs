@@ -117,7 +117,11 @@ impl ModelProvider for Model {
         if has_result
             && matches!(
                 self.scenario,
-                Scenario::Answer | Scenario::Write | Scenario::Recipe
+                Scenario::Answer
+                    | Scenario::Write
+                    | Scenario::Recipe
+                    | Scenario::Many
+                    | Scenario::UndeclaredRecipe
             )
         {
             sender
@@ -440,7 +444,6 @@ async fn malformed_unoffered_and_failed_model_turns_cannot_run_tools() {
     for (scenario, code) in [
         (Scenario::Invalid, ErrorCode::InvalidRequest),
         (Scenario::Unknown, ErrorCode::PermissionDenied),
-        (Scenario::Many, ErrorCode::LimitExceeded),
         (Scenario::Huge, ErrorCode::LimitExceeded),
         (Scenario::Length, ErrorCode::LimitExceeded),
         (Scenario::Failure, ErrorCode::ProviderUnavailable),
@@ -461,6 +464,40 @@ async fn malformed_unoffered_and_failed_model_turns_cannot_run_tools() {
                 .contains("fixture-secret")
         );
     }
+}
+
+#[tokio::test]
+async fn a_turn_asking_for_several_calls_runs_the_first_and_the_model_asks_again() {
+    // A real model batches the steps of a goal into one turn (ADR 0029).
+    let model = Arc::new(Model::new(Scenario::Many));
+    let tool = Arc::new(Tool::new());
+    let h = harness(model.clone(), tool.clone(), ReadOnlyLimits::default());
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start(&service, true).await;
+    let events = finished(&service, &task).await;
+
+    assert_eq!(
+        events.last().unwrap().kind,
+        TaskEventKind::TaskCompleted,
+        "{events:?}"
+    );
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1, "only the first ran");
+    assert!(
+        events.iter().any(|event| matches!(&event.payload,
+            EventPayload::DiagnosticRecorded { code, summary }
+                if code == "reference.callsNotRun" && summary.contains("2 tool calls"))),
+        "{events:?}"
+    );
+    // The model's next turn shows one call and its result, not two calls.
+    let requests = model.requests.lock().unwrap();
+    let calls = requests[1]
+        .request()
+        .messages
+        .iter()
+        .flat_map(|message| &message.parts)
+        .filter(|part| matches!(part, MessagePart::ToolCall { .. }))
+        .count();
+    assert_eq!(calls, 1);
 }
 
 #[tokio::test]
@@ -608,9 +645,19 @@ async fn silent_tools_obey_timeouts_and_explicit_cancellation() {
             assert_eq!(events.last().unwrap().kind, TaskEventKind::TaskCancelled);
         } else {
             // Stopped by the broker's backstop, not the turn's deadline,
-            // which bounds only the model call (ADR 0027).
-            fail(&events, ErrorCode::Timeout);
+            // which bounds only the model call (ADR 0027). The model is told,
+            // as the call's result, and answers (ADR 0029).
             assert!(entered.elapsed() >= TOOL_RUN_LIMIT);
+            assert!(
+                events.iter().any(|event| matches!(&event.payload,
+                    EventPayload::ToolFailed { error, .. } if error.code == ErrorCode::Timeout)),
+                "{events:?}"
+            );
+            assert_eq!(
+                events.last().unwrap().kind,
+                TaskEventKind::TaskCompleted,
+                "{events:?}"
+            );
         }
         assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
     }
@@ -1016,17 +1063,44 @@ async fn a_recipe_the_project_does_not_declare_is_refused_before_anyone_is_asked
     let recipe = Arc::new(FakeRecipe::new());
     let approver = Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce));
     let h = with_recipes(
-        model,
+        model.clone(),
         recipe.clone(),
         ToolAdmission::READ_ONLY.with_recipes(),
         approver.clone(),
     );
     let service = h.service(RoutingMode::LocalOnly);
     let task = start_with_recipes(&service).await;
+    let events = finished(&service, &task).await;
 
-    fail(&finished(&service, &task).await, ErrorCode::NotFound);
+    // Nobody was asked and nothing ran.
     assert!(approver.asked().is_empty());
     assert!(recipe.received().is_empty());
+    // The model was told why, as the call's result, and answered instead of
+    // the task ending (ADR 0029).
+    assert_eq!(
+        events.last().unwrap().kind,
+        TaskEventKind::TaskCompleted,
+        "{events:?}"
+    );
+    let requests = model.requests.lock().unwrap();
+    let told = requests[1]
+        .request()
+        .messages
+        .iter()
+        .flat_map(|message| &message.parts)
+        .find_map(|part| match part {
+            MessagePart::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the model was not shown the refused call's result"));
+    assert_eq!(told["status"], "failed", "{told}");
+    assert_eq!(told["errorCode"], "notFound", "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty()),
+        "{told}"
+    );
 }
 
 #[tokio::test]

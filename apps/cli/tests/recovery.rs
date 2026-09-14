@@ -361,12 +361,23 @@ fn a_held_write_is_resumed_once_without_repeating_the_completed_one(live: bool) 
         started.len(),
         "a write was started twice: {started:?}"
     );
-    assert!(f.root.join("notes.txt").exists());
-    assert_eq!(
-        std::fs::read_to_string(f.root.join("greeting.txt")).unwrap(),
-        "Hello, Tramontana\n"
-    );
-    if !live {
+    if live {
+        // Whether the model got the edits right is a question about the
+        // model, not about recovery. Say what it did, for the record.
+        let file = |name: &str| {
+            std::fs::read_to_string(f.root.join(name)).unwrap_or_else(|_| "(absent)".to_owned())
+        };
+        eprintln!(
+            "What the model did: {}\ngreeting.txt: {:?}\nnotes.txt: {:?}",
+            describe(&events),
+            file("greeting.txt"),
+            file("notes.txt")
+        );
+    } else {
+        assert_eq!(
+            std::fs::read_to_string(f.root.join("greeting.txt")).unwrap(),
+            "Hello, Tramontana\n"
+        );
         assert_eq!(started.len(), 2, "{started:?}");
         assert_eq!(
             std::fs::read_to_string(f.root.join("notes.txt")).unwrap(),
