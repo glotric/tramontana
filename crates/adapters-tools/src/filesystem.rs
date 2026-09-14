@@ -8,7 +8,7 @@ use tramontana_core::ports::{ToolOutcome, ToolProvider};
 
 use crate::identity::FileIdentity;
 use crate::limits::{ReadLimits, looks_binary};
-use crate::scope::{primary_root, relative_to_grant, resolve_within_grant};
+use crate::scope::{primary_root, relative_to_grant, resolve_within_grant, same_root};
 
 /// Read-only filesystem inspection, scoped to a project's approved roots.
 #[derive(Debug, Clone)]
@@ -44,6 +44,7 @@ pub(crate) const READ: &str = "builtin.fs.read";
 pub(crate) const SEARCH: &str = "builtin.fs.search";
 pub(crate) const CREATE: &str = "builtin.fs.create";
 pub(crate) const PATCH: &str = "builtin.fs.patch";
+pub(crate) const MOVE: &str = "builtin.fs.move";
 
 /// The largest file the patch tool will edit, before or after the edit.
 const MAX_PATCH_BYTES: usize = 1024 * 1024;
@@ -61,6 +62,12 @@ const MAX_REPLAY_CANDIDATES: usize = 64;
 /// A model's arguments are already capped far below this by the broker; the
 /// bound is for every other caller.
 const MAX_CREATE_BYTES: usize = 1024 * 1024;
+
+/// The largest file the move tool will move.
+///
+/// Proving that the file is the one the caller read means hashing it, and so
+/// reading it; this bounds that read.
+const MAX_MOVE_BYTES: u64 = 64 * 1024 * 1024;
 
 fn invalid(request: &AuthorizedToolRequest, message: impl Into<String>) -> ErrorEnvelope {
     ErrorEnvelope::new(
@@ -204,6 +211,24 @@ impl ToolProvider for FilesystemTools {
                     "additionalProperties": false,
                 }),
             ),
+            write_descriptor(
+                MOVE,
+                "Move file",
+                "Move or rename a file within one project folder. `expectedHash` must be the \
+                 `contentHash` a read returned for the file: the move is refused if the file has \
+                 changed since. Never replaces an existing file, and the destination's directory \
+                 must already exist.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "from": { "type": "string" },
+                        "to": { "type": "string" },
+                        "expectedHash": { "type": "string" },
+                    },
+                    "required": ["from", "to", "expectedHash"],
+                    "additionalProperties": false,
+                }),
+            ),
         ]
     }
 
@@ -225,6 +250,7 @@ impl ToolProvider for FilesystemTools {
                 SEARCH => self.search(&request),
                 CREATE => self.create(&request, &cancel),
                 PATCH => self.patch(&request, &cancel),
+                MOVE => self.move_file(&request, &cancel),
                 other => Err(invalid(&request, format!("unknown tool {other}"))),
             }
         };
@@ -486,8 +512,9 @@ fn walk(
 ///
 /// [`ErrorCode::NotFound`] when the file cannot be opened, and
 /// [`ErrorCode::PermissionDenied`] when the checks disagree.
-fn read_verified(
+fn read_verified_at(
     request: &AuthorizedToolRequest,
+    relative: &str,
     path: &std::path::Path,
 ) -> Result<(Vec<u8>, FileIdentity), ErrorEnvelope> {
     use std::io::Read as _;
@@ -517,7 +544,7 @@ fn read_verified(
 
     // Re-check containment against the path as it resolves *now*, not as it
     // resolved when the argument was validated.
-    resolve_within_grant(request, &request_path(request)?)?;
+    resolve_within_grant(request, relative)?;
 
     let Some(current) = FileIdentity::of_path(path) else {
         return Err(denied("the file disappeared while it was being opened"));
@@ -538,6 +565,14 @@ fn read_verified(
         )
     })?;
     Ok((bytes, held))
+}
+
+/// [`read_verified_at`], for the file the `path` argument names.
+fn read_verified(
+    request: &AuthorizedToolRequest,
+    path: &std::path::Path,
+) -> Result<(Vec<u8>, FileIdentity), ErrorEnvelope> {
+    read_verified_at(request, &request_path(request)?, path)
 }
 
 /// [`read_verified`], for callers that need only the bytes.
@@ -802,11 +837,7 @@ impl FilesystemTools {
         let expected = argument(request, "expectedHash")?;
         let old_text = argument(request, "oldText")?;
         let new_text = argument(request, "newText")?;
-        if expected.len() != 64
-            || !expected
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
+        if !valid_hash(expected) {
             return Err(invalid(
                 request,
                 "`expectedHash` must be the 64-character lowercase `contentHash` a read returned",
@@ -1037,5 +1068,293 @@ fn already_applied(current: &str, old_text: &str, new_text: &str, expected: &str
         );
         content_hash_bytes(original.as_bytes()) == expected
             && original.matches(old_text).count() == 1
+    })
+}
+
+/// Whether `value` has the shape of a `contentHash`: 64 lowercase hex digits.
+fn valid_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+impl FilesystemTools {
+    /// Move or rename one regular file within one approved root, never
+    /// replacing anything.
+    ///
+    /// The file is hard-linked under its new name and only then unlinked from
+    /// its old one. A link fails if the new name exists, so a move cannot
+    /// overwrite a file, and the file always has a name: an interruption leaves
+    /// it under the old one, the new one, or both — never neither (ADR 0022).
+    ///
+    /// The precondition is the file's hash as the caller read it, as for a
+    /// patch. It is also what makes a replay provable: with the old name gone
+    /// and the new one holding exactly those bytes, the step was already
+    /// applied and is reported with no side effect. A file found under both
+    /// names is a conflict rather than something to finish, because where a
+    /// file system ignores letter case, two spellings can reach one entry, and
+    /// removing the "old" one would remove the file.
+    fn move_file(
+        &self,
+        request: &AuthorizedToolRequest,
+        cancel: &CancellationToken,
+    ) -> Result<ToolOutcome, ErrorEnvelope> {
+        let correlation = CorrelationId::new(request.invocation_id().as_str());
+        let fail = |code: ErrorCode, message: String| {
+            ErrorEnvelope::new(code, message, correlation.clone())
+        };
+
+        let from = argument(request, "from")?;
+        let to = argument(request, "to")?;
+        let expected = argument(request, "expectedHash")?;
+        if !valid_hash(expected) {
+            return Err(invalid(
+                request,
+                "`expectedHash` must be the 64-character lowercase `contentHash` a read returned",
+            ));
+        }
+
+        let source = resolve_within_grant(request, from)?;
+        let target = resolve_within_grant(request, to)?;
+        if source.file_name().is_none() || target.file_name().is_none() {
+            return Err(invalid(request, "`from` and `to` must each name a file"));
+        }
+        let from_display = relative_to_grant(request, &source);
+        let to_display = relative_to_grant(request, &target);
+        // Within one approved root (`BUILD_ORDER.md` §16): a move is never a
+        // way to carry a file from one approved folder into another.
+        if !same_root(request, &source, &target) {
+            return Err(fail(
+                ErrorCode::PermissionDenied,
+                format!(
+                    "{from_display} and {to_display} are in different approved folders; a move \
+                     stays within one"
+                ),
+            ));
+        }
+
+        let metadata = match std::fs::symlink_metadata(&source) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return moved_already(request, to, &target, &from_display, &to_display, expected);
+            }
+            Err(error) => {
+                return Err(fail(
+                    ErrorCode::ToolFailed,
+                    format!("could not inspect {from_display}: {}", error.kind()),
+                ));
+            }
+        };
+        // Never a symlink or a directory: only the file itself is moved.
+        if !metadata.file_type().is_file() {
+            return Err(fail(
+                ErrorCode::Conflict,
+                format!("{from_display} is not a regular file; only files are moved"),
+            ));
+        }
+        if metadata.len() > MAX_MOVE_BYTES {
+            return Err(fail(
+                ErrorCode::LimitExceeded,
+                format!("{from_display} is larger than {MAX_MOVE_BYTES} bytes"),
+            ));
+        }
+        let (bytes, held) = read_verified_at(request, from, &source)?;
+        if content_hash_bytes(&bytes) != expected {
+            return Err(fail(
+                ErrorCode::Conflict,
+                format!(
+                    "{from_display} has changed since it was read; read it again before moving it"
+                ),
+            ));
+        }
+        drop(bytes);
+
+        let parent = target
+            .parent()
+            .ok_or_else(|| invalid(request, "`to` must name a file"))?;
+        // The directory must already exist, as for a create.
+        if !parent.is_dir() {
+            return Err(fail(
+                ErrorCode::NotFound,
+                format!("the directory for {to_display} does not exist"),
+            ));
+        }
+        // Looked at first only for a clearer answer. The link below is what
+        // actually refuses to replace, including a file created meanwhile.
+        if std::fs::symlink_metadata(&target).is_ok() {
+            return Err(occupied(
+                request,
+                &target,
+                &held,
+                &from_display,
+                &to_display,
+            ));
+        }
+
+        // The last point at which cancelling leaves nothing behind.
+        if cancel.is_cancelled() {
+            return Err(cancelled(request));
+        }
+
+        match std::fs::hard_link(&source, &target) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(occupied(
+                    request,
+                    &target,
+                    &held,
+                    &from_display,
+                    &to_display,
+                ));
+            }
+            Err(error) => {
+                return Err(fail(
+                    ErrorCode::ToolFailed,
+                    format!("could not move {from_display}: {}", error.kind()),
+                ));
+            }
+        }
+
+        // After linking (`SECURITY_AND_PERMISSIONS.md` §5): the new name must
+        // resolve inside the grant, to the very file that was read. A link
+        // that proves to be ours is taken back; anything else is left for a
+        // person, since removing it could remove someone else's file.
+        let inside = resolve_within_grant(request, to).is_ok();
+        let ours = FileIdentity::of_path(&target).is_some_and(|now| now == held);
+        if !inside || !ours {
+            if ours {
+                let _ = std::fs::remove_file(&target);
+            }
+            return Err(fail(
+                ErrorCode::PermissionDenied,
+                format!(
+                    "{to_display} could not be verified after linking; {from_display} was not \
+                     removed"
+                ),
+            ));
+        }
+
+        // Before unlinking: the old name must still resolve inside the grant,
+        // to the same file. If it names something else now, removing it would
+        // delete a file nobody asked to move.
+        let unchanged = resolve_within_grant(request, from).is_ok()
+            && FileIdentity::of_path(&source).is_some_and(|now| now == held);
+        // Released before the removal, which Windows may refuse while the
+        // file is held open.
+        drop(held);
+        if !unchanged {
+            return Err(fail(
+                ErrorCode::Conflict,
+                format!(
+                    "{from_display} changed during the move; {to_display} now holds the file that \
+                     was read, and {from_display} was left alone"
+                ),
+            ));
+        }
+        if let Err(error) = std::fs::remove_file(&source) {
+            return Err(fail(
+                ErrorCode::ToolFailed,
+                format!(
+                    "{to_display} now holds the file, but {from_display} could not be removed: {}",
+                    error.kind()
+                ),
+            ));
+        }
+        sync_directory(parent);
+        if let Some(previous) = source.parent() {
+            sync_directory(previous);
+        }
+
+        Ok(ToolOutcome {
+            content: serde_json::json!({
+                "from": from_display,
+                "to": to_display,
+                "contentHash": expected,
+                "alreadyApplied": false,
+            }),
+            display_summary: format!("Moved {from_display} to {to_display}"),
+            side_effect: SideEffect::LocalReversible,
+            truncated: false,
+        })
+    }
+}
+
+/// Refuse a destination that already exists, saying which refusal it is.
+///
+/// The same file under both names is either an interrupted move or two
+/// spellings of one entry, and the two cannot be told apart portably, so
+/// neither is "finished" by removing a name.
+fn occupied(
+    request: &AuthorizedToolRequest,
+    target: &std::path::Path,
+    held: &FileIdentity,
+    from_display: &str,
+    to_display: &str,
+) -> ErrorEnvelope {
+    let same = FileIdentity::of_path(target).is_some_and(|now| now == *held);
+    ErrorEnvelope::new(
+        ErrorCode::Conflict,
+        if same {
+            format!(
+                "{to_display} already names the same file as {from_display}. Either both names \
+                 exist, as after an interrupted move, and removing one finishes or undoes it; or \
+                 this file system treats the two names as one, as it does for names differing \
+                 only in letter case. Nothing was changed"
+            )
+        } else {
+            format!("{to_display} already exists; a move never replaces a file")
+        },
+        CorrelationId::new(request.invocation_id().as_str()),
+    )
+}
+
+/// Judge a move whose source is gone.
+///
+/// Already applied only when the destination is a regular file holding exactly
+/// the bytes the caller read. A destination holding anything else was not made
+/// by this step, and saying otherwise would be a claim nobody verified.
+fn moved_already(
+    request: &AuthorizedToolRequest,
+    to: &str,
+    target: &std::path::Path,
+    from_display: &str,
+    to_display: &str,
+    expected: &str,
+) -> Result<ToolOutcome, ErrorEnvelope> {
+    let correlation = CorrelationId::new(request.invocation_id().as_str());
+    let Ok(metadata) = std::fs::symlink_metadata(target) else {
+        return Err(ErrorEnvelope::new(
+            ErrorCode::NotFound,
+            format!("{from_display} does not exist"),
+            correlation,
+        ));
+    };
+    let conflict = || {
+        ErrorEnvelope::new(
+            ErrorCode::Conflict,
+            format!(
+                "{from_display} does not exist, and {to_display} is not the file that was read"
+            ),
+            correlation.clone(),
+        )
+    };
+    if !metadata.file_type().is_file() || metadata.len() > MAX_MOVE_BYTES {
+        return Err(conflict());
+    }
+    let (bytes, _) = read_verified_at(request, to, target)?;
+    if content_hash_bytes(&bytes) != expected {
+        return Err(conflict());
+    }
+    Ok(ToolOutcome {
+        content: serde_json::json!({
+            "from": from_display,
+            "to": to_display,
+            "contentHash": expected,
+            "alreadyApplied": true,
+        }),
+        display_summary: format!("{to_display} already holds this file; nothing changed"),
+        side_effect: SideEffect::None,
+        truncated: false,
     })
 }

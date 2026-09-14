@@ -47,7 +47,7 @@ pub fn assemble_worker(
             "builtin.git.log",
         ];
         if admission == ToolAdmission::ReadWrite {
-            tools.extend(["builtin.fs.create", "builtin.fs.patch"]);
+            tools.extend(["builtin.fs.create", "builtin.fs.patch", "builtin.fs.move"]);
         }
         Arc::new(
             tramontana_core::services::ReferenceWorker::new(
