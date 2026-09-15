@@ -2898,6 +2898,56 @@
         }
       ]
     },
+    "ProjectGrant": {
+      "description": "A persistent, revocable grant.",
+      "properties": {
+        "capability": {
+          "$ref": "#/$defs/Capability",
+          "description": "What it permits."
+        },
+        "grantId": {
+          "description": "Stable identifier, so it can be shown and revoked.",
+          "type": "string"
+        },
+        "grantedAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it was granted."
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId",
+          "description": "The project it belongs to."
+        },
+        "riskCeiling": {
+          "$ref": "#/$defs/RiskClass",
+          "description": "The highest risk it covers. A grant never escalates."
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scope": {
+          "$ref": "#/$defs/CapabilityScope",
+          "description": "What it is limited to."
+        },
+        "toolId": {
+          "description": "The exact tool it permits.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "grantId",
+        "projectId",
+        "capability",
+        "toolId",
+        "scope",
+        "riskCeiling",
+        "grantedAt"
+      ],
+      "type": "object"
+    },
     "ProjectId": {
       "description": "A project: one or more user-approved roots and the work done against them.",
       "type": "string"

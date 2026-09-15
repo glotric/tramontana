@@ -32,6 +32,7 @@ const resolveApproval = vi.hoisted(() => vi.fn());
 const projectChanges = vi.hoisted(() => vi.fn());
 const listConfiguredEndpoints = vi.hoisted(() => vi.fn());
 const listModelEndpoints = vi.hoisted(() => vi.fn());
+const listProjectGrants = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -53,6 +54,7 @@ vi.mock("./core.js", async () => {
     projectChanges,
     listConfiguredEndpoints,
     listModelEndpoints,
+    listProjectGrants,
   };
 });
 
@@ -176,9 +178,11 @@ describe("M2 durable desktop surface", () => {
       projectChanges,
       listConfiguredEndpoints,
       listModelEndpoints,
+      listProjectGrants,
     ]) {
       mock.mockReset();
     }
+    listProjectGrants.mockResolvedValue([]);
     listConfiguredEndpoints.mockResolvedValue([]);
     listModelEndpoints.mockResolvedValue([]);
     projectChanges.mockResolvedValue({ schemaVersion: 1, status: "", diff: "", truncated: false });
@@ -470,6 +474,43 @@ describe("M2 durable desktop surface", () => {
 
     await waitFor(() => {
       expect(projectChanges).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("lists each configuration diagnostic with its severity, file and message", async () => {
+    inspectProject.mockResolvedValue({
+      schemaVersion: 1,
+      project,
+      configuration: {
+        ...configuration,
+        diagnostics: [
+          {
+            relativePath: ".tramontana/project.md",
+            message: "front matter is not valid YAML",
+            severity: "error",
+          },
+        ],
+      },
+    });
+    await renderLoaded();
+
+    const list = await screen.findByRole("list", { name: "Configuration diagnostics" });
+    expect(within(list).getByRole("listitem")).toHaveTextContent(
+      "Error in .tramontana/project.md: front matter is not valid YAML",
+    );
+  });
+
+  it("reads the standing permissions again once an approval is answered", async () => {
+    listPendingApprovals.mockResolvedValue([approval("approval-1")]);
+    const user = userEvent.setup();
+    await renderLoaded();
+    await waitFor(() => {
+      expect(listProjectGrants).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Allow once" }));
+    await waitFor(() => {
+      expect(listProjectGrants).toHaveBeenCalledTimes(2);
     });
   });
 

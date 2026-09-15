@@ -16,6 +16,7 @@ import { ApprovalCard } from "./ApprovalCard.js";
 import { BundlesPanel } from "./BundlesPanel.js";
 import { buildCards, describeHeader, MODE_LABEL } from "./cards.js";
 import { ChangesPanel } from "./ChangesPanel.js";
+import { GrantsPanel } from "./GrantsPanel.js";
 import { ModelsView } from "./ModelsView.js";
 import { TaskHeader } from "./TaskHeader.js";
 import { CheckpointPanel } from "./CheckpointPanel.js";
@@ -277,6 +278,8 @@ export function App(): React.JSX.Element {
 
   const onApprovalAnswered = useCallback((approvalId: string) => {
     setApprovals((current) => current.filter((waiting) => waiting.approvalId !== approvalId));
+    // An answer can grant a standing permission, which the inspector lists.
+    setRevision((current) => current + 1);
   }, []);
 
   const selectedConversation = useMemo(
@@ -780,6 +783,19 @@ export function App(): React.JSX.Element {
                 <dd>{configuration.diagnostics.length}</dd>
               </div>
             </dl>
+            {configuration.diagnostics.length > 0 && (
+              <ul className="diagnostic-list" aria-label="Configuration diagnostics">
+                {configuration.diagnostics.map((diagnostic, index) => (
+                  <li
+                    key={`${diagnostic.relativePath}:${index}`}
+                    data-severity={diagnostic.severity}
+                  >
+                    {diagnostic.severity === "error" ? "Error" : "Warning"} in{" "}
+                    <code>{diagnostic.relativePath}</code>: {diagnostic.message}
+                  </li>
+                ))}
+              </ul>
+            )}
             <ol className="source-list">
               {configuration.sources.map((source, index) => (
                 <li key={source.sourceId} data-active={source.active}>
@@ -803,6 +819,7 @@ export function App(): React.JSX.Element {
         {inspection !== undefined && (
           <>
             <ChangesPanel projectId={inspection.project.projectId} revision={revision} />
+            <GrantsPanel projectId={inspection.project.projectId} revision={revision} />
             <BundlesPanel
               projectId={inspection.project.projectId}
               taskId={selectedTaskId}

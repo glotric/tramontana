@@ -833,6 +833,58 @@ button:disabled {
   color: var(--ink-faint);
 }
 
+/* Standing permissions, and the configuration's own diagnostics. */
+.grants {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.grant-list {
+  display: grid;
+  margin: 8px 0 0;
+  padding: 0;
+  gap: 8px;
+  list-style: none;
+}
+
+.grant-list li {
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  font-size: 12px;
+}
+
+.grant-list p {
+  margin: 0 0 6px;
+}
+
+.grant-meta {
+  color: var(--ink-faint);
+}
+
+.grant-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.diagnostic-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.diagnostic-list li + li {
+  margin-top: 4px;
+}
+
+.diagnostic-list [data-severity="error"] {
+  color: var(--danger);
+  font-weight: 600;
+}
+
 /* Export and import. The options say what they would release, in words. */
 .bundles {
   margin-top: 16px;

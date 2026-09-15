@@ -23,11 +23,12 @@ use tramontana_core::contracts::{
     ErrorCode, ErrorEnvelope, EventEnvelope, EventPayload, ExecutionLocation, ExportManifest,
     ExportOptions, ExportedConfiguration, HandoffBundle, HandoffEntry, ModelDescriptor, ModelEvent,
     ModelLimits, ModelRequest, NormalizedMessage, NormalizedToolDefinition, Omission,
-    OmissionCategory, PendingAction, PendingActionKind, ProjectRecord, ReleaseAuthorization,
-    ReleaseExclusion, ReleasedCategory, ReplaySafety, ResponseFormat, ResumeEligibility,
-    ResumeMode, RiskClass, RoutedModel, RoutingDecision, RoutingFallback, RoutingMode, SecretRef,
-    SecretStore, SideEffect, StopReason, StreamFrame, TaskCheckpoint, TaskEventKind, TaskRecord,
-    TaskSnapshot, TaskState, TaskUpdate, ToolDescriptor, Usage, Visibility,
+    OmissionCategory, PendingAction, PendingActionKind, ProjectGrant, ProjectRecord,
+    ReleaseAuthorization, ReleaseExclusion, ReleasedCategory, ReplaySafety, ResponseFormat,
+    ResumeEligibility, ResumeMode, RiskClass, RoutedModel, RoutingDecision, RoutingFallback,
+    RoutingMode, SecretRef, SecretStore, SideEffect, StopReason, StreamFrame, TaskCheckpoint,
+    TaskEventKind, TaskRecord, TaskSnapshot, TaskState, TaskUpdate, ToolDescriptor, Usage,
+    Visibility,
 };
 
 /// Filename of the single bundled contract schema.
@@ -160,6 +161,8 @@ fn emit_schema(dir: &Path) -> Result<PathBuf> {
     register::<ApprovalDecisionKind>(&mut generator);
     register::<ApprovalDetail>(&mut generator);
     register::<ApprovalRequest>(&mut generator);
+    // A standing permission, which the desktop lists and revokes.
+    register::<ProjectGrant>(&mut generator);
 
     let mut defs = generator.take_definitions(true);
     for schema in defs.values_mut() {

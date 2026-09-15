@@ -9,6 +9,7 @@ import type {
   ErrorEnvelope,
   EventEnvelope,
   ExportManifest,
+  ProjectGrant,
   ProjectRecord,
   RoutingMode,
   TaskCheckpoint,
@@ -96,6 +97,16 @@ export interface ProjectChanges {
  */
 export async function projectChanges(projectId: string): Promise<ProjectChanges> {
   return invoke<ProjectChanges>("project_changes", { projectId });
+}
+
+/** The standing permissions a project holds, so a person can see what they allowed. */
+export async function listProjectGrants(projectId: string): Promise<readonly ProjectGrant[]> {
+  return invoke<ProjectGrant[]>("list_project_grants", { projectId });
+}
+
+/** Revoke one. A later request it would have covered is no longer covered by it. */
+export async function revokeProjectGrant(grantId: string): Promise<void> {
+  return invoke("revoke_project_grant", { grantId });
 }
 
 /** Whether a credential is stored, never its value. */

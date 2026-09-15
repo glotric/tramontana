@@ -24,8 +24,10 @@ const {
   inspectBundle,
   listConfiguredEndpoints,
   listModelEndpoints,
+  listProjectGrants,
   removeEndpoint,
   restartApplication,
+  revokeProjectGrant,
   setEndpointEnabled,
   setEndpointToolCalls,
   storeCredential,
@@ -81,6 +83,22 @@ describe("approval IPC", () => {
 
     stop();
     expect(unlisten).toHaveBeenCalledOnce();
+  });
+});
+
+describe("standing permissions", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  it("lists a project's grants and revokes one by identifier", async () => {
+    invoke.mockResolvedValue([]);
+    await listProjectGrants("project-1");
+    expect(invoke).toHaveBeenLastCalledWith("list_project_grants", { projectId: "project-1" });
+
+    invoke.mockResolvedValue(undefined);
+    await revokeProjectGrant("grant-1");
+    expect(invoke).toHaveBeenLastCalledWith("revoke_project_grant", { grantId: "grant-1" });
   });
 });
 

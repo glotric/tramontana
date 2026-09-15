@@ -2106,6 +2106,41 @@ export type PermissionOrigin =
     };
 
 /**
+ * A persistent, revocable grant.
+ */
+export interface ProjectGrant {
+  /**
+   * What it permits.
+   */
+  capability: string;
+  /**
+   * Stable identifier, so it can be shown and revoked.
+   */
+  grantId: string;
+  /**
+   * When it was granted.
+   */
+  grantedAt: string;
+  /**
+   * The project it belongs to.
+   */
+  projectId: string;
+  /**
+   * The highest risk it covers. A grant never escalates.
+   */
+  riskCeiling: "read" | "modify" | "dangerous";
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  scope: CapabilityScope;
+  /**
+   * The exact tool it permits.
+   */
+  toolId: string;
+}
+
+/**
  * A project: one or more user-approved roots and the work done against them.
  */
 export type ProjectId = string;
