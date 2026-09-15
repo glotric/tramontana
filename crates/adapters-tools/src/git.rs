@@ -333,7 +333,21 @@ impl ToolProvider for GitTools {
 
         if !output.succeeded() {
             // stderr is bounded and reported as a category, not echoed: it can
-            // carry absolute paths and remote URLs.
+            // carry absolute paths and remote URLs. One category is named,
+            // because a person can act on it: the folder is not a repository
+            // at all. git runs with no locale set, so its words are English.
+            const NOT_A_REPOSITORY: &[u8] = b"not a git repository";
+            if output
+                .stderr
+                .kept
+                .windows(NOT_A_REPOSITORY.len())
+                .any(|window| window == NOT_A_REPOSITORY)
+            {
+                return Err(fail(
+                    ErrorCode::ToolFailed,
+                    "This folder is not a Git repository".to_owned(),
+                ));
+            }
             return Err(fail(
                 ErrorCode::ToolFailed,
                 format!(

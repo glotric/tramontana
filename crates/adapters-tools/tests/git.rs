@@ -94,6 +94,23 @@ fn text(outcome: &ToolOutcome) -> &str {
 }
 
 #[tokio::test]
+async fn a_folder_that_is_not_a_repository_is_called_that_not_given_an_exit_code() {
+    let temp = tempfile::tempdir().unwrap();
+    let folder = temp.path().join("not-a-repository");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    let error = GitTools::new()
+        .invoke(
+            authorize("builtin.git.status", &folder).await,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.message, "This folder is not a Git repository");
+}
+
+#[tokio::test]
 async fn the_diff_shows_the_patch_after_the_summary() {
     let (_temp, repo) = repository("one\ntwo\nthree\n");
     std::fs::write(repo.join("tracked.txt"), "one\n2\nthree\n").unwrap();

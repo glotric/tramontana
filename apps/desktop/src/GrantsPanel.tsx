@@ -83,6 +83,12 @@ export function GrantsPanel({ projectId, revision }: GrantsPanelProps): React.JS
   return (
     <section className="grants" aria-labelledby="grants-heading">
       <h2 id="grants-heading">Standing permissions</h2>
+      {grants !== undefined && grants.length > 0 && (
+        // Held in memory, not in the profile, and nothing else says so.
+        <p className="grant-meta">
+          These last until Tramontana quits; after that, each request is asked about again.
+        </p>
+      )}
 
       {settled?.failure !== undefined && (
         <p className="notice notice--error" role="alert">

@@ -117,6 +117,24 @@ describe("the Bundles panel", () => {
     expect(screen.queryByRole("button", { name: "Export this task…" })).not.toBeInTheDocument();
   });
 
+  it("says a bundle is already in this profile, not which record clashed", async () => {
+    const user = userEvent.setup();
+    importStagedBundle.mockRejectedValueOnce({
+      code: "conflict",
+      message: "project project-1 conflicts with an existing record",
+      retryable: false,
+    });
+    render(<BundlesPanel projectId={undefined} taskId={undefined} onImported={() => undefined} />);
+
+    await user.click(screen.getByRole("button", { name: "Import a bundle…" }));
+    await screen.findByRole("group", { name: "Bundle to import" });
+    await user.click(screen.getByRole("button", { name: "Import into this profile" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("This profile already holds this bundle's records");
+    expect(alert).not.toHaveTextContent("project-1");
+  });
+
   it("imports nothing when the person cancels, and says why a bundle was refused", async () => {
     const user = userEvent.setup();
     render(<BundlesPanel projectId="project-1" taskId={undefined} onImported={() => undefined} />);

@@ -30,6 +30,14 @@ function leftOut(manifest: ExportManifest): string {
   return parts.length === 0 ? "Nothing was left out." : `Left out: ${parts.join(", ")}.`;
 }
 
+/**
+ * An import that met a record this profile already holds. The core names the
+ * record by its identifier; what a person needs is what that means.
+ */
+const ALREADY_HERE =
+  "This profile already holds this bundle's records, so the import stopped. A bundle can be " +
+  "imported into a profile once; to look at it separately, start Tramontana on another profile.";
+
 function describeCounts(counts: BundleCounts): string {
   return (
     `${counts.tasks} task(s), ${counts.events} event(s), ` +
@@ -62,13 +70,22 @@ export function BundlesPanel({
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | undefined>();
 
-  const run = async (action: () => Promise<void>, fallback: string): Promise<void> => {
+  const run = async (
+    action: () => Promise<void>,
+    fallback: string,
+    conflict?: string,
+  ): Promise<void> => {
     setBusy(true);
     setFailure(undefined);
     try {
       await action();
     } catch (error: unknown) {
-      setFailure(asErrorEnvelope(error)?.message ?? fallback);
+      const envelope = asErrorEnvelope(error);
+      setFailure(
+        envelope?.code === "conflict" && conflict !== undefined
+          ? conflict
+          : (envelope?.message ?? fallback),
+      );
     } finally {
       setBusy(false);
     }
@@ -93,12 +110,16 @@ export function BundlesPanel({
 
   const onImport = (): void => {
     if (staged === undefined) return;
-    void run(async () => {
-      const report = await importStagedBundle(staged.stagingId);
-      setStaged(undefined);
-      setImported(report);
-      onImported();
-    }, "Could not import the bundle.");
+    void run(
+      async () => {
+        const report = await importStagedBundle(staged.stagingId);
+        setStaged(undefined);
+        setImported(report);
+        onImported();
+      },
+      "Could not import the bundle.",
+      ALREADY_HERE,
+    );
   };
 
   return (

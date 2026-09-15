@@ -521,6 +521,17 @@ async fn each_cumulative_budget_stops_before_an_extra_dispatch() {
         let task = start(&service, true).await;
         let events = finished(&service, &task).await;
         fail(&events, ErrorCode::LimitExceeded);
+        // Said in words a person can act on, whatever the task was allowed
+        // to do: the worker is not always a read-only one.
+        assert!(
+            matches!(
+                &events.last().unwrap().payload,
+                EventPayload::TaskFailed { error }
+                    if error.message.starts_with("The worker used up its budget")
+            ),
+            "{dimension}: {:?}",
+            events.last().map(|event| &event.payload)
+        );
         assert!(model.requests.lock().unwrap().len() <= 1);
         assert!(tool.calls.load(Ordering::SeqCst) <= 1);
     }

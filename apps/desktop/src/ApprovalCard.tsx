@@ -150,6 +150,13 @@ export function ApprovalCard({
         ))}
       </div>
 
+      {request.eligibleDecisions.includes("allowProject") && (
+        <p className="approval-note">
+          “{DECISION_TEXT.allowProject}” lets later requests like this one through without asking,
+          until Tramontana quits.
+        </p>
+      )}
+
       <p className="approval-note">
         {waiting > 0
           ? `${waiting} more ${waiting === 1 ? "question is" : "questions are"} waiting behind this one.`

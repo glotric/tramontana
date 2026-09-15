@@ -42,6 +42,7 @@ describe("standing permissions", () => {
     const item = within(list).getByRole("listitem");
     expect(item).toHaveTextContent("builtin.fs.patch may use fs.write, up to changing files.");
     expect(item).toHaveTextContent("Granted 2026-09-15");
+    expect(screen.getByText(/last until Tramontana quits/)).toBeVisible();
     expect(listProjectGrants).toHaveBeenCalledWith("project-1");
   });
 

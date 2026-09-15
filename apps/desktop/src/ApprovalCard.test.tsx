@@ -62,7 +62,21 @@ describe("the approval card", () => {
     expect(screen.getByRole("button", { name: "Allow once" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Deny" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Allow in this project" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/until Tramontana quits/)).not.toBeInTheDocument();
     expect(screen.getByText("1 more question is waiting behind this one.")).toBeInTheDocument();
+  });
+
+  it("says how long an answer for the whole project lasts", () => {
+    render(
+      <ApprovalCard
+        request={{ ...request, eligibleDecisions: ["allowOnce", "allowProject", "deny"] }}
+        waiting={0}
+        onAnswered={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Allow in this project" })).toBeVisible();
+    expect(screen.getByText(/until Tramontana quits/)).toBeVisible();
   });
 
   it("takes the focus when it appears and gives it back once answered", async () => {
