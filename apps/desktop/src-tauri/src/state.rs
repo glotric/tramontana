@@ -211,6 +211,99 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn a_window_that_reattaches_gets_each_later_event_once_in_order() {
+        let directory = tempfile::tempdir().unwrap();
+        // Paced, so the task is still running when the window comes back.
+        let state = AppState::open_with_chunk_delay(
+            &directory.path().join("desktop.sqlite"),
+            100,
+            Arc::new(DesktopApprover::headless()),
+        )
+        .await
+        .unwrap();
+        let task_id = state
+            .service
+            .start_task(StartTaskRequest {
+                goal: "Say hello".to_owned(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Wait until the record holds more than the window saw, so the
+        // reattached window gets some events from the record and the rest
+        // live; a window that came back at once would only test the second.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state
+                .service
+                .replay_task_events(&task_id, 0)
+                .await
+                .unwrap()
+                .len()
+                < 4
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !state
+                .service
+                .get_task(&task_id)
+                .await
+                .unwrap()
+                .state
+                .is_terminal(),
+            "the task ended before the window came back, so nothing was live"
+        );
+
+        // A window that had seen the first two events, then reloaded.
+        let (replayed, updates) = state
+            .service
+            .subscribe_task_events(&task_id, 2)
+            .await
+            .unwrap();
+        let (sender, mut received) = tokio::sync::mpsc::unbounded_channel();
+        crate::commands::forward_updates(
+            Arc::clone(&state.service),
+            task_id.clone(),
+            2,
+            replayed,
+            updates,
+            move |update| sender.send(update).is_ok(),
+        );
+
+        let mut sequences = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(update) = received.recv().await {
+                if let tramontana_core::contracts::TaskUpdate::Event { event } = update {
+                    sequences.push(event.sequence);
+                    if event.is_terminal_outcome() {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        let recorded: Vec<u64> = state
+            .service
+            .replay_task_events(&task_id, 2)
+            .await
+            .unwrap()
+            .iter()
+            .map(|event| event.sequence)
+            .collect();
+        assert_eq!(sequences.first(), Some(&3));
+        assert_eq!(
+            sequences, recorded,
+            "a gap, a repeat, or an event out of order"
+        );
+    }
+
+    #[tokio::test]
     async fn a_person_reads_the_projects_git_status_and_diff_through_the_desktop() {
         let directory = tempfile::tempdir().unwrap();
         let repository = directory.path().join("repository");

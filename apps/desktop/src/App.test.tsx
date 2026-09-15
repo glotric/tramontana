@@ -33,6 +33,7 @@ const projectChanges = vi.hoisted(() => vi.fn());
 const listConfiguredEndpoints = vi.hoisted(() => vi.fn());
 const listModelEndpoints = vi.hoisted(() => vi.fn());
 const listProjectGrants = vi.hoisted(() => vi.fn());
+const watchTask = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -55,6 +56,7 @@ vi.mock("./core.js", async () => {
     listConfiguredEndpoints,
     listModelEndpoints,
     listProjectGrants,
+    watchTask,
   };
 });
 
@@ -179,9 +181,11 @@ describe("M2 durable desktop surface", () => {
       listConfiguredEndpoints,
       listModelEndpoints,
       listProjectGrants,
+      watchTask,
     ]) {
       mock.mockReset();
     }
+    watchTask.mockResolvedValue(undefined);
     listProjectGrants.mockResolvedValue([]);
     listConfiguredEndpoints.mockResolvedValue([]);
     listModelEndpoints.mockResolvedValue([]);
@@ -475,6 +479,62 @@ describe("M2 durable desktop surface", () => {
     await waitFor(() => {
       expect(projectChanges).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("follows a task still running after a reload, from the last event it has", async () => {
+    listTasks.mockResolvedValue([{ ...task, state: "running", lastSequence: 2 }]);
+    replayTaskEvents.mockResolvedValue([
+      event(1, { kind: "taskCreated", goalSummary: "Existing durable task" }),
+      event(2, {
+        kind: "taskStateChanged",
+        previous: "queued",
+        current: "running",
+        reasonCode: "worker.started",
+      }),
+    ]);
+    let deliver: (update: TaskUpdate) => void = () => undefined;
+    watchTask.mockImplementation(
+      (_taskId: string, _after: number, onUpdate: (update: TaskUpdate) => void) => {
+        deliver = onUpdate;
+        return Promise.resolve();
+      },
+    );
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    await waitFor(() => {
+      expect(watchTask).toHaveBeenCalledWith(task.taskId, 2, expect.any(Function));
+    });
+    act(() => {
+      deliver({
+        kind: "event",
+        event: event(3, {
+          kind: "taskStateChanged",
+          previous: "running",
+          current: "completed",
+          reasonCode: "worker.completed",
+        }),
+      });
+    });
+
+    await user.click(await screen.findByText("All events (3)"));
+    const list = screen.getByRole("list", { name: "Task event stream" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(3);
+  });
+
+  it("does not follow a task that has already ended", async () => {
+    replayTaskEvents.mockResolvedValue([
+      event(1, { kind: "taskCreated", goalSummary: "Existing durable task" }),
+      event(2, {
+        kind: "taskStateChanged",
+        previous: "running",
+        current: "completed",
+        reasonCode: "worker.completed",
+      }),
+    ]);
+    await renderLoaded();
+    await screen.findByText("All events (2)");
+    expect(watchTask).not.toHaveBeenCalled();
   });
 
   it("lists each configuration diagnostic with its severity, file and message", async () => {

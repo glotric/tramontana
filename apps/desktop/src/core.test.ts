@@ -43,6 +43,7 @@ const {
   replayTaskEvents,
   resolveApproval,
   startTask,
+  watchTask,
 } = await import("./core.js");
 
 describe("approval IPC", () => {
@@ -83,6 +84,28 @@ describe("approval IPC", () => {
 
     stop();
     expect(unlisten).toHaveBeenCalledOnce();
+  });
+});
+
+describe("reattaching", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(undefined);
+  });
+
+  it("asks for the events after the last one this window has, and delivers them", async () => {
+    const onUpdate = vi.fn();
+    await watchTask("task-1", 7, onUpdate);
+
+    expect(invoke).toHaveBeenLastCalledWith(
+      "watch_task",
+      expect.objectContaining({ taskId: "task-1", afterSequence: 7 }),
+    );
+    const payload = invoke.mock.calls.at(-1)?.[1] as {
+      channel: { onmessage: (update: unknown) => void };
+    };
+    payload.channel.onmessage({ kind: "frame", frame: { streamId: "s", offset: 0, text: "hi" } });
+    expect(onUpdate).toHaveBeenCalledOnce();
   });
 });
 

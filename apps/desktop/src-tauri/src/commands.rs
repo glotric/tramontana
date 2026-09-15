@@ -238,21 +238,78 @@ pub(crate) async fn start_task(
 
     // Subscribe from the beginning so the interface sees the creation event
     // even though it was written before this call returned.
-    let (replayed, mut updates) = service.subscribe_task_events(&task_id, 0).await?;
+    let (replayed, updates) = service.subscribe_task_events(&task_id, 0).await?;
+    forward_updates(
+        service,
+        task_id.clone(),
+        0,
+        replayed,
+        updates,
+        move |update| channel.send(update).is_ok(),
+    );
 
-    let forward_task_id = task_id.clone();
+    Ok(task_id)
+}
+
+/// Follow a task that is already running, from the last event the window has.
+///
+/// A window that reloads loses the channel `start_task` opened, while the task
+/// goes on in this process. This reattaches: every durable event after
+/// `after_sequence`, then the live stream, until the task ends. Streamed text
+/// from before the reload is not repeated; the committed message will be.
+///
+/// # Errors
+///
+/// [`ErrorCode::NotFound`] when the task is unknown.
+#[tauri::command]
+pub(crate) async fn watch_task(
+    task_id: TaskId,
+    after_sequence: u64,
+    channel: Channel<TaskUpdate>,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    let service = state.service.clone();
+    let (replayed, updates) = service
+        .subscribe_task_events(&task_id, after_sequence)
+        .await?;
+    forward_updates(
+        service,
+        task_id,
+        after_sequence,
+        replayed,
+        updates,
+        move |update| channel.send(update).is_ok(),
+    );
+    Ok(())
+}
+
+/// Forward a task's updates to a window until the task ends.
+///
+/// `replayed` holds the durable events after `after_sequence`, and `updates`
+/// the live stream, subscribed before the replay was read. An event can
+/// arrive on both, so anything at or below the highest sequence already sent
+/// is dropped: the window sees each event once, in order, with no gap. A
+/// window that falls behind catches up from the store. `send` returns false
+/// when the window has gone, which ends the forwarding.
+pub(crate) fn forward_updates<F>(
+    service: std::sync::Arc<tramontana_core::services::TaskService>,
+    task_id: TaskId,
+    after_sequence: u64,
+    replayed: Vec<EventEnvelope>,
+    mut updates: tokio::sync::broadcast::Receiver<TaskUpdate>,
+    mut send: F,
+) where
+    F: FnMut(TaskUpdate) -> bool + Send + 'static,
+{
     tokio::spawn(async move {
-        let mut highest = 0;
+        let mut highest = after_sequence;
         let mut terminal_replayed = false;
         for event in replayed {
             highest = highest.max(event.sequence);
             terminal_replayed |= event.is_terminal_outcome();
-            if channel
-                .send(TaskUpdate::Event {
-                    event: Box::new(event),
-                })
-                .is_err()
-            {
+            if !send(TaskUpdate::Event {
+                event: Box::new(event),
+            }) {
                 return; // The window went away.
             }
         }
@@ -271,39 +328,29 @@ pub(crate) async fn start_task(
                     }
                     highest = event.sequence;
                     let terminal = event.is_terminal_outcome();
-                    if channel.send(TaskUpdate::Event { event }).is_err() {
-                        return;
-                    }
-                    if terminal {
+                    if !send(TaskUpdate::Event { event }) || terminal {
                         return;
                     }
                 }
                 Ok(update) => {
-                    if channel.send(update).is_err() {
+                    if !send(update) {
                         return;
                     }
                 }
                 // Lagging is recoverable: durable events are in the store, so
                 // catch up rather than reporting a failure to the user.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    let Ok((missed, _)) = service
-                        .subscribe_task_events(&forward_task_id, highest)
-                        .await
+                    let Ok((missed, _)) = service.subscribe_task_events(&task_id, highest).await
                     else {
                         return;
                     };
                     for event in missed {
                         highest = highest.max(event.sequence);
                         let terminal = event.is_terminal_outcome();
-                        if channel
-                            .send(TaskUpdate::Event {
-                                event: Box::new(event),
-                            })
-                            .is_err()
+                        if !send(TaskUpdate::Event {
+                            event: Box::new(event),
+                        }) || terminal
                         {
-                            return;
-                        }
-                        if terminal {
                             return;
                         }
                     }
@@ -312,8 +359,6 @@ pub(crate) async fn start_task(
             }
         }
     });
-
-    Ok(task_id)
 }
 
 /// Ask the native picker for a folder; `None` when the person cancels.

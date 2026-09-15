@@ -34,6 +34,7 @@ import {
   openProject,
   replayTaskEvents,
   startTask,
+  watchTask,
 } from "./core.js";
 import type { ProjectInspection } from "./core.js";
 
@@ -132,22 +133,77 @@ export function App(): React.JSX.Element {
   const taskRequest = useRef(0);
   const seen = useRef(new Set<number>());
 
-  const selectTask = useCallback(async (taskId: string): Promise<void> => {
-    const request = ++taskRequest.current;
-    setSelectedTaskId(taskId);
-    setStreamed("");
-    setFailure(undefined);
-    try {
-      const replayed = await replayTaskEvents(taskId);
-      if (request !== taskRequest.current) return;
-      seen.current = new Set(replayed.map((event) => event.sequence));
-      setEvents(replayed);
-    } catch (error: unknown) {
-      if (request === taskRequest.current) {
-        setFailure(failureText(error, "Could not replay the task history."));
+  // Kept in a ref so the update handler stays the same function for the life
+  // of the window; a new one per conversation would ripple through every
+  // selection callback and reload the project list.
+  const refreshTasksRef = useRef<() => void>(() => undefined);
+
+  // One handler for every stream of task updates, whether the task was just
+  // started here or is being followed again after a reload.
+  const handleUpdate = useCallback((update: TaskUpdate): void => {
+    switch (update.kind) {
+      case "event": {
+        const { event } = update;
+        if (seen.current.has(event.sequence)) return;
+        seen.current.add(event.sequence);
+        setEvents((previous) => [...previous, event]);
+        if (event.payload.kind === "configurationResolved") {
+          const resolved = event.payload.configuration;
+          setInspection((current) =>
+            current === undefined ? current : { ...current, configuration: resolved },
+          );
+        }
+        if (
+          event.payload.kind === "taskCompleted" ||
+          event.payload.kind === "taskFailed" ||
+          event.payload.kind === "taskCancelled"
+        ) {
+          refreshTasksRef.current();
+          setRevision((current) => current + 1);
+        }
+        break;
       }
+      case "frame":
+        setStreamed((previous) => previous + update.frame.text);
+        break;
     }
   }, []);
+
+  const selectTask = useCallback(
+    async (taskId: string): Promise<void> => {
+      const request = ++taskRequest.current;
+      setSelectedTaskId(taskId);
+      setStreamed("");
+      setFailure(undefined);
+      try {
+        const replayed = await replayTaskEvents(taskId);
+        if (request !== taskRequest.current) return;
+        seen.current = new Set(replayed.map((event) => event.sequence));
+        setEvents(replayed);
+        // A task still under way goes on in the shell whether or not this
+        // window was watching, as it was not across a reload. Follow it from
+        // the last event the record holds, rather than show a record that
+        // stopped when the window did.
+        const state = projectState(replayed);
+        const last = replayed.at(-1)?.sequence;
+        if (
+          state !== undefined &&
+          !isTerminal(state) &&
+          state !== "interrupted" &&
+          last !== undefined
+        ) {
+          await watchTask(taskId, last, (update) => {
+            if (request === taskRequest.current) handleUpdate(update);
+          });
+        }
+      } catch (error: unknown) {
+        if (request === taskRequest.current) {
+          setFailure(failureText(error, "Could not replay the task history."));
+        }
+      }
+    },
+    [handleUpdate],
+  );
 
   const selectConversation = useCallback(
     async (conversationId: string): Promise<void> => {
@@ -343,12 +399,18 @@ export function App(): React.JSX.Element {
     if (selectedConversationId === undefined) return;
     void listTasks(selectedConversationId).then(setTasks, () => undefined);
   }, [selectedConversationId]);
+  useEffect(() => {
+    refreshTasksRef.current = refreshTasks;
+  }, [refreshTasks]);
 
   const onStart = useCallback(() => {
     if (selectedConversationId === undefined) {
       setFailure("Create or select a conversation before starting a task.");
       return;
     }
+    // A new task on screen: updates from any stream opened for the one before
+    // it are no longer this window's to show.
+    const request = ++taskRequest.current;
     seen.current = new Set();
     setEvents([]);
     setStreamed("");
@@ -356,32 +418,7 @@ export function App(): React.JSX.Element {
     setSelectedTaskId(undefined);
 
     const onUpdate = (update: TaskUpdate): void => {
-      switch (update.kind) {
-        case "event": {
-          const { event } = update;
-          if (seen.current.has(event.sequence)) return;
-          seen.current.add(event.sequence);
-          setEvents((previous) => [...previous, event]);
-          if (event.payload.kind === "configurationResolved") {
-            const resolved = event.payload.configuration;
-            setInspection((current) =>
-              current === undefined ? current : { ...current, configuration: resolved },
-            );
-          }
-          if (
-            event.payload.kind === "taskCompleted" ||
-            event.payload.kind === "taskFailed" ||
-            event.payload.kind === "taskCancelled"
-          ) {
-            refreshTasks();
-            setRevision((current) => current + 1);
-          }
-          break;
-        }
-        case "frame":
-          setStreamed((previous) => previous + update.frame.text);
-          break;
-      }
+      if (request === taskRequest.current) handleUpdate(update);
     };
 
     void startTask(goal, onUpdate, selectedConversationId, {
@@ -397,7 +434,15 @@ export function App(): React.JSX.Element {
         setFailure(failureText(error, "Could not start the task."));
       },
     );
-  }, [goal, mayRunRecipes, mayWrite, refreshTasks, routingMode, selectedConversationId]);
+  }, [
+    goal,
+    handleUpdate,
+    mayRunRecipes,
+    mayWrite,
+    refreshTasks,
+    routingMode,
+    selectedConversationId,
+  ]);
 
   const onCancel = useCallback(() => {
     if (selectedTaskId === undefined) return;

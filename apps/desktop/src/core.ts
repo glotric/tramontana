@@ -349,6 +349,22 @@ export async function startTask(
   });
 }
 
+/**
+ * Follow a task that is already running, from the last event this window has.
+ *
+ * What a reloaded window does: the task went on without it, and this delivers
+ * every event after `afterSequence`, then the live stream, to `onUpdate`.
+ */
+export async function watchTask(
+  taskId: string,
+  afterSequence: number,
+  onUpdate: (update: TaskUpdate) => void,
+): Promise<void> {
+  const channel = new Channel<TaskUpdate>();
+  channel.onmessage = onUpdate;
+  return invoke("watch_task", { taskId, afterSequence, channel });
+}
+
 /** Request cancellation. The task converges to a terminal state on its own. */
 export async function cancelTask(taskId: string): Promise<void> {
   return invoke("cancel_task", { taskId });
