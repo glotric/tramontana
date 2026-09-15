@@ -237,6 +237,14 @@ export async function restartApplication(): Promise<void> {
   return invoke("restart_application");
 }
 
+/**
+ * Whether "Restart now" can work. Not under the development server, which
+ * stops when the application exits and leaves a restarted window blank.
+ */
+export async function restartSupported(): Promise<boolean> {
+  return invoke<boolean>("restart_supported");
+}
+
 /** How many records of each kind a bundle holds, or an import wrote. */
 export interface BundleCounts {
   readonly projects: number;

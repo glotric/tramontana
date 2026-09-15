@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tauri::AppHandle;
 use tramontana_adapters_tools::{FilesystemTools, GitTools, RecipeTools};
@@ -33,11 +34,13 @@ pub(crate) struct AppState {
     pub(crate) approver: Arc<DesktopApprover>,
     /// Where grants live, so they can be listed and revoked.
     pub(crate) approvals: Arc<InMemoryApprovalStore>,
-    /// Runtimes this process started, held for the life of the window.
+    /// Runtimes this process started, held for the life of the window and
+    /// stopped by [`AppState::shut_down`] as it exits.
     ///
-    /// Dropping it stops them, which is why the desktop keeps it rather than
-    /// letting assembly go out of scope: a model runtime that outlived the
-    /// application would hold gigabytes with nothing to stop it.
+    /// Tauri ends the process without dropping managed state, so the
+    /// runtimes' own drop is only a backstop for a panic: a model runtime
+    /// that outlived the application would hold gigabytes until something
+    /// next opened the profile.
     pub(crate) models: Arc<tokio::sync::Mutex<ModelPlane>>,
     /// The bundle folder the person last inspected, waiting for them to
     /// confirm the import.
@@ -97,7 +100,8 @@ impl AppState {
         )
         .map_err(|error| format!("could not register tools: {error}"))?;
 
-        let lease = tramontana_platform::ProfileLease::try_acquire(path)
+        let lease = acquire_lease(path, LEASE_PATIENCE)
+            .await
             .map_err(|error| format!("could not acquire runtime profile lease: {error}"))?
             .map(|lease| Arc::new(lease) as Arc<dyn Send + Sync>);
         // Holding the lease proves any runtime recorded for this profile
@@ -193,11 +197,45 @@ impl AppState {
             vault,
         })
     }
+
+    /// Stop the model runtimes this process started.
+    ///
+    /// Called as the application exits, whether by quitting or by "Restart
+    /// now". Waits for each runtime to stop, up to its grace period.
+    pub(crate) async fn shut_down(&self) {
+        self.models.lock().await.shutdown().await;
+    }
+}
+
+/// How long a starting window waits for the profile's previous owner to let
+/// go of it.
+///
+/// A restart starts the new process a moment before the old one has exited,
+/// so a lease still held for that moment is expected. One held for longer
+/// belongs to another window, and this one opens without running tasks.
+const LEASE_PATIENCE: Duration = Duration::from_secs(3);
+
+/// The profile's lease, waiting up to `patience` for its holder to let go.
+async fn acquire_lease(
+    path: &Path,
+    patience: Duration,
+) -> std::io::Result<Option<tramontana_platform::ProfileLease>> {
+    let deadline = tokio::time::Instant::now() + patience;
+    loop {
+        if let Some(lease) = tramontana_platform::ProfileLease::try_acquire(path)? {
+            return Ok(Some(lease));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
+    clippy::expect_used,
     reason = "tests assert on isolated fixtures; a panic is the failure report"
 )]
 mod tests {
@@ -209,6 +247,49 @@ mod tests {
     use tramontana_platform::{canonicalize_root, discover};
 
     use super::*;
+
+    #[tokio::test]
+    async fn a_restarted_window_waits_for_the_one_before_it_to_let_go() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile = directory.path().join("desktop.sqlite");
+        std::fs::write(&profile, b"").unwrap();
+        let held = tramontana_platform::ProfileLease::try_acquire(&profile)
+            .unwrap()
+            .unwrap();
+        // A restart: the old process lets go a moment after the new one
+        // starts. Without waiting, the new window could not run tasks.
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            drop(held);
+        });
+
+        let lease = acquire_lease(&profile, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(lease.is_some(), "gave up before the previous owner let go");
+        release.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_window_beside_another_stops_waiting_for_the_lease() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile = directory.path().join("desktop.sqlite");
+        std::fs::write(&profile, b"").unwrap();
+        let _held = tramontana_platform::ProfileLease::try_acquire(&profile)
+            .unwrap()
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        let lease = tokio::time::timeout(
+            Duration::from_secs(5),
+            acquire_lease(&profile, Duration::from_millis(300)),
+        )
+        .await
+        .expect("still waiting after its patience ran out")
+        .unwrap();
+        assert!(lease.is_none());
+        assert!(started.elapsed() >= Duration::from_millis(300));
+    }
 
     #[tokio::test]
     async fn a_window_that_reattaches_gets_each_later_event_once_in_order() {

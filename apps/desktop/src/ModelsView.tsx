@@ -8,6 +8,7 @@ import {
   listModelEndpoints,
   removeEndpoint,
   restartApplication,
+  restartSupported,
   setEndpointEnabled,
   setEndpointToolCalls,
   storeCredential,
@@ -58,6 +59,23 @@ interface ModelsViewProps {
 
 export function ModelsView({ onClose }: ModelsViewProps): React.JSX.Element {
   const [configured, setConfigured] = useState<readonly ConfiguredEndpoint[] | undefined>();
+  // Asked once: whether "Restart now" would bring the window back, or leave
+  // it blank as it does under the development server.
+  const [restartable, setRestartable] = useState<boolean | undefined>();
+  useEffect(() => {
+    let live = true;
+    restartSupported().then(
+      (supported) => {
+        if (live) setRestartable(supported);
+      },
+      () => {
+        if (live) setRestartable(false);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
   const [running, setRunning] = useState<readonly ModelEndpointStatus[]>([]);
   const [failure, setFailure] = useState<string | undefined>();
   const [note, setNote] = useState<string | undefined>();
@@ -146,13 +164,21 @@ export function ModelsView({ onClose }: ModelsViewProps): React.JSX.Element {
             Changes are saved, and used once Tramontana restarts. Restarting interrupts running
             tasks; they can be inspected and resumed when it opens again.
           </p>
-          <button
-            type="button"
-            className="button button--primary"
-            onClick={() => void restartApplication()}
-          >
-            Restart now
-          </button>
+          {restartable === false ? (
+            <p>
+              This copy runs under the development server, which stops when Tramontana does, so it
+              cannot restart itself: quit it and run the start command again.
+            </p>
+          ) : (
+            <button
+              type="button"
+              className="button button--primary"
+              disabled={restartable === undefined}
+              onClick={() => void restartApplication()}
+            >
+              Restart now
+            </button>
+          )}
         </div>
       )}
 

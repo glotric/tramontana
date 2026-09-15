@@ -711,11 +711,24 @@ pub(crate) async fn forget_credential(
 
 /// Restart Tramontana, so endpoints configured since it opened are used.
 ///
-/// Running tasks are interrupted as any unclean stop interrupts them, and
-/// recovered on the next start; the window says so before offering this.
+/// Requested rather than immediate, so the application exits as quitting
+/// does and stops its model runtimes first; restarting at once would leave
+/// them running. Running tasks are interrupted as any unclean stop interrupts
+/// them, and recovered on the next start; the window says so before offering
+/// this.
 #[tauri::command]
 pub(crate) fn restart_application(app: AppHandle) {
-    app.restart();
+    app.request_restart();
+}
+
+/// Whether this build can restart itself.
+///
+/// Not under `tauri dev`: the development server stops when the application
+/// exits, so a restarted window would have nothing to load and stay blank.
+/// The window asks the person to quit and start it again instead.
+#[tauri::command]
+pub(crate) fn restart_supported() -> bool {
+    !tauri::is_dev()
 }
 
 async fn resolve_stored_project(

@@ -15,6 +15,7 @@ const removeEndpoint = vi.hoisted(() => vi.fn());
 const storeCredential = vi.hoisted(() => vi.fn());
 const forgetCredential = vi.hoisted(() => vi.fn());
 const restartApplication = vi.hoisted(() => vi.fn());
+const restartSupported = vi.hoisted(() => vi.fn());
 const addLlamaEndpoint = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
@@ -29,6 +30,7 @@ vi.mock("./core.js", async () => {
     storeCredential,
     forgetCredential,
     restartApplication,
+    restartSupported,
     addLlamaEndpoint,
   };
 });
@@ -98,10 +100,12 @@ describe("the Models view", () => {
       storeCredential,
       forgetCredential,
       restartApplication,
+      restartSupported,
       addLlamaEndpoint,
     ]) {
       mock.mockReset();
     }
+    restartSupported.mockResolvedValue(true);
     addLlamaEndpoint.mockResolvedValue(false);
     listConfiguredEndpoints.mockResolvedValue([llama, openai, added, off]);
     listModelEndpoints.mockResolvedValue(health);
@@ -148,6 +152,20 @@ describe("the Models view", () => {
     expect(restartApplication).not.toHaveBeenCalled();
     await user.click(within(restart).getByRole("button", { name: "Restart now" }));
     expect(restartApplication).toHaveBeenCalledOnce();
+  });
+
+  it("asks for a quit and a fresh start where Tramontana cannot restart itself", async () => {
+    // Under the development server, a restart would leave the window blank.
+    restartSupported.mockResolvedValue(false);
+    const user = userEvent.setup();
+    render(<ModelsView onClose={() => undefined} />);
+    await screen.findByRole("heading", { name: "Local Qwen" });
+
+    await user.click(within(endpoint("Local Qwen")).getByRole("checkbox", { name: "Enabled" }));
+    const restart = await screen.findByRole("note");
+    expect(restart).toHaveTextContent("quit it and run the start command again");
+    expect(within(restart).queryByRole("button", { name: "Restart now" })).not.toBeInTheDocument();
+    expect(restartApplication).not.toHaveBeenCalled();
   });
 
   it("stores a typed credential, clears it, and shows only its length", async () => {
