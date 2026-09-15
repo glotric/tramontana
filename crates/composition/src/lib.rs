@@ -73,6 +73,13 @@ pub fn assemble_worker(
     }
 }
 
+/// Every worker [`assemble_worker`] can build, for a service that lets each
+/// task choose what its model may be offered (ADR 0031).
+#[must_use]
+pub fn worker_choice(configured: bool) -> tramontana_core::services::WorkerChoice {
+    Arc::new(move |admission| assemble_worker(configured, admission))
+}
+
 /// Where a profile keeps the files its tasks deleted, so a delete can be undone.
 ///
 /// Beside the profile's database and named after it: one store per profile,

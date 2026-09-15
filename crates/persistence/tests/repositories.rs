@@ -380,6 +380,7 @@ async fn task_and_initial_events_commit_as_one_transaction() {
     event.payload = EventPayload::TaskCreated {
         goal_summary: "goal".to_owned(),
         conversation_id: None,
+        routing_mode: None,
     };
     let error = tasks
         .create_with_initial_events(&record, &[event])

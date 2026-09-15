@@ -815,6 +815,14 @@ export interface EventEnvelope {
          */
         goalSummary: string;
         kind: "taskCreated";
+        /**
+         * Where this task's models may run, chosen when it was created and
+         * kept if it is resumed.
+         *
+         * Absent from tasks recorded before the mode was, which resume under
+         * the profile's mode (ADR 0031).
+         */
+        routingMode?: "localOnly" | "automatic" | "cloudPreferred";
       }
     | {
         /**
@@ -1108,6 +1116,14 @@ export type EventPayload =
        */
       goalSummary: string;
       kind: "taskCreated";
+      /**
+       * Where this task's models may run, chosen when it was created and
+       * kept if it is resumed.
+       *
+       * Absent from tasks recorded before the mode was, which resume under
+       * the profile's mode (ADR 0031).
+       */
+      routingMode?: "localOnly" | "automatic" | "cloudPreferred";
     }
   | {
       /**

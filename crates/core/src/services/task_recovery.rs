@@ -12,11 +12,30 @@ use super::projection::TaskProjectionWriter;
 use super::runtime::TaskDriver;
 use super::task_service::{LiveTask, TaskService};
 use crate::contracts::{
-    CancellationOrigin, CapabilityScope, CheckpointId, CorrelationId, ErrorCode, ErrorEnvelope,
-    EventDraft, EventEnvelope, EventPayload, HandoffBundle, ResumeMode, TaskCheckpoint,
-    TaskEventKind, TaskId, TaskRecord, TaskState,
+    AgentDescriptor, CancellationOrigin, CapabilityScope, CheckpointId, CorrelationId, ErrorCode,
+    ErrorEnvelope, EventDraft, EventEnvelope, EventPayload, HandoffBundle, ResumeMode, RoutingMode,
+    TaskCheckpoint, TaskEventKind, TaskId, TaskRecord, TaskState,
 };
+use crate::ports::{AgentProvider, ToolAdmission};
 use crate::services::handoff::build_handoff;
+
+/// Every admission a task can start with, to find the worker one recorded.
+const ADMISSIONS: [ToolAdmission; 4] = [
+    ToolAdmission::READ_ONLY,
+    ToolAdmission::READ_WRITE,
+    ToolAdmission::READ_ONLY.with_recipes(),
+    ToolAdmission::READ_WRITE.with_recipes(),
+];
+
+/// The routing mode a task was created under, when its record says.
+///
+/// Tasks created before the mode was recorded say nothing.
+fn created_mode(events: &[EventEnvelope]) -> Option<RoutingMode> {
+    events.iter().find_map(|event| match &event.payload {
+        EventPayload::TaskCreated { routing_mode, .. } => *routing_mode,
+        _ => None,
+    })
+}
 
 /// A validated interrupted task, ready for someone to continue.
 struct Continuation {
@@ -233,18 +252,43 @@ impl TaskService {
         let _lifecycle = self.lifecycle.lock().await;
         let continuation = self.validated_continuation(task_id, checkpoint_id).await?;
 
-        if continuation
-            .derived
-            .worker
-            .as_ref()
-            .is_some_and(|worker| worker.descriptor != self.providers.worker.describe())
-        {
-            return Err(self.error(
-                ErrorCode::Conflict,
-                "Same-worker resume requires the recorded worker and capabilities",
-            ));
-        }
-        self.launch(continuation, None).await
+        let worker = self.recorded_worker(
+            continuation
+                .derived
+                .worker
+                .as_ref()
+                .map(|worker| &worker.descriptor),
+        )?;
+        self.launch(continuation, worker, None).await
+    }
+
+    /// The worker that recorded a task, to continue it.
+    ///
+    /// A task may have chosen its admission when it started (ADR 0031), so
+    /// the service's own worker need not be the one. Each worker this service
+    /// could have run is compared with the recorded descriptor. None matching
+    /// is a refusal: a resume cannot add to or take from what the model may
+    /// be offered.
+    fn recorded_worker(
+        &self,
+        recorded: Option<&AgentDescriptor>,
+    ) -> Result<Arc<dyn AgentProvider>, ErrorEnvelope> {
+        let Some(recorded) = recorded else {
+            return Ok(Arc::clone(&self.providers.worker));
+        };
+        let chosen = self
+            .workers
+            .iter()
+            .flat_map(|choose| ADMISSIONS.map(|admission| choose(admission)));
+        std::iter::once(Arc::clone(&self.providers.worker))
+            .chain(chosen)
+            .find(|worker| worker.describe() == *recorded)
+            .ok_or_else(|| {
+                self.error(
+                    ErrorCode::Conflict,
+                    "Same-worker resume requires the recorded worker and capabilities",
+                )
+            })
     }
 
     /// Hand an interrupted task to a *different* worker, from canonical state.
@@ -301,22 +345,23 @@ impl TaskService {
             &continuation.derived,
             self.clock.now(),
         );
-        self.launch(continuation, Some((receiving, handoff.clone())))
+        self.launch(continuation, receiving, Some(handoff.clone()))
             .await?;
         Ok(handoff)
     }
 
     /// Move an interrupted task back into `preparing` and run it.
     ///
-    /// `taking_over` is absent for a same-worker resume and present for a
-    /// handoff. Everything else — the live registry entry, the journal, the
-    /// configuration read back by hash, the replay guard built from the
-    /// events — is identical, because the difference between the two paths is
-    /// only who continues.
+    /// `handoff` is absent for a same-worker resume and present for a
+    /// handoff to `worker`. Everything else — the live registry entry, the
+    /// journal, the configuration read back by hash, the replay guard built
+    /// from the events, the routing mode — is identical, because the
+    /// difference between the two paths is only who continues.
     async fn launch(
         &self,
         continuation: Continuation,
-        taking_over: Option<(Arc<dyn crate::ports::AgentProvider>, HandoffBundle)>,
+        worker: Arc<dyn AgentProvider>,
+        handoff: Option<HandoffBundle>,
     ) -> Result<(), ErrorEnvelope> {
         let Continuation {
             record,
@@ -332,7 +377,7 @@ impl TaskService {
         let (finished, receiver) = watch::channel(false);
         let (updates, _) = broadcast::channel(256);
 
-        let reason = if taking_over.is_some() {
+        let reason = if handoff.is_some() {
             "user.handedOver"
         } else {
             "user.resumedCheckpoint"
@@ -365,13 +410,20 @@ impl TaskService {
             _ => None,
         };
 
+        // The mode the task was created under, not the profile's now: a task
+        // started Local Only must not continue somewhere it forbade (ADR
+        // 0031). Only a task recorded before modes were has none, and takes
+        // the profile's, as it always did.
+        let routing_mode = created_mode(&events).unwrap_or_else(|| self.routing_mode());
         let plan = ResumePlan::from_events(&events);
         let driver = TaskDriver::new(journal, self.providers.clone(), scope, self.clock.clone())
-            .with_routing_mode(self.routing_mode())
+            .with_routing_mode(routing_mode)
             .with_configuration(configuration);
-        let driver = match taking_over {
-            Some((receiving, handoff)) => driver.handing_over(receiving, handoff, plan, interrupt),
-            None => driver.continuing(Some(checkpoint), plan, interrupt),
+        let driver = match handoff {
+            Some(handoff) => driver.handing_over(worker, handoff, plan, interrupt),
+            None => driver
+                .with_worker(worker)
+                .continuing(Some(checkpoint), plan, interrupt),
         };
 
         let guard = self.execution_guard.clone();

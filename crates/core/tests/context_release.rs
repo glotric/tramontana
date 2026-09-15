@@ -594,6 +594,7 @@ async fn a_credential_pasted_into_a_goal_reaches_nothing() {
         .start_task(StartTaskRequest {
             conversation_id: None,
             goal: format!("call the API with {PASTED} and report back"),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -756,6 +757,7 @@ async fn run_to_completion(
         .start_task(StartTaskRequest {
             conversation_id: None,
             goal: GOAL.to_owned(),
+            ..Default::default()
         })
         .await
         .unwrap();

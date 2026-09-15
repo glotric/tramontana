@@ -1150,6 +1150,10 @@
             "kind": {
               "const": "taskCreated",
               "type": "string"
+            },
+            "routingMode": {
+              "$ref": "#/$defs/RoutingMode",
+              "description": "Where this task's models may run, chosen when it was created and\nkept if it is resumed.\n\nAbsent from tasks recorded before the mode was, which resume under\nthe profile's mode (ADR 0031)."
             }
           },
           "required": [

@@ -217,6 +217,7 @@ pub(crate) async fn start_task(
         .start_task(StartTaskRequest {
             conversation_id,
             goal,
+            ..Default::default()
         })
         .await?;
 

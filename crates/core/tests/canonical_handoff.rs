@@ -188,6 +188,7 @@ impl Harness {
             .start_task(StartTaskRequest {
                 conversation_id: Some(conversation.conversation_id),
                 goal: GOAL.into(),
+                ..Default::default()
             })
             .await
             .unwrap();

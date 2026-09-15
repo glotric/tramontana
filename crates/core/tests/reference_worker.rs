@@ -327,6 +327,7 @@ async fn start(service: &TaskService, project: bool) -> TaskId {
         .start_task(StartTaskRequest {
             conversation_id,
             goal: "What fact does this repository contain?".into(),
+            ..Default::default()
         })
         .await
         .unwrap()
@@ -988,6 +989,7 @@ async fn start_with_recipes(service: &TaskService) -> TaskId {
         .start_task(StartTaskRequest {
             conversation_id: Some(conversation.conversation_id),
             goal: "Run the tests.".into(),
+            ..Default::default()
         })
         .await
         .unwrap()

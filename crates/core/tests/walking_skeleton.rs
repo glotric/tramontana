@@ -145,6 +145,7 @@ async fn a_project_task_captures_the_latest_configuration_manifest() {
         .start_task(StartTaskRequest {
             conversation_id: Some(conversation.conversation_id),
             goal: "use the project configuration".to_owned(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -177,6 +178,7 @@ async fn a_task_runs_to_completion_with_an_ordered_event_stream() {
         .start_task(StartTaskRequest {
             conversation_id: Some(conversation_in_a_project(&service).await),
             goal: "say hello".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -276,6 +278,7 @@ async fn a_task_reaches_exactly_one_terminal_state() {
         .start_task(StartTaskRequest {
             conversation_id: Some(conversation_in_a_project(&service).await),
             goal: "say hello".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -300,6 +303,7 @@ async fn cancelling_before_the_work_starts_still_converges_to_cancelled() {
         .start_task(StartTaskRequest {
             conversation_id: Some(conversation_in_a_project(&service).await),
             goal: "say hello".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -334,6 +338,7 @@ async fn cancelling_after_completion_does_not_move_a_terminal_task() {
         .start_task(StartTaskRequest {
             conversation_id: Some(conversation_in_a_project(&service).await),
             goal: "say hello".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -366,6 +371,7 @@ async fn a_subscriber_replays_missed_events_and_then_receives_live_ones() {
         .start_task(StartTaskRequest {
             conversation_id: Some(conversation_in_a_project(&service).await),
             goal: "say hello".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -401,6 +407,7 @@ async fn resubscribing_after_a_disconnect_recovers_the_gap() {
         .start_task(StartTaskRequest {
             conversation_id: Some(conversation_in_a_project(&service).await),
             goal: "say hello".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -431,6 +438,7 @@ async fn streamed_frames_reconstruct_the_answer_exactly_once() {
         .start_task(StartTaskRequest {
             conversation_id: Some(conversation_in_a_project(&service).await),
             goal: "say hello".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -462,6 +470,7 @@ async fn a_projectless_task_cannot_use_a_tool_at_all() {
         .start_task(StartTaskRequest {
             conversation_id: None,
             goal: "say hello".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -495,6 +504,7 @@ async fn every_tool_call_records_an_origin_scope_and_decision() {
         .start_task(StartTaskRequest {
             conversation_id: Some(conversation_in_a_project(&service).await),
             goal: "say hello".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -555,6 +565,7 @@ async fn a_projectless_task_records_no_conversation() {
         .start_task(StartTaskRequest {
             conversation_id: None,
             goal: "say hello".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -581,6 +592,7 @@ async fn a_task_can_be_attached_to_a_conversation_in_a_project() {
         .start_task(StartTaskRequest {
             conversation_id: Some(conversation.conversation_id.clone()),
             goal: "say hello".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -610,6 +622,7 @@ async fn unknown_projects_conversations_and_tasks_are_reported_not_invented() {
         .start_task(StartTaskRequest {
             conversation_id: Some(ConversationId::new("nope")),
             goal: "x".into(),
+            ..Default::default()
         })
         .await
         .unwrap_err();

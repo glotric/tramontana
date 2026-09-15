@@ -373,6 +373,7 @@ pub async fn start(service: &TaskService, conversation: &ConversationId, goal: &
         .start_task(StartTaskRequest {
             conversation_id: Some(conversation.clone()),
             goal: goal.to_owned(),
+            ..Default::default()
         })
         .await
         .unwrap()

@@ -18,8 +18,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ConversationId, CorrelationId, ErrorEnvelope, EventId, SCHEMA_VERSION, TaskId, TaskState,
-    Timestamp, Visibility,
+    ConversationId, CorrelationId, ErrorEnvelope, EventId, RoutingMode, SCHEMA_VERSION, TaskId,
+    TaskState, Timestamp, Visibility,
 };
 
 /// What a durable event is about.
@@ -105,6 +105,13 @@ pub enum EventPayload {
         /// Conversation this task belongs to, when it has one.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         conversation_id: Option<ConversationId>,
+        /// Where this task's models may run, chosen when it was created and
+        /// kept if it is resumed.
+        ///
+        /// Absent from tasks recorded before the mode was, which resume under
+        /// the profile's mode (ADR 0031).
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        routing_mode: Option<RoutingMode>,
     },
     /// The task moved between states.
     #[serde(rename_all = "camelCase")]

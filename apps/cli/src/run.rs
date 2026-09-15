@@ -248,6 +248,7 @@ async fn run(args: TaskArgs) -> ExitCode {
         .start_task(StartTaskRequest {
             conversation_id,
             goal: args.goal,
+            ..Default::default()
         })
         .await
     {

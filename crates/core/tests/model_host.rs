@@ -190,6 +190,7 @@ async fn start(service: &TaskService) -> TaskId {
         .start_task(StartTaskRequest {
             conversation_id: None,
             goal: "Inspect fixture".into(),
+            ..Default::default()
         })
         .await
         .unwrap()
@@ -337,6 +338,7 @@ async fn configuration_is_disclosed_as_excluded_not_silently_uploaded() {
         .start_task(StartTaskRequest {
             conversation_id: Some(conversation.conversation_id),
             goal: "Inspect fixture".into(),
+            ..Default::default()
         })
         .await
         .unwrap();

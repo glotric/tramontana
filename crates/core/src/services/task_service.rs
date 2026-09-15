@@ -14,6 +14,7 @@ use crate::contracts::{
 use crate::ports::{
     AgentProvider, CheckpointRepository, Clock, ConfigurationRepository, ConversationRepository,
     EventStore, IdSource, ModelProvider, ProjectRepository, RepositoryError, TaskRepository,
+    ToolAdmission,
 };
 use crate::services::journal::{JournalPorts, TaskJournal};
 use crate::services::projection::TaskProjectionWriter;
@@ -27,12 +28,23 @@ use crate::services::{PermissionManager, ToolRegistry};
 const UPDATE_BUFFER: usize = 256;
 
 /// What to start.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StartTaskRequest {
     /// Conversation to attach the task to, when it has one.
     pub conversation_id: Option<ConversationId>,
     /// What the user asked for.
     pub goal: String,
+    /// Which tools this task's worker may offer its model.
+    ///
+    /// `None` runs the service's own worker, whatever it admits. `Some` asks
+    /// for a worker built for this task, which only a service given a
+    /// [`WorkerChoice`] can provide. Every write or recipe the model then
+    /// asks for is still approved as it happens (ADRs 0021, 0025 and 0031).
+    pub admission: Option<ToolAdmission>,
+    /// Where this task's models may run. `None` takes the profile's mode.
+    ///
+    /// Recorded when the task is created, and kept if it is resumed.
+    pub routing_mode: Option<RoutingMode>,
 }
 
 /// Runtime state for a task that is currently running.
@@ -104,6 +116,13 @@ impl std::fmt::Debug for Providers {
     }
 }
 
+/// Builds a task's worker from what that task may offer its model.
+///
+/// For a service that runs tasks under different admissions in one process,
+/// as the desktop does. A service without one runs every task with
+/// [`Providers::worker`] (ADR 0031).
+pub type WorkerChoice = Arc<dyn Fn(ToolAdmission) -> Arc<dyn AgentProvider> + Send + Sync>;
+
 /// The application service the CLI and desktop shell both call.
 ///
 /// Owns task lifecycle, event ordering, and cancellation. Adapters translate
@@ -116,11 +135,14 @@ pub struct TaskService {
     pub(super) ids: Arc<dyn IdSource>,
     pub(super) live: LiveTasks,
     pub(super) lifecycle: tokio::sync::Mutex<()>,
-    /// The routing mode every task in this profile starts under.
+    /// The routing mode a task in this profile starts under, unless it names
+    /// its own.
     ///
     /// Behind a lock because `setRoutingMode` (`CORE_CONTRACTS.md` §13) changes
-    /// it while tasks are running, and a task reads it once when it routes.
+    /// it while tasks are running, and a task reads it once when it starts.
     pub(super) routing_mode: Mutex<RoutingMode>,
+    /// Builds a worker for a task that asks for its own admission.
+    pub(super) workers: Option<WorkerChoice>,
     pub(super) execution_allowed: bool,
     pub(super) execution_guard: Option<Arc<dyn Send + Sync>>,
 }
@@ -150,6 +172,7 @@ impl TaskService {
             // Local-first by default: work stays on the device until someone
             // chooses otherwise.
             routing_mode: Mutex::new(RoutingMode::Automatic),
+            workers: None,
             execution_allowed: true,
             execution_guard: None,
         }
@@ -159,6 +182,14 @@ impl TaskService {
     #[must_use]
     pub fn with_routing_mode(self, mode: RoutingMode) -> Self {
         self.set_routing_mode(mode);
+        self
+    }
+
+    /// Let each task ask for its own admission, and build its worker with
+    /// `workers` (ADR 0031).
+    #[must_use]
+    pub fn with_worker_choice(mut self, workers: WorkerChoice) -> Self {
+        self.workers = Some(workers);
         self
     }
 
@@ -460,6 +491,19 @@ impl TaskService {
     pub async fn start_task(&self, request: StartTaskRequest) -> Result<TaskId, ErrorEnvelope> {
         let _lifecycle = self.lifecycle.lock().await;
         self.require_execution()?;
+        // Both chosen before anything is written, so a refusal leaves no
+        // task behind.
+        let worker = match (request.admission, &self.workers) {
+            (None, _) => Arc::clone(&self.providers.worker),
+            (Some(admission), Some(choose)) => choose(admission),
+            (Some(_), None) => {
+                return Err(self.error(
+                    ErrorCode::CapabilityUnsupported,
+                    "This application runs every task with one worker, and cannot choose one for this task",
+                ));
+            }
+        };
+        let routing_mode = request.routing_mode.unwrap_or_else(|| self.routing_mode());
         let project_id = match &request.conversation_id {
             Some(id) => {
                 let conversation = self
@@ -534,6 +578,7 @@ impl TaskService {
                 EventPayload::TaskCreated {
                     goal_summary: goal.text.clone(),
                     conversation_id: request.conversation_id.clone(),
+                    routing_mode: Some(routing_mode),
                 },
             )
             .into_envelope(
@@ -615,7 +660,8 @@ impl TaskService {
             scope,
             Arc::clone(&self.clock),
         )
-        .with_routing_mode(self.routing_mode())
+        .with_routing_mode(routing_mode)
+        .with_worker(worker)
         .with_configuration(resolved_configuration)
         .with_goal_redactions(goal.reason_codes.clone())
         .continuing(None, super::ResumePlan::default(), interrupt);

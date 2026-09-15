@@ -401,6 +401,7 @@ async fn under_local_only_a_task_never_reaches_a_cloud_endpoint() {
         .start_task(StartTaskRequest {
             conversation_id: None,
             goal: "Say hello".into(),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -518,6 +519,7 @@ async fn a_task_with_no_eligible_model_fails_with_the_reason() {
         .start_task(StartTaskRequest {
             conversation_id: None,
             goal: "Say hello".into(),
+            ..Default::default()
         })
         .await
         .unwrap();

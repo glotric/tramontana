@@ -240,6 +240,7 @@ mod tests {
             .start_task(StartTaskRequest {
                 conversation_id: Some(conversation_id),
                 goal: "Survive a desktop restart".to_owned(),
+                ..Default::default()
             })
             .await
             .unwrap();
