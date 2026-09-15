@@ -355,6 +355,54 @@ async fn rebuilding_a_consistent_database_corrects_nothing() {
 }
 
 #[tokio::test]
+async fn a_record_created_twice_is_a_conflict_not_a_storage_failure() {
+    // Importing the same bundle twice writes the same records again. That is
+    // "already here", which a person can act on; a storage failure is not.
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(&directory, "created-twice").await;
+    let projects = SqliteProjectRepository::new(db.clone());
+    let conversations = SqliteConversationRepository::new(db.clone());
+    let tasks = SqliteTaskRepository::new(db);
+
+    let project = ProjectRecord::new(ProjectId::new("p1"), "Demo", vec![], at(0));
+    let conversation = ConversationRecord::new(
+        ConversationId::new("c1"),
+        Some(project.project_id.clone()),
+        "Twice",
+        at(1),
+    );
+    let task = TaskRecord::new(
+        TaskId::new("t1"),
+        Some(conversation.conversation_id.clone()),
+        Some(project.project_id.clone()),
+        "goal",
+        at(2),
+    );
+    projects.create(&project).await.unwrap();
+    conversations.create(&conversation).await.unwrap();
+    tasks.create(&task).await.unwrap();
+
+    assert!(matches!(
+        projects.create(&project).await.unwrap_err(),
+        RepositoryError::Conflict {
+            kind: "project",
+            ..
+        }
+    ));
+    assert!(matches!(
+        conversations.create(&conversation).await.unwrap_err(),
+        RepositoryError::Conflict {
+            kind: "conversation",
+            ..
+        }
+    ));
+    assert!(matches!(
+        tasks.create(&task).await.unwrap_err(),
+        RepositoryError::Conflict { kind: "task", .. }
+    ));
+}
+
+#[tokio::test]
 async fn task_and_initial_events_commit_as_one_transaction() {
     let directory = tempfile::tempdir().unwrap();
     let db = database(&directory, "atomic-task-create").await;

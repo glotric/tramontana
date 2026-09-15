@@ -82,13 +82,18 @@ impl ProjectRepository for SqliteProjectRepository {
             .await
             .map_err(|error| unavailable(&error))?;
 
+        // A project that already exists is a conflict, like a conversation or
+        // a task that does: importing the same bundle twice is refused as
+        // "already here", not reported as a storage failure.
         sqlx::query("INSERT INTO project (project_id, name, created_at) VALUES (?, ?, ?)")
             .bind(record.project_id.as_str())
             .bind(&record.name)
             .bind(record.created_at.as_str())
             .execute(&mut *transaction)
             .await
-            .map_err(|error| unavailable(&error))?;
+            .map_err(|error| {
+                conflict_or_unavailable(&error, "project", record.project_id.as_str())
+            })?;
 
         for root in &record.roots {
             sqlx::query(
@@ -229,7 +234,9 @@ impl ConversationRepository for SqliteConversationRepository {
         .bind(record.archived_at.as_ref().map(Timestamp::as_str))
         .execute(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))
+        .map_err(|error| {
+            conflict_or_unavailable(&error, "conversation", record.conversation_id.as_str())
+        })
         .map(|_| ())
     }
 
@@ -640,7 +647,7 @@ impl TaskRepository for SqliteTaskRepository {
         .bind(record.updated_at.as_str())
         .execute(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))
+        .map_err(|error| conflict_or_unavailable(&error, "task", record.task_id.as_str()))
         .map(|_| ())
     }
 
