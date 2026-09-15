@@ -1,7 +1,8 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  ApprovalRequest,
   ConversationRecord,
   EffectiveConfiguration,
   EventEnvelope,
@@ -25,6 +26,14 @@ const listTasks = vi.hoisted(() => vi.fn());
 const replayTaskEvents = vi.hoisted(() => vi.fn());
 const startTask = vi.hoisted(() => vi.fn());
 const cancelTask = vi.hoisted(() => vi.fn());
+const listPendingApprovals = vi.hoisted(() => vi.fn());
+const onApprovalRequested = vi.hoisted(() => vi.fn());
+const resolveApproval = vi.hoisted(() => vi.fn());
+const projectChanges = vi.hoisted(() => vi.fn());
+const listConfiguredEndpoints = vi.hoisted(() => vi.fn());
+const listModelEndpoints = vi.hoisted(() => vi.fn());
+const listProjectGrants = vi.hoisted(() => vi.fn());
+const watchTask = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -40,6 +49,14 @@ vi.mock("./core.js", async () => {
     replayTaskEvents,
     startTask,
     cancelTask,
+    listPendingApprovals,
+    onApprovalRequested,
+    resolveApproval,
+    projectChanges,
+    listConfiguredEndpoints,
+    listModelEndpoints,
+    listProjectGrants,
+    watchTask,
   };
 });
 
@@ -108,6 +125,22 @@ function event(sequence: number, payload: EventPayload): EventEnvelope {
   };
 }
 
+function approval(approvalId: string): ApprovalRequest {
+  return {
+    schemaVersion: 1,
+    approvalId,
+    taskId: "task-1",
+    capability: "fs.write",
+    toolId: "builtin.fs.patch",
+    requestedScope: { projectId: project.projectId, roots: project.roots, releasesData: false },
+    riskClass: "modify",
+    sideEffect: "localReversible",
+    summary: `builtin.fs.patch wants to write ${approvalId}`,
+    details: [],
+    eligibleDecisions: ["allowOnce", "deny"],
+  };
+}
+
 function captureUpdates(): { emit: (update: TaskUpdate) => void } {
   let sink: (update: TaskUpdate) => void = () => undefined;
   startTask.mockImplementation(
@@ -141,9 +174,25 @@ describe("M2 durable desktop surface", () => {
       replayTaskEvents,
       startTask,
       cancelTask,
+      listPendingApprovals,
+      onApprovalRequested,
+      resolveApproval,
+      projectChanges,
+      listConfiguredEndpoints,
+      listModelEndpoints,
+      listProjectGrants,
+      watchTask,
     ]) {
       mock.mockReset();
     }
+    watchTask.mockResolvedValue(undefined);
+    listProjectGrants.mockResolvedValue([]);
+    listConfiguredEndpoints.mockResolvedValue([]);
+    listModelEndpoints.mockResolvedValue([]);
+    projectChanges.mockResolvedValue({ schemaVersion: 1, status: "", diff: "", truncated: false });
+    listPendingApprovals.mockResolvedValue([]);
+    onApprovalRequested.mockResolvedValue(() => undefined);
+    resolveApproval.mockResolvedValue(undefined);
     fetchCoreInfo.mockResolvedValue({ schemaVersion: 1, appVersion: "0.1.0" });
     listProjects.mockResolvedValue([project]);
     inspectProject.mockResolvedValue({ schemaVersion: 1, project, configuration });
@@ -161,9 +210,9 @@ describe("M2 durable desktop surface", () => {
 
     expect(screen.getByText("/work/tramontana")).toBeInTheDocument();
     expect(screen.getByText("Existing durable task")).toBeInTheDocument();
-    expect(
-      screen.getByRole("complementary", { name: "Effective configuration" }),
-    ).toHaveTextContent(configuration.manifestHash);
+    expect(screen.getByRole("complementary", { name: "Project inspector" })).toHaveTextContent(
+      configuration.manifestHash,
+    );
     expect(screen.getByText("AGENTS.md")).toBeInTheDocument();
     expect(replayTaskEvents).toHaveBeenCalledWith(task.taskId);
   });
@@ -204,10 +253,12 @@ describe("M2 durable desktop surface", () => {
 
     await user.click(screen.getByRole("button", { name: "Start task" }));
     await waitFor(() => {
+      // Read-only and Automatic unless the person chose otherwise.
       expect(startTask).toHaveBeenCalledWith(
         "Say hello",
         expect.any(Function),
         conversation.conversationId,
+        { writes: false, recipes: false, routingMode: "automatic" },
       );
     });
     updates.emit({
@@ -224,6 +275,8 @@ describe("M2 durable desktop surface", () => {
       }),
     });
 
+    // The full record sits behind a disclosure below the cards.
+    await user.click(await screen.findByText("All events (2)"));
     const list = await screen.findByRole("list", { name: "Task event stream" });
     const rendered = within(list).getAllByRole("listitem");
     expect(rendered).toHaveLength(2);
@@ -246,6 +299,7 @@ describe("M2 durable desktop surface", () => {
     updates.emit({ kind: "frame", frame: { streamId: "s", offset: 0, text: "Hel" } });
     updates.emit({ kind: "frame", frame: { streamId: "s", offset: 3, text: "lo" } });
 
+    await user.click(await screen.findByText("All events (1)"));
     const list = await screen.findByRole("list", { name: "Task event stream" });
     expect(within(list).getAllByRole("listitem")).toHaveLength(1);
     expect(screen.getByText("Hello")).toBeInTheDocument();
@@ -281,6 +335,295 @@ describe("M2 durable desktop surface", () => {
       }),
     });
     await waitFor(() => expect(stop).toBeDisabled());
+  });
+
+  it("puts a question raised before this window opened to the person", async () => {
+    listPendingApprovals.mockResolvedValue([approval("approval-1")]);
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    expect(await screen.findByRole("heading", { name: "Approval needed" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Allow once" }));
+    await waitFor(() => {
+      expect(resolveApproval).toHaveBeenCalledWith("approval-1", "allowOnce");
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("heading", { name: "Approval needed" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("queues a second question behind the one on screen", async () => {
+    listPendingApprovals.mockResolvedValue([approval("approval-1")]);
+    let raise: (request: ApprovalRequest) => void = () => undefined;
+    onApprovalRequested.mockImplementation((handler: (request: ApprovalRequest) => void) => {
+      raise = handler;
+      return Promise.resolve(() => undefined);
+    });
+    await renderLoaded();
+    await screen.findByRole("heading", { name: "Approval needed" });
+
+    act(() => {
+      raise(approval("approval-2"));
+    });
+
+    expect(
+      await screen.findByText("1 more question is waiting behind this one."),
+    ).toBeInTheDocument();
+    // The first question is still the one being asked.
+    expect(screen.getByText("builtin.fs.patch wants to write approval-1")).toBeInTheDocument();
+  });
+
+  it("starts a task with the mode and access the person chose, and says what they mean", async () => {
+    const user = userEvent.setup();
+    await renderLoaded();
+    expect(screen.getByText(/Read-only: the model can look/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: "Local only" }));
+    await user.click(screen.getByRole("checkbox", { name: "May edit files" }));
+    await user.click(screen.getByRole("checkbox", { name: "May run recipes" }));
+    expect(
+      screen.getByText(/Local only governs where models run, not the commands a recipe runs/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/each one is put to you before it runs/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalledWith(
+        "Say hello",
+        expect.any(Function),
+        conversation.conversationId,
+        { writes: true, recipes: true, routingMode: "localOnly" },
+      );
+    });
+  });
+
+  it("shows who ran a task and where, each step as a card, and retries by asking again", async () => {
+    const updates = captureUpdates();
+    const user = userEvent.setup();
+    await renderLoaded();
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalled();
+    });
+
+    updates.emit({
+      kind: "event",
+      event: event(1, {
+        kind: "taskCreated",
+        goalSummary: "Patch the greeting",
+        routingMode: "localOnly",
+      }),
+    });
+    updates.emit({
+      kind: "event",
+      event: event(2, {
+        kind: "toolRequested",
+        invocationId: "i1",
+        toolId: "builtin.fs.read",
+        argumentsSummary: "1 argument(s): path",
+        riskClass: "read",
+      }),
+    });
+    updates.emit({
+      kind: "event",
+      event: event(3, {
+        kind: "toolCompleted",
+        invocationId: "i1",
+        displaySummary: "read greeting.txt",
+        sideEffect: "none",
+        truncated: false,
+      }),
+    });
+    updates.emit({
+      kind: "event",
+      event: event(4, {
+        kind: "taskStateChanged",
+        previous: "running",
+        current: "failed",
+        reasonCode: "worker.failed",
+      }),
+    });
+
+    const summary = await screen.findByRole("region", { name: "Task summary" });
+    expect(summary).toHaveTextContent("Local only");
+    expect(summary).toHaveTextContent("Nothing released off this device");
+    const cards = within(screen.getByRole("list", { name: "Task activity" })).getAllByRole(
+      "listitem",
+    );
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toHaveTextContent("Done");
+    expect(cards[0]).toHaveTextContent("read greeting.txt");
+
+    // Retry puts the goal back for the person to start again; it runs nothing.
+    await user.click(within(summary).getByRole("button", { name: "Retry…" }));
+    const goal = screen.getByLabelText("Task goal");
+    expect(goal).toHaveValue("Patch the greeting");
+    expect(goal).toHaveFocus();
+    expect(startTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the working tree again when a task ends", async () => {
+    const updates = captureUpdates();
+    const user = userEvent.setup();
+    await renderLoaded();
+    await waitFor(() => {
+      expect(projectChanges).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalled();
+    });
+    updates.emit({ kind: "event", event: event(1, { kind: "taskCompleted", summary: "Done" }) });
+
+    await waitFor(() => {
+      expect(projectChanges).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("offers to import a bundle into a profile with no project yet", async () => {
+    listProjects.mockResolvedValue([]);
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Import a bundle…" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Export project…" })).not.toBeInTheDocument();
+  });
+
+  it("says what is selected and what state a task is in, not by color alone", async () => {
+    replayTaskEvents.mockResolvedValue([
+      event(1, { kind: "taskCreated", goalSummary: "Existing durable task" }),
+    ]);
+    const { container } = render(<App />);
+    await screen.findByRole("heading", { name: "M2 Conversation" });
+
+    expect(screen.getByRole("button", { name: "Tramontana" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "M2 Conversation" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    // A task tab is a button in a list, so it is announced as one.
+    const tabs = screen.getByRole("list", { name: "Tasks in this conversation" });
+    expect(within(tabs).getByRole("button", { name: /Existing durable task/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+
+    // Colored dots carry nothing a screen reader needs; the words beside them do.
+    for (const dot of container.querySelectorAll(".status-dot")) {
+      expect(dot).toHaveAttribute("aria-hidden", "true");
+    }
+    const summary = await screen.findByRole("region", { name: "Task summary" });
+    expect(summary.querySelector('[aria-live="polite"]')).toHaveTextContent("queued");
+  });
+
+  it("follows a task still running after a reload, from the last event it has", async () => {
+    listTasks.mockResolvedValue([{ ...task, state: "running", lastSequence: 2 }]);
+    replayTaskEvents.mockResolvedValue([
+      event(1, { kind: "taskCreated", goalSummary: "Existing durable task" }),
+      event(2, {
+        kind: "taskStateChanged",
+        previous: "queued",
+        current: "running",
+        reasonCode: "worker.started",
+      }),
+    ]);
+    let deliver: (update: TaskUpdate) => void = () => undefined;
+    watchTask.mockImplementation(
+      (_taskId: string, _after: number, onUpdate: (update: TaskUpdate) => void) => {
+        deliver = onUpdate;
+        return Promise.resolve();
+      },
+    );
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    await waitFor(() => {
+      expect(watchTask).toHaveBeenCalledWith(task.taskId, 2, expect.any(Function));
+    });
+    act(() => {
+      deliver({
+        kind: "event",
+        event: event(3, {
+          kind: "taskStateChanged",
+          previous: "running",
+          current: "completed",
+          reasonCode: "worker.completed",
+        }),
+      });
+    });
+
+    await user.click(await screen.findByText("All events (3)"));
+    const list = screen.getByRole("list", { name: "Task event stream" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(3);
+  });
+
+  it("does not follow a task that has already ended", async () => {
+    replayTaskEvents.mockResolvedValue([
+      event(1, { kind: "taskCreated", goalSummary: "Existing durable task" }),
+      event(2, {
+        kind: "taskStateChanged",
+        previous: "running",
+        current: "completed",
+        reasonCode: "worker.completed",
+      }),
+    ]);
+    await renderLoaded();
+    await screen.findByText("All events (2)");
+    expect(watchTask).not.toHaveBeenCalled();
+  });
+
+  it("lists each configuration diagnostic with its severity, file and message", async () => {
+    inspectProject.mockResolvedValue({
+      schemaVersion: 1,
+      project,
+      configuration: {
+        ...configuration,
+        diagnostics: [
+          {
+            relativePath: ".tramontana/project.md",
+            message: "front matter is not valid YAML",
+            severity: "error",
+          },
+        ],
+      },
+    });
+    await renderLoaded();
+
+    const list = await screen.findByRole("list", { name: "Configuration diagnostics" });
+    expect(within(list).getByRole("listitem")).toHaveTextContent(
+      "Error in .tramontana/project.md: front matter is not valid YAML",
+    );
+  });
+
+  it("reads the standing permissions again once an approval is answered", async () => {
+    listPendingApprovals.mockResolvedValue([approval("approval-1")]);
+    const user = userEvent.setup();
+    await renderLoaded();
+    await waitFor(() => {
+      expect(listProjectGrants).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Allow once" }));
+    await waitFor(() => {
+      expect(listProjectGrants).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("opens the models and credentials, and goes back to work", async () => {
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    await user.click(screen.getByRole("button", { name: "Models and credentials" }));
+    expect(
+      await screen.findByRole("heading", { name: "Models and credentials" }),
+    ).toBeInTheDocument();
+    expect(listConfiguredEndpoints).toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Back to work" }));
+    expect(await screen.findByRole("heading", { name: "M2 Conversation" })).toBeInTheDocument();
   });
 
   it("surfaces a normalized failure from the boundary", async () => {

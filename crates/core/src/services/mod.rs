@@ -19,6 +19,7 @@ mod model_history;
 mod model_input;
 mod model_turn;
 mod permission_manager;
+mod person_read;
 mod preparation;
 mod projection;
 mod recipe;
@@ -64,6 +65,6 @@ pub use routing::{
     AvailabilitySnapshot, NoEligibleRoute, RoutingInput, route, route_after_failure,
 };
 pub use task_export::ImportSummary;
-pub use task_service::{Providers, Repositories, StartTaskRequest, TaskService};
+pub use task_service::{Providers, Repositories, StartTaskRequest, TaskService, WorkerChoice};
 pub use tool_registry::{RegisteredTool, RegistryError, ToolRegistry};
 pub use tool_schema::{TOOL_INPUT_BYTES, ToolInputSchema};

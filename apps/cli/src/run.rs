@@ -70,6 +70,12 @@ pub(crate) struct TaskArgs {
     #[arg(long)]
     allow_recipes: bool,
 
+    /// Where this task's models may run. Recorded with the task and kept if
+    /// it is resumed. Without it the task routes under the default mode,
+    /// automatic.
+    #[arg(long, value_enum, value_name = "MODE")]
+    mode: Option<ModeArg>,
+
     /// Emit each event as a JSON line instead of a formatted table.
     #[arg(long)]
     json: bool,
@@ -197,6 +203,27 @@ pub(crate) async fn execute(mut args: TaskArgs) -> ExitCode {
     }
 }
 
+/// A routing mode, as `--mode` spells it.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum ModeArg {
+    /// Models run on this device, and nothing is sent to a cloud model.
+    LocalOnly,
+    /// A model is chosen; anything sent to a cloud model is asked about first.
+    Automatic,
+    /// A cloud model is chosen when one is available; each release is asked about.
+    CloudPreferred,
+}
+
+impl From<ModeArg> for tramontana_core::contracts::RoutingMode {
+    fn from(mode: ModeArg) -> Self {
+        match mode {
+            ModeArg::LocalOnly => Self::LocalOnly,
+            ModeArg::Automatic => Self::Automatic,
+            ModeArg::CloudPreferred => Self::CloudPreferred,
+        }
+    }
+}
+
 /// What the reference worker may offer its model, from `--allow-writes` and
 /// `--allow-recipes`: two separate choices, neither implying the other.
 fn admission(allow_writes: bool, allow_recipes: bool) -> tramontana_core::ports::ToolAdmission {
@@ -248,6 +275,8 @@ async fn run(args: TaskArgs) -> ExitCode {
         .start_task(StartTaskRequest {
             conversation_id,
             goal: args.goal,
+            routing_mode: args.mode.map(Into::into),
+            ..Default::default()
         })
         .await
     {

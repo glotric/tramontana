@@ -7,21 +7,289 @@ const Channel = vi.hoisted(() =>
   }),
 );
 vi.mock("@tauri-apps/api/core", () => ({ invoke, Channel }));
+const listen = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/event", () => ({ listen }));
 
 const {
+  addAnthropicEndpoint,
+  addLlamaEndpoint,
+  addOpenAiEndpoint,
   asErrorEnvelope,
   cancelTask,
   createConversation,
+  exportBundle,
   fetchCoreInfo,
+  forgetCredential,
+  importStagedBundle,
+  inspectBundle,
+  listConfiguredEndpoints,
+  listModelEndpoints,
+  listProjectGrants,
+  removeEndpoint,
+  restartApplication,
+  revokeProjectGrant,
+  setEndpointEnabled,
+  setEndpointToolCalls,
+  storeCredential,
   getTask,
   inspectProject,
   listConversations,
+  listPendingApprovals,
   listProjects,
   listTasks,
+  onApprovalRequested,
   openProject,
+  projectChanges,
   replayTaskEvents,
+  resolveApproval,
   startTask,
+  watchTask,
 } = await import("./core.js");
+
+describe("approval IPC", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    listen.mockReset();
+  });
+
+  it("asks for the questions still waiting and answers one by identifier", async () => {
+    invoke.mockResolvedValue([]);
+    await listPendingApprovals();
+    expect(invoke).toHaveBeenCalledWith("pending_approvals");
+
+    invoke.mockResolvedValue(undefined);
+    await resolveApproval("approval-1", "allowOnce");
+    expect(invoke).toHaveBeenCalledWith("resolve_approval", {
+      approvalId: "approval-1",
+      decision: "allowOnce",
+    });
+  });
+
+  it("delivers each question the shell raises, until told to stop", async () => {
+    const unlisten = vi.fn();
+    let deliver: (event: { payload: unknown }) => void = () => undefined;
+    listen.mockImplementation((name: string, handler: (event: { payload: unknown }) => void) => {
+      // The name `approval.rs` emits under; nothing at compile time links them.
+      expect(name).toBe("tramontana://approval-requested");
+      deliver = handler;
+      return Promise.resolve(unlisten);
+    });
+
+    const seen: unknown[] = [];
+    const stop = await onApprovalRequested((request) => {
+      seen.push(request);
+    });
+    deliver({ payload: { approvalId: "approval-1" } });
+    expect(seen).toEqual([{ approvalId: "approval-1" }]);
+
+    stop();
+    expect(unlisten).toHaveBeenCalledOnce();
+  });
+});
+
+describe("reattaching", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(undefined);
+  });
+
+  it("asks for the events after the last one this window has, and delivers them", async () => {
+    const onUpdate = vi.fn();
+    await watchTask("task-1", 7, onUpdate);
+
+    expect(invoke).toHaveBeenLastCalledWith(
+      "watch_task",
+      expect.objectContaining({ taskId: "task-1", afterSequence: 7 }),
+    );
+    const payload = invoke.mock.calls.at(-1)?.[1] as {
+      channel: { onmessage: (update: unknown) => void };
+    };
+    payload.channel.onmessage({ kind: "frame", frame: { streamId: "s", offset: 0, text: "hi" } });
+    expect(onUpdate).toHaveBeenCalledOnce();
+  });
+});
+
+describe("standing permissions", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  it("lists a project's grants and revokes one by identifier", async () => {
+    invoke.mockResolvedValue([]);
+    await listProjectGrants("project-1");
+    expect(invoke).toHaveBeenLastCalledWith("list_project_grants", { projectId: "project-1" });
+
+    invoke.mockResolvedValue(undefined);
+    await revokeProjectGrant("grant-1");
+    expect(invoke).toHaveBeenLastCalledWith("revoke_project_grant", { grantId: "grant-1" });
+  });
+});
+
+describe("models and credentials", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(undefined);
+  });
+
+  it("invokes the settings commands the shell registers", async () => {
+    invoke.mockResolvedValue([]);
+    await listConfiguredEndpoints();
+    expect(invoke).toHaveBeenLastCalledWith("list_configured_endpoints");
+    await listModelEndpoints();
+    expect(invoke).toHaveBeenLastCalledWith("list_model_endpoints");
+
+    invoke.mockResolvedValue(undefined);
+    await setEndpointEnabled("local", false);
+    expect(invoke).toHaveBeenLastCalledWith("set_endpoint_enabled", {
+      endpointId: "local",
+      enabled: false,
+    });
+    await setEndpointToolCalls("local", true);
+    expect(invoke).toHaveBeenLastCalledWith("set_endpoint_tool_calls", {
+      endpointId: "local",
+      supported: true,
+    });
+    await removeEndpoint("local");
+    expect(invoke).toHaveBeenLastCalledWith("remove_endpoint", { endpointId: "local" });
+
+    invoke.mockResolvedValue(7);
+    expect(await storeCredential("openai.apiKey", "sk-test")).toBe(7);
+    expect(invoke).toHaveBeenLastCalledWith("store_credential", {
+      key: "openai.apiKey",
+      value: "sk-test",
+    });
+    invoke.mockResolvedValue(true);
+    await forgetCredential("openai.apiKey");
+    expect(invoke).toHaveBeenLastCalledWith("forget_credential", { key: "openai.apiKey" });
+
+    invoke.mockResolvedValue(undefined);
+    await restartApplication();
+    expect(invoke).toHaveBeenLastCalledWith("restart_application");
+  });
+
+  it("adds each kind of endpoint by name, and never with a path", async () => {
+    invoke.mockResolvedValue(false);
+    await addOpenAiEndpoint({
+      endpointId: "local",
+      baseUrl: "http://127.0.0.1:8080",
+      modelId: "qwen",
+    });
+    expect(invoke).toHaveBeenLastCalledWith("add_openai_endpoint", {
+      endpointId: "local",
+      displayName: null,
+      baseUrl: "http://127.0.0.1:8080",
+      modelId: "qwen",
+      credentialKey: null,
+    });
+
+    invoke.mockResolvedValue(true);
+    await addAnthropicEndpoint({
+      endpointId: "claude",
+      displayName: "Claude",
+      baseUrl: "https://api.anthropic.com",
+      modelId: "claude",
+      credentialKey: "anthropic.apiKey",
+    });
+    expect(invoke).toHaveBeenLastCalledWith("add_anthropic_endpoint", {
+      endpointId: "claude",
+      displayName: "Claude",
+      baseUrl: "https://api.anthropic.com",
+      modelId: "claude",
+      credentialKey: "anthropic.apiKey",
+    });
+
+    invoke.mockResolvedValue(null);
+    expect(await addLlamaEndpoint({ endpointId: "llama", modelId: "qwen" })).toBeUndefined();
+    expect(invoke).toHaveBeenLastCalledWith("add_llama_endpoint", {
+      endpointId: "llama",
+      displayName: null,
+      modelId: "qwen",
+    });
+  });
+});
+
+describe("bundles", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  it("names what to export, and never a folder", async () => {
+    invoke.mockResolvedValue(null);
+    expect(
+      await exportBundle(
+        { projectId: "project-1" },
+        { includeAbsolutePaths: false, includeRawToolOutput: false },
+      ),
+    ).toBeUndefined();
+    expect(invoke).toHaveBeenLastCalledWith("export_bundle", {
+      taskId: null,
+      projectId: "project-1",
+      includeAbsolutePaths: false,
+      includeRawToolOutput: false,
+    });
+
+    await exportBundle(
+      { taskId: "task-1" },
+      { includeAbsolutePaths: true, includeRawToolOutput: true },
+    );
+    expect(invoke).toHaveBeenLastCalledWith("export_bundle", {
+      taskId: "task-1",
+      projectId: null,
+      includeAbsolutePaths: true,
+      includeRawToolOutput: true,
+    });
+  });
+
+  it("inspects a picked bundle, then imports it by identifier", async () => {
+    invoke.mockResolvedValue(null);
+    expect(await inspectBundle()).toBeUndefined();
+    expect(invoke).toHaveBeenLastCalledWith("inspect_bundle");
+
+    invoke.mockResolvedValue({ schemaVersion: 1, imported: {}, executedAnything: false });
+    await importStagedBundle("bundle-1");
+    expect(invoke).toHaveBeenLastCalledWith("import_staged_bundle", { stagingId: "bundle-1" });
+  });
+});
+
+describe("project changes", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  it("asks the shell for the project's status and diff by project", async () => {
+    invoke.mockResolvedValue({ schemaVersion: 1, status: "", diff: "", truncated: false });
+    await projectChanges("project-1");
+    expect(invoke).toHaveBeenCalledWith("project_changes", { projectId: "project-1" });
+  });
+});
+
+describe("task options", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue("task-1");
+  });
+
+  it("sends what the person chose, and nothing when they chose nothing", async () => {
+    await startTask("hello", () => undefined, "conversation-1", {
+      writes: true,
+      recipes: false,
+      routingMode: "localOnly",
+    });
+    expect(invoke).toHaveBeenLastCalledWith(
+      "start_task",
+      expect.objectContaining({
+        admission: { writes: true, recipes: false },
+        routingMode: "localOnly",
+      }),
+    );
+
+    await startTask("hello", () => undefined);
+    expect(invoke).toHaveBeenLastCalledWith(
+      "start_task",
+      expect.objectContaining({ admission: null, routingMode: null }),
+    );
+  });
+});
 
 describe("core IPC client", () => {
   beforeEach(() => {

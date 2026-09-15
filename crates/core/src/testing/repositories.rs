@@ -187,6 +187,7 @@ impl TaskRepository for InMemoryTaskRepository {
                     EventPayload::TaskCreated {
                         goal_summary,
                         conversation_id,
+                        ..
                     }
                 )) if goal_summary == &record.goal_summary
                     && conversation_id == &record.conversation_id

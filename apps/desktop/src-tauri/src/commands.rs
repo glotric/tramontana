@@ -7,21 +7,28 @@
 //! No command accepts a shell string, and none makes a decision the core has
 //! not already made.
 
+use std::path::PathBuf;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tramontana_core::config::ConfigurationSelection;
 use tramontana_core::contracts::{
-    ApprovalDecisionKind, ApprovalId, CheckpointId, ConversationId, ConversationRecord,
-    CorrelationId, EffectiveConfiguration, ErrorCode, ErrorEnvelope, EventEnvelope, ProjectGrant,
-    ProjectId, ProjectRecord, SCHEMA_VERSION, TaskCheckpoint, TaskId, TaskRecord, TaskSnapshot,
-    TaskUpdate,
+    ApprovalDecisionKind, ApprovalId, ApprovalRequest, CheckpointId, ConversationId,
+    ConversationRecord, CorrelationId, EffectiveConfiguration, ErrorCode, ErrorEnvelope,
+    EventEnvelope, ExportManifest, ExportOptions, ProjectGrant, ProjectId, ProjectRecord,
+    RoutingMode, SCHEMA_VERSION, TaskCheckpoint, TaskId, TaskRecord, TaskSnapshot, TaskUpdate,
 };
 use tramontana_core::services::StartTaskRequest;
 use tramontana_platform::{CanonicalRoot, canonicalize_root, discover};
 
-use tramontana_core::ports::ApprovalStore;
+use tramontana_core::ports::{ApprovalStore, IdSource, ToolAdmission, ToolOutcome};
+use tramontana_platform::UuidIdSource;
 
+use tramontana_core::ports::Clock;
+use tramontana_platform::SystemClock;
+
+use crate::bundles::{self, ExportScope};
+use crate::settings;
 use crate::state::AppState;
 
 /// Longest goal this boundary accepts.
@@ -185,6 +192,11 @@ pub(crate) async fn replay_task_events(
 /// background and reports through the channel. A long-running operation must
 /// never block the interface (`CORE_CONTRACTS.md` §13).
 ///
+/// `admission` and `routing_mode` are what the person chose for this task in
+/// the composer (ADR 0031). Absent, the task runs read-only under the
+/// profile's mode. Admission only lets the model ask: every write and every
+/// recipe run is still put to the person as an approval.
+///
 /// # Errors
 ///
 /// [`ErrorCode::InvalidRequest`] for an empty or oversized goal, or whatever
@@ -193,6 +205,8 @@ pub(crate) async fn replay_task_events(
 pub(crate) async fn start_task(
     goal: String,
     conversation_id: Option<ConversationId>,
+    admission: Option<ToolAdmission>,
+    routing_mode: Option<RoutingMode>,
     channel: Channel<TaskUpdate>,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ErrorEnvelope> {
@@ -217,26 +231,85 @@ pub(crate) async fn start_task(
         .start_task(StartTaskRequest {
             conversation_id,
             goal,
+            admission,
+            routing_mode,
         })
         .await?;
 
     // Subscribe from the beginning so the interface sees the creation event
     // even though it was written before this call returned.
-    let (replayed, mut updates) = service.subscribe_task_events(&task_id, 0).await?;
+    let (replayed, updates) = service.subscribe_task_events(&task_id, 0).await?;
+    forward_updates(
+        service,
+        task_id.clone(),
+        0,
+        replayed,
+        updates,
+        move |update| channel.send(update).is_ok(),
+    );
 
-    let forward_task_id = task_id.clone();
+    Ok(task_id)
+}
+
+/// Follow a task that is already running, from the last event the window has.
+///
+/// A window that reloads loses the channel `start_task` opened, while the task
+/// goes on in this process. This reattaches: every durable event after
+/// `after_sequence`, then the live stream, until the task ends. Streamed text
+/// from before the reload is not repeated; the committed message will be.
+///
+/// # Errors
+///
+/// [`ErrorCode::NotFound`] when the task is unknown.
+#[tauri::command]
+pub(crate) async fn watch_task(
+    task_id: TaskId,
+    after_sequence: u64,
+    channel: Channel<TaskUpdate>,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    let service = state.service.clone();
+    let (replayed, updates) = service
+        .subscribe_task_events(&task_id, after_sequence)
+        .await?;
+    forward_updates(
+        service,
+        task_id,
+        after_sequence,
+        replayed,
+        updates,
+        move |update| channel.send(update).is_ok(),
+    );
+    Ok(())
+}
+
+/// Forward a task's updates to a window until the task ends.
+///
+/// `replayed` holds the durable events after `after_sequence`, and `updates`
+/// the live stream, subscribed before the replay was read. An event can
+/// arrive on both, so anything at or below the highest sequence already sent
+/// is dropped: the window sees each event once, in order, with no gap. A
+/// window that falls behind catches up from the store. `send` returns false
+/// when the window has gone, which ends the forwarding.
+pub(crate) fn forward_updates<F>(
+    service: std::sync::Arc<tramontana_core::services::TaskService>,
+    task_id: TaskId,
+    after_sequence: u64,
+    replayed: Vec<EventEnvelope>,
+    mut updates: tokio::sync::broadcast::Receiver<TaskUpdate>,
+    mut send: F,
+) where
+    F: FnMut(TaskUpdate) -> bool + Send + 'static,
+{
     tokio::spawn(async move {
-        let mut highest = 0;
+        let mut highest = after_sequence;
         let mut terminal_replayed = false;
         for event in replayed {
             highest = highest.max(event.sequence);
             terminal_replayed |= event.is_terminal_outcome();
-            if channel
-                .send(TaskUpdate::Event {
-                    event: Box::new(event),
-                })
-                .is_err()
-            {
+            if !send(TaskUpdate::Event {
+                event: Box::new(event),
+            }) {
                 return; // The window went away.
             }
         }
@@ -255,39 +328,29 @@ pub(crate) async fn start_task(
                     }
                     highest = event.sequence;
                     let terminal = event.is_terminal_outcome();
-                    if channel.send(TaskUpdate::Event { event }).is_err() {
-                        return;
-                    }
-                    if terminal {
+                    if !send(TaskUpdate::Event { event }) || terminal {
                         return;
                     }
                 }
                 Ok(update) => {
-                    if channel.send(update).is_err() {
+                    if !send(update) {
                         return;
                     }
                 }
                 // Lagging is recoverable: durable events are in the store, so
                 // catch up rather than reporting a failure to the user.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    let Ok((missed, _)) = service
-                        .subscribe_task_events(&forward_task_id, highest)
-                        .await
+                    let Ok((missed, _)) = service.subscribe_task_events(&task_id, highest).await
                     else {
                         return;
                     };
                     for event in missed {
                         highest = highest.max(event.sequence);
                         let terminal = event.is_terminal_outcome();
-                        if channel
-                            .send(TaskUpdate::Event {
-                                event: Box::new(event),
-                            })
-                            .is_err()
+                        if !send(TaskUpdate::Event {
+                            event: Box::new(event),
+                        }) || terminal
                         {
-                            return;
-                        }
-                        if terminal {
                             return;
                         }
                     }
@@ -296,30 +359,376 @@ pub(crate) async fn start_task(
             }
         }
     });
-
-    Ok(task_id)
 }
 
-async fn pick_project_root(app: &AppHandle) -> Result<Option<CanonicalRoot>, ErrorEnvelope> {
+/// Ask the native picker for a folder; `None` when the person cancels.
+///
+/// The only way a filesystem path enters from the window: the webview never
+/// supplies one.
+async fn pick_folder(app: &AppHandle, title: &str) -> Result<Option<PathBuf>, ErrorEnvelope> {
     let (send, receive) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .set_title("Open a Tramontana project")
+        .set_title(title)
         .pick_folder(move |selection| {
             let _ = send.send(selection);
         });
     let selection = receive
         .await
-        .map_err(|_| internal("the project picker closed unexpectedly"))?;
+        .map_err(|_| internal("the folder picker closed unexpectedly"))?;
     let Some(selection) = selection else {
         return Ok(None);
     };
-    let path = selection
+    selection
         .into_path()
-        .map_err(|_| invalid("the selected project is not a local directory"))?;
+        .map(Some)
+        .map_err(|_| invalid("the selected folder is not a local directory"))
+}
+
+async fn pick_project_root(app: &AppHandle) -> Result<Option<CanonicalRoot>, ErrorEnvelope> {
+    let Some(path) = pick_folder(app, "Open a Tramontana project").await? else {
+        return Ok(None);
+    };
     canonicalize_root(&path)
         .map(Some)
         .map_err(|error| invalid(format!("could not open the selected project: {error}")))
+}
+
+/// A bundle that was written, and what it holds.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExportReport {
+    pub schema_version: u32,
+    /// The folder the person chose, to show them where it went.
+    pub directory: String,
+    /// The bundle's table of contents, including what it left out.
+    pub manifest: ExportManifest,
+}
+
+/// Write a bundle for one task or one project into a folder the person picks.
+///
+/// Absolute paths and raw tool output stay out unless the person asks for
+/// them, and the manifest says what was left out. `None` when they cancel.
+///
+/// # Errors
+///
+/// [`ErrorCode::InvalidRequest`] unless exactly one of a task or a project is
+/// named, or whatever the export reports.
+#[tauri::command]
+pub(crate) async fn export_bundle(
+    task_id: Option<TaskId>,
+    project_id: Option<ProjectId>,
+    include_absolute_paths: bool,
+    include_raw_tool_output: bool,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<ExportReport>, ErrorEnvelope> {
+    let scope = match (task_id, project_id) {
+        (Some(task_id), None) => ExportScope::Task(task_id),
+        (None, Some(project_id)) => ExportScope::Project(project_id),
+        _ => return Err(invalid("export one task or one project")),
+    };
+    let Some(directory) = pick_folder(&app, "Choose where to write the bundle").await? else {
+        return Ok(None);
+    };
+    let options = ExportOptions {
+        include_absolute_paths,
+        include_raw_tool_output,
+        include_artifacts: false,
+    };
+    let manifest = bundles::export_to(&state.service, &scope, options, &directory).await?;
+    Ok(Some(ExportReport {
+        schema_version: SCHEMA_VERSION,
+        directory: directory.display().to_string(),
+        manifest,
+    }))
+}
+
+/// A bundle the person picked and inspected, waiting for them to confirm.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StagedBundleView {
+    /// What the import confirms, instead of a path.
+    pub staging_id: String,
+    pub inspection: bundles::BundleInspection,
+}
+
+/// Pick a bundle folder and say what it holds, writing nothing.
+///
+/// `None` when the person cancels.
+///
+/// # Errors
+///
+/// [`ErrorCode::InvalidRequest`] when the folder is not a bundle, or the
+/// bundle breaks a rule.
+#[tauri::command]
+pub(crate) async fn inspect_bundle(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<StagedBundleView>, ErrorEnvelope> {
+    let Some(directory) = pick_folder(&app, "Choose a bundle to import").await? else {
+        return Ok(None);
+    };
+    let inspection = bundles::inspect(&state.service, &directory)?;
+    let staging_id = UuidIdSource::new().next("bundle");
+    bundles::stage(&state.staged_bundle, staging_id.clone(), directory);
+    Ok(Some(StagedBundleView {
+        staging_id,
+        inspection,
+    }))
+}
+
+/// Import the bundle the person inspected, validating it again first.
+///
+/// # Errors
+///
+/// [`ErrorCode::NotFound`] when this is not the bundle last inspected, or
+/// whatever the import reports.
+#[tauri::command]
+pub(crate) async fn import_staged_bundle(
+    staging_id: String,
+    state: State<'_, AppState>,
+) -> Result<bundles::ImportReport, ErrorEnvelope> {
+    let Some(directory) = bundles::take_staged(&state.staged_bundle, &staging_id) else {
+        return Err(ErrorEnvelope::new(
+            ErrorCode::NotFound,
+            "inspect the bundle again before importing it",
+            CorrelationId::new("ipc"),
+        ));
+    };
+    bundles::import_from(&state.service, &directory).await
+}
+
+/// Ask the native picker for a file; `None` when the person cancels.
+async fn pick_file(app: &AppHandle, title: &str) -> Result<Option<PathBuf>, ErrorEnvelope> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title(title)
+        .pick_file(move |selection| {
+            let _ = send.send(selection);
+        });
+    let selection = receive
+        .await
+        .map_err(|_| internal("the file picker closed unexpectedly"))?;
+    let Some(selection) = selection else {
+        return Ok(None);
+    };
+    selection
+        .into_path()
+        .map(Some)
+        .map_err(|_| invalid("the selected file is not a local file"))
+}
+
+/// Every configured endpoint, with whether its credential is stored.
+///
+/// What is configured, which can differ from what is running until the next
+/// start: `list_model_endpoints` says what came up.
+///
+/// # Errors
+///
+/// [`ErrorCode::PersistenceError`] when the settings cannot be read.
+#[tauri::command]
+pub(crate) async fn list_configured_endpoints(
+    state: State<'_, AppState>,
+) -> Result<Vec<settings::ConfiguredEndpoint>, ErrorEnvelope> {
+    settings::list(state.settings.as_ref(), state.vault.as_ref()).await
+}
+
+/// Configure an endpoint speaking the OpenAI chat-completions format.
+///
+/// Returns whether work sent to it leaves the device. Takes effect the next
+/// time Tramontana opens.
+///
+/// # Errors
+///
+/// See [`settings::add`].
+#[tauri::command]
+pub(crate) async fn add_openai_endpoint(
+    endpoint_id: String,
+    display_name: Option<String>,
+    base_url: String,
+    model_id: String,
+    credential_key: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<bool, ErrorEnvelope> {
+    settings::add(
+        state.settings.as_ref(),
+        &endpoint_id,
+        display_name,
+        settings::NewEndpoint::OpenAiCompatible {
+            base_url,
+            model_id,
+            credential_key: credential_key.filter(|key| !key.is_empty()),
+        },
+        SystemClock::new().now(),
+    )
+    .await
+}
+
+/// Configure Anthropic's Messages API. Takes effect the next time Tramontana
+/// opens.
+///
+/// # Errors
+///
+/// See [`settings::add`].
+#[tauri::command]
+pub(crate) async fn add_anthropic_endpoint(
+    endpoint_id: String,
+    display_name: Option<String>,
+    base_url: String,
+    model_id: String,
+    credential_key: String,
+    state: State<'_, AppState>,
+) -> Result<bool, ErrorEnvelope> {
+    settings::add(
+        state.settings.as_ref(),
+        &endpoint_id,
+        display_name,
+        settings::NewEndpoint::Anthropic {
+            base_url,
+            model_id,
+            credential_key,
+        },
+        SystemClock::new().now(),
+    )
+    .await
+}
+
+/// Configure a `llama-server` this application starts and stops, from an
+/// executable and a model file the person picks. `None` when they cancel
+/// either picker. Takes effect the next time Tramontana opens.
+///
+/// # Errors
+///
+/// See [`settings::add`].
+#[tauri::command]
+pub(crate) async fn add_llama_endpoint(
+    endpoint_id: String,
+    display_name: Option<String>,
+    model_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<bool>, ErrorEnvelope> {
+    let Some(binary_path) = pick_file(&app, "Choose the llama-server executable").await? else {
+        return Ok(None);
+    };
+    let Some(model_path) = pick_file(&app, "Choose the GGUF model file").await? else {
+        return Ok(None);
+    };
+    settings::add(
+        state.settings.as_ref(),
+        &endpoint_id,
+        display_name,
+        settings::NewEndpoint::LlamaServer {
+            binary_path,
+            model_path,
+            model_id,
+        },
+        SystemClock::new().now(),
+    )
+    .await
+    .map(Some)
+}
+
+/// Turn an endpoint on or off, keeping its configuration.
+///
+/// # Errors
+///
+/// See [`settings::toggle`].
+#[tauri::command]
+pub(crate) async fn set_endpoint_enabled(
+    endpoint_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    settings::toggle(
+        state.settings.as_ref(),
+        &endpoint_id,
+        settings::Toggle::Enabled(enabled),
+    )
+    .await
+}
+
+/// Record whether the person verified this endpoint's tool-call support.
+///
+/// # Errors
+///
+/// See [`settings::toggle`].
+#[tauri::command]
+pub(crate) async fn set_endpoint_tool_calls(
+    endpoint_id: String,
+    supported: bool,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    settings::toggle(
+        state.settings.as_ref(),
+        &endpoint_id,
+        settings::Toggle::ToolCalls(supported),
+    )
+    .await
+}
+
+/// Remove an endpoint. Its credential stays in the store.
+///
+/// # Errors
+///
+/// See [`settings::remove`].
+#[tauri::command]
+pub(crate) async fn remove_endpoint(
+    endpoint_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    settings::remove(state.settings.as_ref(), &endpoint_id).await
+}
+
+/// Store a credential the person typed. Returns its length, never the value.
+///
+/// # Errors
+///
+/// See [`settings::store_credential`].
+#[tauri::command]
+pub(crate) async fn store_credential(
+    key: String,
+    value: String,
+    state: State<'_, AppState>,
+) -> Result<usize, ErrorEnvelope> {
+    settings::store_credential(state.vault.as_ref(), &key, &value).await
+}
+
+/// Remove a credential from the store. Returns whether one was there.
+///
+/// # Errors
+///
+/// See [`settings::forget_credential`].
+#[tauri::command]
+pub(crate) async fn forget_credential(
+    key: String,
+    state: State<'_, AppState>,
+) -> Result<bool, ErrorEnvelope> {
+    settings::forget_credential(state.vault.as_ref(), &key).await
+}
+
+/// Restart Tramontana, so endpoints configured since it opened are used.
+///
+/// Requested rather than immediate, so the application exits as quitting
+/// does and stops its model runtimes first; restarting at once would leave
+/// them running. Running tasks are interrupted as any unclean stop interrupts
+/// them, and recovered on the next start; the window says so before offering
+/// this.
+#[tauri::command]
+pub(crate) fn restart_application(app: AppHandle) {
+    app.request_restart();
+}
+
+/// Whether this build can restart itself.
+///
+/// Not under `tauri dev`: the development server stops when the application
+/// exits, so a restarted window would have nothing to load and stay blank.
+/// The window asks the person to quit and start it again instead.
+#[tauri::command]
+pub(crate) fn restart_supported() -> bool {
+    !tauri::is_dev()
 }
 
 async fn resolve_stored_project(
@@ -491,6 +900,70 @@ pub(crate) fn resolve_approval(
         "that approval is no longer waiting for an answer",
         CorrelationId::new("ipc"),
     ))
+}
+
+/// Approval questions still waiting for an answer, oldest first.
+///
+/// A window asks for these when it opens. The event that raised a card is not
+/// replayed, so a question asked before this window existed — or before it was
+/// reloaded — would otherwise go unanswered while its task waited.
+#[tauri::command]
+pub(crate) fn pending_approvals(state: State<'_, AppState>) -> Vec<ApprovalRequest> {
+    state.approver.pending()
+}
+
+/// The Git reads the Changes panel runs for the person (ADR 0032). The core
+/// accepts any read that takes no arguments; these are the two this boundary
+/// asks for.
+pub(crate) const GIT_STATUS: &str = "builtin.git.status";
+pub(crate) const GIT_DIFF: &str = "builtin.git.diff";
+
+/// A project's working tree as Git sees it.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProjectChanges {
+    /// Version of this response envelope.
+    pub schema_version: u32,
+    /// Git's status, including files it does not track yet.
+    pub status: String,
+    /// Git's per-file summary and patch for tracked files.
+    pub diff: String,
+    /// Whether either read was cut short by its output limit.
+    pub truncated: bool,
+}
+
+/// Read a project's Git status and diff for the person.
+///
+/// Belongs to no task and changes nothing: the core runs these reads only
+/// where it would let a task read without asking (ADR 0032).
+///
+/// # Errors
+///
+/// Whatever the core reports: an unknown project, a refused read, or Git's
+/// own failure, such as a project that is not a repository.
+#[tauri::command]
+pub(crate) async fn project_changes(
+    project_id: ProjectId,
+    state: State<'_, AppState>,
+) -> Result<ProjectChanges, ErrorEnvelope> {
+    let status = state.service.read_project(&project_id, GIT_STATUS).await?;
+    let diff = state.service.read_project(&project_id, GIT_DIFF).await?;
+    Ok(ProjectChanges {
+        schema_version: SCHEMA_VERSION,
+        status: text_of(&status),
+        diff: text_of(&diff),
+        truncated: status.truncated || diff.truncated,
+    })
+}
+
+/// The text a Git read returned.
+fn text_of(outcome: &ToolOutcome) -> String {
+    outcome
+        .content
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// Every live grant for a project, so the user can see what they have allowed.

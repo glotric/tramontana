@@ -1,11 +1,17 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type {
+  ApprovalDecisionKind,
+  ApprovalRequest,
   ConversationRecord,
   CoreInfo,
   EffectiveConfiguration,
   ErrorEnvelope,
   EventEnvelope,
+  ExportManifest,
+  ProjectGrant,
   ProjectRecord,
+  RoutingMode,
   TaskCheckpoint,
   TaskRecord,
   TaskSnapshot,
@@ -73,9 +79,258 @@ export async function listTasks(conversationId?: string): Promise<readonly TaskR
   return invoke<TaskRecord[]>("list_tasks", { conversationId: conversationId ?? null });
 }
 
+/** A project's working tree as Git sees it. */
+export interface ProjectChanges {
+  readonly schemaVersion: number;
+  /** Git's status, including files it does not track yet. */
+  readonly status: string;
+  /** Git's per-file summary and patch for tracked files. */
+  readonly diff: string;
+  /** Whether either read was cut short by its output limit. */
+  readonly truncated: boolean;
+}
+
+/**
+ * Read a project's Git status and diff for the person.
+ *
+ * Changes nothing and belongs to no task (ADR 0032).
+ */
+export async function projectChanges(projectId: string): Promise<ProjectChanges> {
+  return invoke<ProjectChanges>("project_changes", { projectId });
+}
+
+/** The standing permissions a project holds, so a person can see what they allowed. */
+export async function listProjectGrants(projectId: string): Promise<readonly ProjectGrant[]> {
+  return invoke<ProjectGrant[]>("list_project_grants", { projectId });
+}
+
+/** Revoke one. A later request it would have covered is no longer covered by it. */
+export async function revokeProjectGrant(grantId: string): Promise<void> {
+  return invoke("revoke_project_grant", { grantId });
+}
+
+/** Whether a credential is stored, never its value. */
+export interface CredentialStatus {
+  /** The key it is filed under, such as `openai.apiKey`. */
+  readonly key: string;
+  /** Whether one is stored; absent when the store could not answer. */
+  readonly configured?: boolean;
+  /** Why the store could not answer, when it could not. */
+  readonly unavailableReason?: string;
+}
+
+/** One configured model endpoint. */
+export interface ConfiguredEndpoint {
+  readonly endpointId: string;
+  readonly displayName: string;
+  readonly kind: "openAiCompatible" | "anthropic" | "llamaServer";
+  readonly modelId: string;
+  /** Whether work sent here leaves the device. Derived, never declared. */
+  readonly leavesTheDevice: boolean;
+  readonly enabled: boolean;
+  /** Tool-call support the person verified. Unknown is off. */
+  readonly supportsToolCalls: boolean;
+  readonly credential?: CredentialStatus;
+}
+
+/** Whether a configured endpoint came up when Tramontana opened. */
+export interface ModelEndpointStatus {
+  readonly endpointId: string;
+  readonly models: readonly string[];
+  readonly leavesTheDevice: boolean;
+  readonly available: boolean;
+  readonly unavailableReason?: string;
+}
+
+/** Every configured endpoint, with whether its credential is stored. */
+export async function listConfiguredEndpoints(): Promise<readonly ConfiguredEndpoint[]> {
+  return invoke<ConfiguredEndpoint[]>("list_configured_endpoints");
+}
+
+/** The endpoints that came up when Tramontana opened, and those that did not. */
+export async function listModelEndpoints(): Promise<readonly ModelEndpointStatus[]> {
+  return invoke<ModelEndpointStatus[]>("list_model_endpoints");
+}
+
+/** What every new endpoint is given. */
+interface NewEndpoint {
+  /** The name routing records use. No spaces. */
+  readonly endpointId: string;
+  /** What to call it in the window; the name when absent. */
+  readonly displayName?: string;
+  readonly modelId: string;
+}
+
+/**
+ * Configure a server speaking the OpenAI chat-completions format.
+ *
+ * Resolves with whether work sent to it leaves the device. Takes effect when
+ * Tramontana restarts.
+ */
+export async function addOpenAiEndpoint(
+  endpoint: NewEndpoint & { readonly baseUrl: string; readonly credentialKey?: string },
+): Promise<boolean> {
+  return invoke<boolean>("add_openai_endpoint", {
+    endpointId: endpoint.endpointId,
+    displayName: endpoint.displayName ?? null,
+    baseUrl: endpoint.baseUrl,
+    modelId: endpoint.modelId,
+    credentialKey: endpoint.credentialKey ?? null,
+  });
+}
+
+/** Configure Anthropic's Messages API, which needs a credential. */
+export async function addAnthropicEndpoint(
+  endpoint: NewEndpoint & { readonly baseUrl: string; readonly credentialKey: string },
+): Promise<boolean> {
+  return invoke<boolean>("add_anthropic_endpoint", {
+    endpointId: endpoint.endpointId,
+    displayName: endpoint.displayName ?? null,
+    baseUrl: endpoint.baseUrl,
+    modelId: endpoint.modelId,
+    credentialKey: endpoint.credentialKey,
+  });
+}
+
+/**
+ * Configure a llama-server Tramontana starts. The shell asks the native picker
+ * for the executable and the model file; resolves `undefined` when either is
+ * cancelled, and nothing is saved.
+ */
+export async function addLlamaEndpoint(endpoint: NewEndpoint): Promise<boolean | undefined> {
+  return (
+    (await invoke<boolean | null>("add_llama_endpoint", {
+      endpointId: endpoint.endpointId,
+      displayName: endpoint.displayName ?? null,
+      modelId: endpoint.modelId,
+    })) ?? undefined
+  );
+}
+
+/** Turn an endpoint on or off. Takes effect when Tramontana restarts. */
+export async function setEndpointEnabled(endpointId: string, enabled: boolean): Promise<void> {
+  return invoke("set_endpoint_enabled", { endpointId, enabled });
+}
+
+/** Record whether the person verified an endpoint's tool-call support. */
+export async function setEndpointToolCalls(endpointId: string, supported: boolean): Promise<void> {
+  return invoke("set_endpoint_tool_calls", { endpointId, supported });
+}
+
+/** Remove an endpoint. Its credential stays in the store. */
+export async function removeEndpoint(endpointId: string): Promise<void> {
+  return invoke("remove_endpoint", { endpointId });
+}
+
+/** Store a credential. Resolves with its length, never the value. */
+export async function storeCredential(key: string, value: string): Promise<number> {
+  return invoke<number>("store_credential", { key, value });
+}
+
+/** Remove a credential from the store. Resolves with whether one was there. */
+export async function forgetCredential(key: string): Promise<boolean> {
+  return invoke<boolean>("forget_credential", { key });
+}
+
+/** Restart Tramontana, so endpoints configured since it opened are used. */
+export async function restartApplication(): Promise<void> {
+  return invoke("restart_application");
+}
+
+/**
+ * Whether "Restart now" can work. Not under the development server, which
+ * stops when the application exits and leaves a restarted window blank.
+ */
+export async function restartSupported(): Promise<boolean> {
+  return invoke<boolean>("restart_supported");
+}
+
+/** How many records of each kind a bundle holds, or an import wrote. */
+export interface BundleCounts {
+  readonly projects: number;
+  readonly conversations: number;
+  readonly tasks: number;
+  readonly events: number;
+  readonly checkpoints: number;
+  readonly configurations: number;
+  /** Opaque worker state that is refused rather than restored. */
+  readonly quarantined: number;
+}
+
+/** A bundle that was written: where, and its table of contents. */
+export interface ExportReport {
+  readonly schemaVersion: number;
+  readonly directory: string;
+  readonly manifest: ExportManifest;
+}
+
+/** A bundle the person picked and inspected, waiting for them to confirm. */
+export interface StagedBundle {
+  /** What the import confirms, instead of a path. */
+  readonly stagingId: string;
+  readonly inspection: {
+    readonly schemaVersion: number;
+    readonly manifest: ExportManifest;
+    readonly contains: BundleCounts;
+  };
+}
+
+/** What an import wrote. */
+export interface ImportReport {
+  readonly schemaVersion: number;
+  readonly imported: BundleCounts;
+  /** Always false: nothing in a bundle is run. */
+  readonly executedAnything: boolean;
+}
+
+/**
+ * Write a bundle for one task or one project into a folder the person picks.
+ *
+ * Resolves `undefined` when the picker is cancelled. The folder never comes
+ * from here: the shell asks the native picker.
+ */
+export async function exportBundle(
+  scope: { readonly taskId: string } | { readonly projectId: string },
+  options: { readonly includeAbsolutePaths: boolean; readonly includeRawToolOutput: boolean },
+): Promise<ExportReport | undefined> {
+  return (
+    (await invoke<ExportReport | null>("export_bundle", {
+      taskId: "taskId" in scope ? scope.taskId : null,
+      projectId: "projectId" in scope ? scope.projectId : null,
+      includeAbsolutePaths: options.includeAbsolutePaths,
+      includeRawToolOutput: options.includeRawToolOutput,
+    })) ?? undefined
+  );
+}
+
+/** Pick a bundle folder and say what it holds. Writes nothing. */
+export async function inspectBundle(): Promise<StagedBundle | undefined> {
+  return (await invoke<StagedBundle | null>("inspect_bundle")) ?? undefined;
+}
+
+/** Import the bundle that was inspected, by the identifier it was given. */
+export async function importStagedBundle(stagingId: string): Promise<ImportReport> {
+  return invoke<ImportReport>("import_staged_bundle", { stagingId });
+}
+
 /** Replay canonical durable events for a task. */
 export async function replayTaskEvents(taskId: string): Promise<readonly EventEnvelope[]> {
   return invoke<EventEnvelope[]>("replay_task_events", { taskId });
+}
+
+/**
+ * What a person chose for one task before starting it (ADR 0031).
+ *
+ * Choices, not permissions: `writes` and `recipes` only let the model ask,
+ * and each write or recipe run is still put to the person as an approval.
+ */
+export interface TaskOptions {
+  /** Let the model ask to make local, reversible file changes. */
+  readonly writes: boolean;
+  /** Let the model ask to run the project's configured recipes. */
+  readonly recipes: boolean;
+  /** Where this task's models may run. Kept if the task is resumed. */
+  readonly routingMode: RoutingMode;
 }
 
 /**
@@ -83,19 +338,39 @@ export async function replayTaskEvents(taskId: string): Promise<readonly EventEn
  *
  * Resolves with the task identifier as soon as the task is registered, not
  * when it finishes — the work continues and reports through the channel.
+ * Without `options` the task runs read-only under the profile's mode.
  */
 export async function startTask(
   goal: string,
   onUpdate: (update: TaskUpdate) => void,
   conversationId?: string,
+  options?: TaskOptions,
 ): Promise<string> {
   const channel = new Channel<TaskUpdate>();
   channel.onmessage = onUpdate;
   return invoke<string>("start_task", {
     goal,
     conversationId: conversationId ?? null,
+    admission: options === undefined ? null : { writes: options.writes, recipes: options.recipes },
+    routingMode: options?.routingMode ?? null,
     channel,
   });
+}
+
+/**
+ * Follow a task that is already running, from the last event this window has.
+ *
+ * What a reloaded window does: the task went on without it, and this delivers
+ * every event after `afterSequence`, then the live stream, to `onUpdate`.
+ */
+export async function watchTask(
+  taskId: string,
+  afterSequence: number,
+  onUpdate: (update: TaskUpdate) => void,
+): Promise<void> {
+  const channel = new Channel<TaskUpdate>();
+  channel.onmessage = onUpdate;
+  return invoke("watch_task", { taskId, afterSequence, channel });
 }
 
 /** Request cancellation. The task converges to a terminal state on its own. */
@@ -126,6 +401,41 @@ export async function latestCheckpoint(taskId: string): Promise<TaskCheckpoint |
  */
 export async function resumeTask(taskId: string, checkpointId: string): Promise<void> {
   return invoke("resume_task", { taskId, checkpointId });
+}
+
+/** The shell's event for a tool call that needs a person's decision. */
+const APPROVAL_REQUESTED = "tramontana://approval-requested";
+
+/**
+ * Approval questions this process is still waiting on, oldest first.
+ *
+ * Asked for on start: the event that raised a card is not replayed, so a
+ * question older than this window would otherwise never be seen.
+ */
+export async function listPendingApprovals(): Promise<readonly ApprovalRequest[]> {
+  return invoke<ApprovalRequest[]>("pending_approvals");
+}
+
+/**
+ * Deliver one decision.
+ *
+ * The decision travels by identifier. Which answers may be given is the core's
+ * to say, and it refuses one it never offered.
+ */
+export async function resolveApproval(
+  approvalId: string,
+  decision: ApprovalDecisionKind,
+): Promise<void> {
+  return invoke("resolve_approval", { approvalId, decision });
+}
+
+/** Watch for approval questions. Resolves with the unsubscribe function. */
+export async function onApprovalRequested(
+  handler: (request: ApprovalRequest) => void,
+): Promise<() => void> {
+  return listen<ApprovalRequest>(APPROVAL_REQUESTED, (event) => {
+    handler(event.payload);
+  });
 }
 
 /** Discard interrupted work. History is kept and no effect is undone. */

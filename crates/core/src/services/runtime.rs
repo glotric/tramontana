@@ -58,8 +58,9 @@ pub(crate) struct TaskDriver {
     /// The canonical record handed to a *different* worker taking over.
     handoff: Option<HandoffBundle>,
     /// The worker actually running, which is not `providers.worker` on a
-    /// handoff. Held separately so the composition root does not have to be
-    /// rebuilt to run one task under a different worker.
+    /// handoff or when the task chose its own admission. Held separately so
+    /// the composition root does not have to be rebuilt to run one task
+    /// under a different worker.
     worker: Option<Arc<dyn AgentProvider>>,
     resume: ResumePlan,
     interrupt: CancellationToken,
@@ -91,6 +92,13 @@ impl TaskDriver {
     /// Run this task under `mode`.
     pub(crate) fn with_routing_mode(mut self, mode: RoutingMode) -> Self {
         self.routing_mode = mode;
+        self
+    }
+
+    /// Run this task under `worker` rather than the service's own: the one
+    /// its admission chose when it started, or the one that recorded it.
+    pub(crate) fn with_worker(mut self, worker: Arc<dyn AgentProvider>) -> Self {
+        self.worker = Some(worker);
         self
     }
 

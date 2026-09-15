@@ -388,7 +388,7 @@ impl BrokeredHost {
             self.journal
                 .append(diagnostic(
                     "reference.budgetExceeded",
-                    "Read-only worker reached its durable reservation budget".into(),
+                    "The worker used up its budget".into(),
                 ))
                 .await?;
             return Err(error(ErrorCode::LimitExceeded));
@@ -469,16 +469,18 @@ fn diagnostic(code: &str, summary: String) -> EventDraft {
 }
 fn error(code: ErrorCode) -> ErrorEnvelope {
     let message = match code {
+        // The worker is the same whatever the task may do, so none of these
+        // calls it read-only: a task allowed to edit fails with them too.
         ErrorCode::CapabilityUnsupported => {
-            "Read-only work requires explicit tool-call support on an eligible model endpoint"
+            "This work needs an eligible model endpoint whose tool calls are verified"
         }
         ErrorCode::LimitExceeded => {
-            "Read-only worker reached a content or durable reservation limit; inspect task activity"
+            "The worker used up its budget before finishing; its activity shows how far it got"
         }
         ErrorCode::InterruptedUnsafe => {
             "Canonical history, limits or tool admission changed; this work cannot be resumed safely"
         }
-        _ => "Read-only worker stopped; inspect task activity and budget reservations",
+        _ => "The worker stopped; its activity shows how far it got",
     };
     ErrorEnvelope::new(
         code,

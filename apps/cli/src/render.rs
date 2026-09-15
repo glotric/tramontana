@@ -147,7 +147,10 @@ pub(crate) fn event_line(event: &EventEnvelope) -> String {
             ..
         } => {
             let verdict = if *allowed { "allowed" } else { "DENIED" };
-            format!("{capability} {verdict} for {origin:?} ({reason_code})")
+            format!(
+                "{capability} {verdict} for {} ({reason_code})",
+                describe_origin(origin)
+            )
         }
         EventPayload::ToolStarted { tool_id, .. } => format!("running {tool_id}"),
         EventPayload::ToolFailed { error, .. } => {
@@ -160,7 +163,7 @@ pub(crate) fn event_line(event: &EventEnvelope) -> String {
             ..
         } => {
             let suffix = if *truncated { " (truncated)" } else { "" };
-            format!("{display_summary} [{side_effect:?}]{suffix}")
+            format!("{display_summary}{}{suffix}", describe_effect(*side_effect))
         }
         EventPayload::ArtifactRecorded { artifact } => artifact.summary(),
         EventPayload::TaskCompleted { summary, .. } => summary.clone(),
@@ -188,4 +191,54 @@ pub(crate) fn event_line(event: &EventEnvelope) -> String {
 #[must_use]
 pub(crate) fn frame_line(frame: &StreamFrame) -> String {
     format!("  ~  {:<22}  {}", "streamFrame", frame.text)
+}
+
+/// Who asked for a permission, in words rather than as an internal value.
+fn describe_origin(origin: &tramontana_core::contracts::PermissionOrigin) -> String {
+    use tramontana_core::contracts::PermissionOrigin;
+    match origin {
+        PermissionOrigin::User => "you".to_owned(),
+        PermissionOrigin::Worker { agent_id } => format!("worker {agent_id}"),
+        PermissionOrigin::Workflow { workflow_id } => format!("workflow {workflow_id}"),
+        // A newer core may name an origin this build does not know.
+        _ => "an origin this build does not know".to_owned(),
+    }
+}
+
+/// What a tool's result changed, as a short note; nothing for a read.
+fn describe_effect(effect: tramontana_core::contracts::SideEffect) -> &'static str {
+    use tramontana_core::contracts::SideEffect;
+    match effect {
+        SideEffect::None => "",
+        SideEffect::LocalReversible => " [changed files; can be undone]",
+        SideEffect::LocalIrreversible => " [changed files; cannot be undone]",
+        SideEffect::External => " [changed something off this device]",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tramontana_core::contracts::{PermissionOrigin, SideEffect};
+
+    use super::{describe_effect, describe_origin};
+
+    #[test]
+    fn an_origin_is_named_in_words() {
+        // V3 printed `Worker { agent_id: "builtin.reference" }` here.
+        let worker = PermissionOrigin::Worker {
+            agent_id: "builtin.reference".to_owned(),
+        };
+        assert_eq!(describe_origin(&worker), "worker builtin.reference");
+        assert_eq!(describe_origin(&PermissionOrigin::User), "you");
+    }
+
+    #[test]
+    fn a_read_adds_no_note_and_a_write_says_what_it_changed() {
+        // V3 printed `[None]` after every read.
+        assert_eq!(describe_effect(SideEffect::None), "");
+        assert_eq!(
+            describe_effect(SideEffect::LocalReversible),
+            " [changed files; can be undone]"
+        );
+    }
 }

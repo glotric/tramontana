@@ -482,12 +482,18 @@ button:disabled {
 .task-tabs {
   display: flex;
   min-width: 0;
+  margin: 0;
+  padding: 0 0 2px;
   gap: 6px;
   overflow-x: auto;
-  padding-bottom: 2px;
+  list-style: none;
 }
 
-.task-tabs > button {
+.task-tabs > li {
+  display: flex;
+}
+
+.task-tabs > li > button {
   display: grid;
   min-width: 170px;
   max-width: 230px;
@@ -500,8 +506,8 @@ button:disabled {
   text-align: left;
 }
 
-.task-tabs > button:hover,
-.task-tabs > button[data-selected="true"] {
+.task-tabs > li > button:hover,
+.task-tabs > li > button[data-selected="true"] {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
@@ -593,6 +599,77 @@ button:disabled {
   font-size: 11px;
 }
 
+/* The approval card.
+
+   Above the activity stream for the same reason the checkpoint panel is: while
+   a question is open the task is stopped, and the question is the only thing
+   worth reading. The accent border, the heading and the note each say so, so
+   none of the meaning is carried by color alone. */
+.approval {
+  margin: 0 20px;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  background: var(--surface);
+}
+
+.approval:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.approval code {
+  color: var(--ink-faint);
+  font: 500 9px/1 var(--mono);
+}
+
+.approval-summary {
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+
+.approval-facts {
+  display: grid;
+  margin: 10px 0 0;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+}
+
+.approval-facts dt {
+  color: var(--ink-faint);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.approval-facts dd {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* A detail pair is one grid row of two cells, not a nested box. */
+.approval-detail {
+  display: contents;
+}
+
+.approval-facts [data-risk="modify"],
+.approval-facts [data-risk="dangerous"] {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.approval-actions {
+  display: flex;
+  margin-top: 14px;
+  gap: 8px;
+}
+
+.approval-note {
+  margin: 8px 0 0;
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+
 .activity {
   min-width: 0;
   min-height: 0;
@@ -611,6 +688,406 @@ button:disabled {
 
 .activity-empty p {
   margin: 8px 0 0;
+}
+
+/* The task header and its activity cards.
+
+   Hairline boxes on the blueprint grid, as the prototype draws them. Status is
+   always a word on the card; the accent and danger colors only repeat it. */
+.task-header {
+  display: flex;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-facts {
+  display: grid;
+  margin: 0;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px 16px;
+  flex: 1;
+}
+
+.task-facts dt {
+  color: var(--ink-faint);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.task-facts dd {
+  margin: 2px 0 0;
+  font-size: 12px;
+}
+
+.task-facts dd[data-left="true"] {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.cards {
+  display: grid;
+  /* One column no wider than the work area. Left to size itself, the column
+     grows to the longest unbroken text on any card and every card runs under
+     the inspector. */
+  grid-template-columns: minmax(0, 1fr);
+  margin: 10px 0 0;
+  padding: 0;
+  gap: 8px;
+  list-style: none;
+}
+
+.card {
+  position: relative;
+  padding: 10px 12px 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.card p {
+  margin: 6px 0 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.card-head code {
+  font: 500 12px/1.2 var(--mono);
+}
+
+.card-label {
+  color: var(--ink-faint);
+  font: 600 11px/1 var(--heading);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.card-status {
+  margin-left: auto;
+  font: 600 11px/1 var(--heading);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.card-status[data-status="refused"],
+.card-status[data-status="failed"],
+.card-status[data-leaves="true"],
+.card[data-kind="failed"] .card-label {
+  color: var(--danger);
+}
+
+.card-status[data-status="completed"] {
+  color: var(--success);
+}
+
+.card-meta {
+  color: var(--ink-soft);
+}
+
+.card-sequence {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink-faint);
+  font: 500 9px/1 var(--mono);
+}
+
+.raw-events {
+  margin-top: 12px;
+}
+
+.raw-events summary {
+  color: var(--ink-soft);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* The project's working tree. Lines keep Git's own + and - marks; the
+   colors only repeat them. Long lines scroll inside the panel, not the page. */
+.changes {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.changes-status,
+.changes-diff {
+  max-height: 320px;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  background: var(--surface-soft);
+  font: 11px/1.5 var(--mono);
+  white-space: pre;
+}
+
+.diff-line[data-line="added"] {
+  color: var(--success);
+}
+
+.diff-line[data-line="removed"] {
+  color: var(--danger);
+}
+
+.diff-line[data-line="hunk"],
+.diff-line[data-line="file"] {
+  color: var(--ink-faint);
+}
+
+/* Standing permissions, and the configuration's own diagnostics. */
+.grants {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.grant-list {
+  display: grid;
+  margin: 8px 0 0;
+  padding: 0;
+  gap: 8px;
+  list-style: none;
+}
+
+.grant-list li {
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  font-size: 12px;
+}
+
+.grant-list p {
+  margin: 0 0 6px;
+}
+
+.grant-meta {
+  color: var(--ink-faint);
+}
+
+.grant-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.diagnostic-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.diagnostic-list li + li {
+  margin-top: 4px;
+}
+
+.diagnostic-list [data-severity="error"] {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* Export and import. The options say what they would release, in words. */
+.bundles {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.bundle-options {
+  display: grid;
+  margin-top: 8px;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.bundle-options label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bundle-options input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.bundle-actions {
+  display: flex;
+  margin-top: 10px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bundle-result,
+.bundle-staged {
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.bundle-result code {
+  font: 11px/1.4 var(--mono);
+  word-break: break-all;
+}
+
+/* Models and credentials. Each endpoint says where it runs and whether it is
+   in use in words; the danger color only repeats "Leaves this device". */
+.models-view {
+  padding: 16px 20px;
+  overflow-y: auto;
+}
+
+.models-view h1 {
+  margin: 0;
+  font-family: var(--heading);
+  font-size: 22px;
+}
+
+.models-restart {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.models-restart p {
+  margin: 0;
+}
+
+.endpoint-list {
+  display: grid;
+  margin: 14px 0 0;
+  padding: 0;
+  gap: 10px;
+  list-style: none;
+}
+
+.endpoint {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.endpoint h2 {
+  margin: 0;
+  font-family: var(--heading);
+  font-size: 16px;
+}
+
+.endpoint p {
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+
+.endpoint [data-leaves="true"] {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.endpoint-use {
+  color: var(--ink-soft);
+}
+
+.endpoint-switches,
+.endpoint-actions {
+  display: flex;
+  margin-top: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  font-size: 12px;
+}
+
+.endpoint-switches label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.endpoint-credential {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.endpoint-credential label {
+  display: grid;
+  margin-top: 6px;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.endpoint-credential input[type="password"] {
+  max-width: 360px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  font: 13px/1.2 var(--mono);
+}
+
+.add-endpoint {
+  display: grid;
+  max-width: 520px;
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  gap: 8px;
+}
+
+.add-endpoint h2 {
+  margin: 0;
+  font-family: var(--heading);
+  font-size: 16px;
+}
+
+.add-endpoint label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.add-endpoint input:not([type="radio"]) {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  font: 13px/1.2 var(--mono);
+}
+
+.add-endpoint-kinds {
+  display: flex;
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line-soft);
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.add-endpoint-kinds label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.add-endpoint-hint {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.add-endpoint button[type="submit"] {
+  justify-self: start;
+}
+
+.rail-row--settings {
+  margin: 8px 0;
 }
 
 .event-list {
@@ -691,6 +1168,65 @@ button:disabled {
   background: transparent;
   font-size: 13px;
   line-height: 1.55;
+}
+
+/* How a task may run, chosen before it starts. Native radios and checkboxes,
+   so keyboard use and screen-reader meaning come from the platform; the
+   selected mode keeps its radio dot, so it is not shown by color alone. */
+.composer-options {
+  display: flex;
+  margin: 8px 0 0;
+  padding: 0;
+  border: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+}
+
+.composer-modes {
+  display: inline-flex;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+}
+
+.composer-modes label {
+  display: inline-flex;
+  padding: 6px 10px;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font: 600 11px/1 var(--heading);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.composer-modes label + label {
+  border-left: 1px solid var(--line);
+}
+
+.composer-modes label[data-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+}
+
+.composer-modes input,
+.composer-toggle input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.composer-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.composer-disclosure {
+  margin: 6px 0 0;
+  color: var(--ink-soft);
+  font-size: 11px;
 }
 
 .composer-footer {

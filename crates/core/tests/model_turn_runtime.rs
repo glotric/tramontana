@@ -160,6 +160,7 @@ async fn invalid_or_unsupported_turns_fail_without_a_tool_invocation() {
             .start_task(StartTaskRequest {
                 conversation_id: Some(conversation.conversation_id),
                 goal: "hello".into(),
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -204,6 +205,7 @@ async fn user_cancellation_during_a_model_call_is_cancelled_not_failed() {
             .start_task(StartTaskRequest {
                 conversation_id: None,
                 goal: "hello".into(),
+                ..Default::default()
             })
             .await
             .unwrap();

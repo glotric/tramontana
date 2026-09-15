@@ -119,6 +119,7 @@ async fn completed_stream() -> Result<Vec<EventEnvelope>> {
         .start_task(StartTaskRequest {
             conversation_id: None,
             goal: "Say hello".to_owned(),
+            ..Default::default()
         })
         .await
         .map_err(|error| anyhow!("could not start the fixture task: {}", error.message))?;
@@ -142,6 +143,7 @@ async fn cancelled_stream() -> Result<Vec<EventEnvelope>> {
         .start_task(StartTaskRequest {
             conversation_id: None,
             goal: "Say hello".to_owned(),
+            ..Default::default()
         })
         .await
         .map_err(|error| anyhow!("could not start the fixture task: {}", error.message))?;
@@ -273,6 +275,7 @@ mod tests {
                 .start_task(StartTaskRequest {
                     conversation_id: None,
                     goal: "Say hello".to_owned(),
+                    ..Default::default()
                 })
                 .await
                 .unwrap();

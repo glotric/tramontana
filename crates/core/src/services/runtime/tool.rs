@@ -251,7 +251,8 @@ impl BrokeredHost {
             .map_err(|code| self.tool_error(code))?;
             (resolved.arguments, resolved.details)
         } else {
-            (arguments, Vec::new())
+            let details = Self::named_paths(&arguments);
+            (arguments, details)
         };
         let query = PermissionQuery {
             tool_id: descriptor.tool_id.clone(),
@@ -323,6 +324,26 @@ impl BrokeredHost {
             result = registered.provider.invoke(authorized, run.clone()) => result,
             () = tokio::time::sleep(crate::ports::TOOL_RUN_LIMIT) => Err(self.tool_error(ErrorCode::Timeout)),
         }
+    }
+
+    /// The files a request names, for its approval prompt.
+    ///
+    /// A person approves an edit to a file, not a tool's name: V3 found write
+    /// prompts that said which tool wanted to write and not where. Only the
+    /// paths are shown, redacted like every other detail, and never content,
+    /// which a prompt must not carry (`SECURITY_AND_PERMISSIONS.md` §7).
+    fn named_paths(arguments: &Value) -> Vec<crate::contracts::ApprovalDetail> {
+        [("path", "Path"), ("from", "From"), ("to", "To")]
+            .into_iter()
+            .filter_map(|(key, label)| {
+                arguments.get(key).and_then(Value::as_str).map(|value| {
+                    crate::contracts::ApprovalDetail {
+                        label: label.to_owned(),
+                        value: crate::services::redact(value).text,
+                    }
+                })
+            })
+            .collect()
     }
 
     fn tool_message(&self, role: MessageRole, part: MessagePart) -> EventDraft {

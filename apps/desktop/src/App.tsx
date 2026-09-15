@@ -1,14 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isSchemaCompatible, SCHEMA_VERSION } from "@tramontana/shared";
 import type {
+  ApprovalRequest,
   ConversationRecord,
   EventEnvelope,
   ProjectRecord,
+  RoutingMode,
   TaskRecord,
   TaskUpdate,
 } from "@tramontana/shared";
 
 import { describeEvent, isTerminal, projectState } from "./activity.js";
+import { ActivityCards } from "./ActivityCards.js";
+import { ApprovalCard } from "./ApprovalCard.js";
+import { BundlesPanel } from "./BundlesPanel.js";
+import { buildCards, describeHeader, MODE_LABEL } from "./cards.js";
+import { ChangesPanel } from "./ChangesPanel.js";
+import { GrantsPanel } from "./GrantsPanel.js";
+import { ModelsView } from "./ModelsView.js";
+import { TaskHeader } from "./TaskHeader.js";
 import { CheckpointPanel } from "./CheckpointPanel.js";
 import {
   asErrorEnvelope,
@@ -17,11 +27,14 @@ import {
   fetchCoreInfo,
   inspectProject,
   listConversations,
+  listPendingApprovals,
   listProjects,
   listTasks,
+  onApprovalRequested,
   openProject,
   replayTaskEvents,
   startTask,
+  watchTask,
 } from "./core.js";
 import type { ProjectInspection } from "./core.js";
 
@@ -54,6 +67,41 @@ function shortId(value: string): string {
   return parts.length > 2 ? `${parts[0]}-${parts.at(-1)?.slice(0, 8)}` : value;
 }
 
+/** Where a task's models may run, in the order the composer offers them. */
+const MODES: readonly RoutingMode[] = ["localOnly", "automatic", "cloudPreferred"];
+
+/** What each mode means for the task about to start. */
+const MODE_TEXT: Record<RoutingMode, string> = {
+  localOnly: "Local only: models run on this device, and nothing is sent to a cloud model.",
+  automatic:
+    "Automatic: a model is chosen for you, and anything sent to a cloud model is asked about first.",
+  cloudPreferred:
+    "Prefer cloud: a cloud model is chosen when one is available, and each release to it is asked about first.",
+};
+
+/**
+ * Say, before the task starts, what the person's choices let it do.
+ *
+ * Local Only governs where models run, not what a command does: an approved
+ * recipe can still reach the network, so choosing both says so (ADR 0028's
+ * boundary statement, and the recipe prompt, say the same).
+ */
+function describeChoices(mode: RoutingMode, writes: boolean, recipes: boolean): string {
+  const asks = [
+    ...(writes ? ["edit files"] : []),
+    ...(recipes ? ["run the project's recipes"] : []),
+  ];
+  const access =
+    asks.length === 0
+      ? "Read-only: the model can look at the project but change nothing."
+      : `The model may ask to ${asks.join(" and ")}; each one is put to you before it runs.`;
+  const commands =
+    mode === "localOnly" && recipes
+      ? " Local only governs where models run, not the commands a recipe runs."
+      : "";
+  return `${MODE_TEXT[mode]} ${access}${commands}`;
+}
+
 /** M2 desktop surface over the same durable service and profile as the CLI. */
 export function App(): React.JSX.Element {
   const [status, setStatus] = useState<CoreStatus>({ kind: "connecting" });
@@ -66,7 +114,16 @@ export function App(): React.JSX.Element {
   const [events, setEvents] = useState<readonly EventEnvelope[]>([]);
   const [streamed, setStreamed] = useState("");
   const [goal, setGoal] = useState("Say hello");
+  // Read-only and Automatic until the person says otherwise, for each task.
+  const [routingMode, setRoutingMode] = useState<RoutingMode>("automatic");
+  const [mayWrite, setMayWrite] = useState(false);
+  const [mayRunRecipes, setMayRunRecipes] = useState(false);
   const [conversationTitle, setConversationTitle] = useState("");
+  const [approvals, setApprovals] = useState<readonly ApprovalRequest[]>([]);
+  // Moves on whenever a task ends, so the Changes panel reads the tree again.
+  const [revision, setRevision] = useState(0);
+  // The work area, or the models and credentials the tasks run against.
+  const [view, setView] = useState<"work" | "models">("work");
   const [failure, setFailure] = useState<string | undefined>();
   const [loadingProject, setLoadingProject] = useState(false);
   const [openingProject, setOpeningProject] = useState(false);
@@ -76,22 +133,77 @@ export function App(): React.JSX.Element {
   const taskRequest = useRef(0);
   const seen = useRef(new Set<number>());
 
-  const selectTask = useCallback(async (taskId: string): Promise<void> => {
-    const request = ++taskRequest.current;
-    setSelectedTaskId(taskId);
-    setStreamed("");
-    setFailure(undefined);
-    try {
-      const replayed = await replayTaskEvents(taskId);
-      if (request !== taskRequest.current) return;
-      seen.current = new Set(replayed.map((event) => event.sequence));
-      setEvents(replayed);
-    } catch (error: unknown) {
-      if (request === taskRequest.current) {
-        setFailure(failureText(error, "Could not replay the task history."));
+  // Kept in a ref so the update handler stays the same function for the life
+  // of the window; a new one per conversation would ripple through every
+  // selection callback and reload the project list.
+  const refreshTasksRef = useRef<() => void>(() => undefined);
+
+  // One handler for every stream of task updates, whether the task was just
+  // started here or is being followed again after a reload.
+  const handleUpdate = useCallback((update: TaskUpdate): void => {
+    switch (update.kind) {
+      case "event": {
+        const { event } = update;
+        if (seen.current.has(event.sequence)) return;
+        seen.current.add(event.sequence);
+        setEvents((previous) => [...previous, event]);
+        if (event.payload.kind === "configurationResolved") {
+          const resolved = event.payload.configuration;
+          setInspection((current) =>
+            current === undefined ? current : { ...current, configuration: resolved },
+          );
+        }
+        if (
+          event.payload.kind === "taskCompleted" ||
+          event.payload.kind === "taskFailed" ||
+          event.payload.kind === "taskCancelled"
+        ) {
+          refreshTasksRef.current();
+          setRevision((current) => current + 1);
+        }
+        break;
       }
+      case "frame":
+        setStreamed((previous) => previous + update.frame.text);
+        break;
     }
   }, []);
+
+  const selectTask = useCallback(
+    async (taskId: string): Promise<void> => {
+      const request = ++taskRequest.current;
+      setSelectedTaskId(taskId);
+      setStreamed("");
+      setFailure(undefined);
+      try {
+        const replayed = await replayTaskEvents(taskId);
+        if (request !== taskRequest.current) return;
+        seen.current = new Set(replayed.map((event) => event.sequence));
+        setEvents(replayed);
+        // A task still under way goes on in the shell whether or not this
+        // window was watching, as it was not across a reload. Follow it from
+        // the last event the record holds, rather than show a record that
+        // stopped when the window did.
+        const state = projectState(replayed);
+        const last = replayed.at(-1)?.sequence;
+        if (
+          state !== undefined &&
+          !isTerminal(state) &&
+          state !== "interrupted" &&
+          last !== undefined
+        ) {
+          await watchTask(taskId, last, (update) => {
+            if (request === taskRequest.current) handleUpdate(update);
+          });
+        }
+      } catch (error: unknown) {
+        if (request === taskRequest.current) {
+          setFailure(failureText(error, "Could not replay the task history."));
+        }
+      }
+    },
+    [handleUpdate],
+  );
 
   const selectConversation = useCallback(
     async (conversationId: string): Promise<void> => {
@@ -194,6 +306,38 @@ export function App(): React.JSX.Element {
     };
   }, [selectProject]);
 
+  // One queue of open questions, in the order they were asked. Questions
+  // raised before this window existed are asked for on start, because the
+  // event that raised them is not replayed and their tasks are still waiting.
+  // A shell that cannot be reached at all is already reported by the core
+  // status line, so a failure here is not raised a second time.
+  useEffect(() => {
+    let active = true;
+    const add = (request: ApprovalRequest): void => {
+      setApprovals((current) =>
+        current.some((waiting) => waiting.approvalId === request.approvalId)
+          ? current
+          : [...current, request],
+      );
+    };
+    void listPendingApprovals().then((waiting) => {
+      if (active) for (const request of waiting) add(request);
+    }, undefined);
+    const subscription = onApprovalRequested(add);
+    return () => {
+      active = false;
+      void subscription.then((unsubscribe) => {
+        unsubscribe();
+      }, undefined);
+    };
+  }, []);
+
+  const onApprovalAnswered = useCallback((approvalId: string) => {
+    setApprovals((current) => current.filter((waiting) => waiting.approvalId !== approvalId));
+    // An answer can grant a standing permission, which the inspector lists.
+    setRevision((current) => current + 1);
+  }, []);
+
   const selectedConversation = useMemo(
     () =>
       conversations.find((conversation) => conversation.conversationId === selectedConversationId),
@@ -204,6 +348,15 @@ export function App(): React.JSX.Element {
     [selectedTaskId, tasks],
   );
   const taskState = useMemo(() => projectState(events), [events]);
+  const cards = useMemo(() => buildCards(events), [events]);
+  const header = useMemo(() => describeHeader(events), [events]);
+  const goalInput = useRef<HTMLTextAreaElement>(null);
+
+  // Retry puts the goal back where the person chooses again; it starts nothing.
+  const onRetry = useCallback((retried: string) => {
+    setGoal(retried);
+    goalInput.current?.focus();
+  }, []);
   const running = selectedTaskId !== undefined && taskState !== undefined && !isTerminal(taskState);
   const configuration = inspection?.configuration ?? undefined;
 
@@ -246,12 +399,18 @@ export function App(): React.JSX.Element {
     if (selectedConversationId === undefined) return;
     void listTasks(selectedConversationId).then(setTasks, () => undefined);
   }, [selectedConversationId]);
+  useEffect(() => {
+    refreshTasksRef.current = refreshTasks;
+  }, [refreshTasks]);
 
   const onStart = useCallback(() => {
     if (selectedConversationId === undefined) {
       setFailure("Create or select a conversation before starting a task.");
       return;
     }
+    // A new task on screen: updates from any stream opened for the one before
+    // it are no longer this window's to show.
+    const request = ++taskRequest.current;
     seen.current = new Set();
     setEvents([]);
     setStreamed("");
@@ -259,34 +418,14 @@ export function App(): React.JSX.Element {
     setSelectedTaskId(undefined);
 
     const onUpdate = (update: TaskUpdate): void => {
-      switch (update.kind) {
-        case "event": {
-          const { event } = update;
-          if (seen.current.has(event.sequence)) return;
-          seen.current.add(event.sequence);
-          setEvents((previous) => [...previous, event]);
-          if (event.payload.kind === "configurationResolved") {
-            const resolved = event.payload.configuration;
-            setInspection((current) =>
-              current === undefined ? current : { ...current, configuration: resolved },
-            );
-          }
-          if (
-            event.payload.kind === "taskCompleted" ||
-            event.payload.kind === "taskFailed" ||
-            event.payload.kind === "taskCancelled"
-          ) {
-            refreshTasks();
-          }
-          break;
-        }
-        case "frame":
-          setStreamed((previous) => previous + update.frame.text);
-          break;
-      }
+      if (request === taskRequest.current) handleUpdate(update);
     };
 
-    void startTask(goal, onUpdate, selectedConversationId).then(
+    void startTask(goal, onUpdate, selectedConversationId, {
+      writes: mayWrite,
+      recipes: mayRunRecipes,
+      routingMode,
+    }).then(
       (id) => {
         setSelectedTaskId(id);
         refreshTasks();
@@ -295,7 +434,15 @@ export function App(): React.JSX.Element {
         setFailure(failureText(error, "Could not start the task."));
       },
     );
-  }, [goal, refreshTasks, selectedConversationId]);
+  }, [
+    goal,
+    handleUpdate,
+    mayRunRecipes,
+    mayWrite,
+    refreshTasks,
+    routingMode,
+    selectedConversationId,
+  ]);
 
   const onCancel = useCallback(() => {
     if (selectedTaskId === undefined) return;
@@ -339,9 +486,12 @@ export function App(): React.JSX.Element {
                       type="button"
                       className="rail-row"
                       data-selected={inspection?.project.projectId === project.projectId}
+                      aria-current={
+                        inspection?.project.projectId === project.projectId ? "true" : undefined
+                      }
                       onClick={() => void selectProject(project.projectId)}
                     >
-                      <span className="status-dot" />
+                      <span className="status-dot" aria-hidden="true" />
                       <span>{project.name}</span>
                     </button>
                   </li>
@@ -385,6 +535,11 @@ export function App(): React.JSX.Element {
                         type="button"
                         className="rail-row rail-row--conversation"
                         data-selected={selectedConversationId === conversation.conversationId}
+                        aria-current={
+                          selectedConversationId === conversation.conversationId
+                            ? "true"
+                            : undefined
+                        }
                         onClick={() => void selectConversation(conversation.conversationId)}
                       >
                         <span>{conversation.title}</span>
@@ -397,181 +552,268 @@ export function App(): React.JSX.Element {
           )}
         </nav>
 
+        <button
+          type="button"
+          className="rail-row rail-row--settings"
+          aria-pressed={view === "models"}
+          onClick={() => {
+            setView((current) => (current === "models" ? "work" : "models"));
+          }}
+        >
+          Models and credentials
+        </button>
+
         <footer className="rail-status">
-          <span className="status-dot" data-state={status.kind} />
+          <span className="status-dot" data-state={status.kind} aria-hidden="true" />
           <span>{describeCoreStatus(status)}</span>
         </footer>
       </aside>
 
       <main className="workspace">
-        <header className="workspace-header">
-          <div>
-            <span className="eyebrow">M6 · Read-only repository work</span>
-            <h1>{selectedConversation?.title ?? inspection?.project.name ?? "Open a project"}</h1>
-            <p>
-              {inspection?.project.roots[0] ??
-                "Choose a local directory to create a canonical, restart-safe project record."}
-            </p>
-          </div>
-          <div
-            className="runtime-chip"
-            title="Inspect task activity for the selected worker, model and destination"
-          >
-            <span className="status-dot" data-state="ready" />
-            governed task runtime
-          </div>
-        </header>
-
-        {failure !== undefined && (
-          <div className="notice notice--error" role="alert">
-            {failure}
-          </div>
-        )}
-
-        {loadingProject ? (
-          <p className="workspace-loading">Loading durable project record…</p>
-        ) : inspection === undefined ? (
-          <section className="empty-state" aria-labelledby="empty-heading">
-            <div className="blueprint-corners" aria-hidden="true" />
-            <span className="eyebrow">Local by default</span>
-            <h2 id="empty-heading">Start with an approved project root.</h2>
-            <p>
-              Tramontana stores project identity, conversations, task history, and configuration
-              manifests in the local profile. Markdown is parsed as configuration data and never
-              executed.
-            </p>
-            <button
-              type="button"
-              className="button button--primary"
-              onClick={onOpenProject}
-              disabled={status.kind !== "ready" || openingProject}
-            >
-              Open a project folder
-            </button>
-          </section>
+        {view === "models" ? (
+          <ModelsView
+            onClose={() => {
+              setView("work");
+            }}
+          />
         ) : (
           <>
-            <section className="task-strip" aria-labelledby="tasks-heading">
-              <div className="section-heading-row">
-                <h2 id="tasks-heading">Recent tasks</h2>
-                <span>{tasks.length} in this conversation</span>
+            <header className="workspace-header">
+              <div>
+                <span className="eyebrow">Repository work</span>
+                <h1>
+                  {selectedConversation?.title ?? inspection?.project.name ?? "Open a project"}
+                </h1>
+                <p>
+                  {inspection?.project.roots[0] ??
+                    "Choose a local directory to create a canonical, restart-safe project record."}
+                </p>
               </div>
-              {selectedConversation === undefined ? (
-                <p className="inline-empty">Create a conversation to begin durable work.</p>
-              ) : tasks.length === 0 ? (
-                <p className="inline-empty">No tasks yet. The first run will appear here.</p>
-              ) : (
-                <div className="task-tabs" role="list">
-                  {tasks.map((task) => (
-                    <button
-                      type="button"
-                      role="listitem"
-                      key={task.taskId}
-                      data-selected={selectedTaskId === task.taskId}
-                      onClick={() => void selectTask(task.taskId)}
-                    >
-                      <span data-task-state={task.state}>{task.state}</span>
-                      <strong>{task.goalSummary}</strong>
-                      <code>{shortId(task.taskId)}</code>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </section>
+              <div
+                className="runtime-chip"
+                title="Inspect task activity for the selected worker, model and destination"
+              >
+                <span className="status-dot" data-state="ready" aria-hidden="true" />
+                governed task runtime
+              </div>
+            </header>
 
-            {selectedTask?.state === "interrupted" && selectedTaskId !== undefined && (
-              <CheckpointPanel
-                key={selectedTaskId}
-                taskId={selectedTaskId}
-                onChanged={() => {
-                  if (selectedConversationId !== undefined) {
-                    void selectConversation(selectedConversationId);
-                  }
-                }}
+            {failure !== undefined && (
+              <div className="notice notice--error" role="alert">
+                {failure}
+              </div>
+            )}
+
+            {approvals[0] !== undefined && (
+              <ApprovalCard
+                key={approvals[0].approvalId}
+                request={approvals[0]}
+                waiting={approvals.length - 1}
+                onAnswered={onApprovalAnswered}
               />
             )}
 
-            <section className="activity" aria-labelledby="activity-heading">
-              <div className="section-heading-row">
-                <h2 id="activity-heading">Activity</h2>
-                <span>
-                  {selectedTask === undefined
-                    ? "No selected task"
-                    : `${shortId(selectedTask.taskId)} · ${events.length} durable events`}
-                </span>
-              </div>
-              {events.length === 0 ? (
-                <div className="activity-empty">
-                  <span className="eyebrow">Sequence gap-free</span>
-                  <p>Start a task to see its canonical event stream.</p>
-                </div>
-              ) : (
-                <ol className="event-list" aria-label="Task event stream">
-                  {events.map((event) => {
-                    const line = describeEvent(event);
-                    return (
-                      <li key={event.eventId}>
-                        <span className="event-sequence">{line.sequence}</span>
-                        <code>{line.kind}</code>
-                        <span>{line.detail}</span>
-                      </li>
-                    );
-                  })}
-                </ol>
-              )}
-              {streamed !== "" && (
-                <div className="stream-output">
-                  <span>live frame</span>
-                  <p>{streamed}</p>
-                </div>
-              )}
-            </section>
-
-            <form
-              className="composer"
-              onSubmit={(submitted) => {
-                submitted.preventDefault();
-                onStart();
-              }}
-            >
-              <label htmlFor="goal">Task goal</label>
-              <textarea
-                id="goal"
-                value={goal}
-                onChange={(changed) => {
-                  setGoal(changed.target.value);
-                }}
-                disabled={running}
-                rows={2}
-              />
-              <div className="composer-footer">
-                <span>
-                  {configuration === undefined
-                    ? "No configuration manifest"
-                    : `${configuration.sources.filter((source) => source.active).length} active sources · ${configuration.manifestHash.slice(0, 12)}`}
-                </span>
+            {loadingProject ? (
+              <p className="workspace-loading">Loading durable project record…</p>
+            ) : inspection === undefined ? (
+              <section className="empty-state" aria-labelledby="empty-heading">
+                <div className="blueprint-corners" aria-hidden="true" />
+                <span className="eyebrow">Local by default</span>
+                <h2 id="empty-heading">Start with an approved project root.</h2>
+                <p>
+                  Tramontana stores project identity, conversations, task history, and configuration
+                  manifests in the local profile. Markdown is parsed as configuration data and never
+                  executed.
+                </p>
                 <button
                   type="button"
-                  className="button button--secondary"
-                  onClick={onCancel}
-                  disabled={!running}
-                >
-                  Stop
-                </button>
-                <button
-                  type="submit"
                   className="button button--primary"
-                  disabled={running || selectedConversationId === undefined || goal.trim() === ""}
+                  onClick={onOpenProject}
+                  disabled={status.kind !== "ready" || openingProject}
                 >
-                  Start task
+                  Open a project folder
                 </button>
-              </div>
-            </form>
+              </section>
+            ) : (
+              <>
+                <section className="task-strip" aria-labelledby="tasks-heading">
+                  <div className="section-heading-row">
+                    <h2 id="tasks-heading">Recent tasks</h2>
+                    <span>{tasks.length} in this conversation</span>
+                  </div>
+                  {selectedConversation === undefined ? (
+                    <p className="inline-empty">Create a conversation to begin durable work.</p>
+                  ) : tasks.length === 0 ? (
+                    <p className="inline-empty">No tasks yet. The first run will appear here.</p>
+                  ) : (
+                    <ul className="task-tabs" aria-label="Tasks in this conversation">
+                      {tasks.map((task) => (
+                        <li key={task.taskId}>
+                          <button
+                            type="button"
+                            data-selected={selectedTaskId === task.taskId}
+                            aria-current={selectedTaskId === task.taskId ? "true" : undefined}
+                            onClick={() => void selectTask(task.taskId)}
+                          >
+                            <span data-task-state={task.state}>{task.state}</span>
+                            <strong>{task.goalSummary}</strong>
+                            <code>{shortId(task.taskId)}</code>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+
+                {selectedTask?.state === "interrupted" && selectedTaskId !== undefined && (
+                  <CheckpointPanel
+                    key={selectedTaskId}
+                    taskId={selectedTaskId}
+                    onChanged={() => {
+                      if (selectedConversationId !== undefined) {
+                        void selectConversation(selectedConversationId);
+                      }
+                    }}
+                  />
+                )}
+
+                <section className="activity" aria-labelledby="activity-heading">
+                  <div className="section-heading-row">
+                    <h2 id="activity-heading">Activity</h2>
+                    <span>
+                      {selectedTask === undefined
+                        ? "No selected task"
+                        : `${shortId(selectedTask.taskId)} · ${events.length} durable events`}
+                    </span>
+                  </div>
+                  {events.length === 0 ? (
+                    <div className="activity-empty">
+                      <span className="eyebrow">Sequence gap-free</span>
+                      <p>Start a task to see its canonical event stream.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <TaskHeader header={header} onRetry={onRetry} />
+                      <ActivityCards cards={cards} />
+                      {/* The record itself, one line per event, as the CLI replays it. */}
+                      <details className="raw-events">
+                        <summary>All events ({events.length})</summary>
+                        <ol className="event-list" aria-label="Task event stream">
+                          {events.map((event) => {
+                            const line = describeEvent(event);
+                            return (
+                              <li key={event.eventId}>
+                                <span className="event-sequence">{line.sequence}</span>
+                                <code>{line.kind}</code>
+                                <span>{line.detail}</span>
+                              </li>
+                            );
+                          })}
+                        </ol>
+                      </details>
+                    </>
+                  )}
+                  {streamed !== "" && (
+                    <div className="stream-output">
+                      <span>live frame</span>
+                      <p>{streamed}</p>
+                    </div>
+                  )}
+                </section>
+
+                <form
+                  className="composer"
+                  onSubmit={(submitted) => {
+                    submitted.preventDefault();
+                    onStart();
+                  }}
+                >
+                  <label htmlFor="goal">Task goal</label>
+                  <textarea
+                    ref={goalInput}
+                    id="goal"
+                    value={goal}
+                    onChange={(changed) => {
+                      setGoal(changed.target.value);
+                    }}
+                    disabled={running}
+                    rows={2}
+                  />
+                  <fieldset className="composer-options" disabled={running}>
+                    <legend className="sr-only">How this task may run</legend>
+                    <fieldset className="composer-modes">
+                      <legend className="sr-only">Where models may run</legend>
+                      {MODES.map((mode) => (
+                        <label key={mode} data-selected={routingMode === mode}>
+                          <input
+                            type="radio"
+                            name="routing-mode"
+                            value={mode}
+                            checked={routingMode === mode}
+                            onChange={() => {
+                              setRoutingMode(mode);
+                            }}
+                          />
+                          {MODE_LABEL[mode]}
+                        </label>
+                      ))}
+                    </fieldset>
+                    <label className="composer-toggle">
+                      <input
+                        type="checkbox"
+                        checked={mayWrite}
+                        onChange={(changed) => {
+                          setMayWrite(changed.target.checked);
+                        }}
+                      />
+                      May edit files
+                    </label>
+                    <label className="composer-toggle">
+                      <input
+                        type="checkbox"
+                        checked={mayRunRecipes}
+                        onChange={(changed) => {
+                          setMayRunRecipes(changed.target.checked);
+                        }}
+                      />
+                      May run recipes
+                    </label>
+                  </fieldset>
+                  <p className="composer-disclosure">
+                    {describeChoices(routingMode, mayWrite, mayRunRecipes)}
+                  </p>
+                  <div className="composer-footer">
+                    <span>
+                      {configuration === undefined
+                        ? "No configuration manifest"
+                        : `${configuration.sources.filter((source) => source.active).length} active sources · ${configuration.manifestHash.slice(0, 12)}`}
+                    </span>
+                    <button
+                      type="button"
+                      className="button button--secondary"
+                      onClick={onCancel}
+                      disabled={!running}
+                    >
+                      Stop
+                    </button>
+                    <button
+                      type="submit"
+                      className="button button--primary"
+                      disabled={
+                        running || selectedConversationId === undefined || goal.trim() === ""
+                      }
+                    >
+                      Start task
+                    </button>
+                  </div>
+                </form>
+              </>
+            )}
           </>
         )}
       </main>
 
-      <aside className="inspector" aria-label="Effective configuration">
+      <aside className="inspector" aria-label="Project inspector">
         <div className="inspector-header">
           <span className="eyebrow">Effective configuration</span>
           <h2>Instruction manifest</h2>
@@ -595,6 +837,19 @@ export function App(): React.JSX.Element {
                 <dd>{configuration.diagnostics.length}</dd>
               </div>
             </dl>
+            {configuration.diagnostics.length > 0 && (
+              <ul className="diagnostic-list" aria-label="Configuration diagnostics">
+                {configuration.diagnostics.map((diagnostic, index) => (
+                  <li
+                    key={`${diagnostic.relativePath}:${index}`}
+                    data-severity={diagnostic.severity}
+                  >
+                    {diagnostic.severity === "error" ? "Error" : "Warning"} in{" "}
+                    <code>{diagnostic.relativePath}</code>: {diagnostic.message}
+                  </li>
+                ))}
+              </ul>
+            )}
             <ol className="source-list">
               {configuration.sources.map((source, index) => (
                 <li key={source.sourceId} data-active={source.active}>
@@ -615,6 +870,28 @@ export function App(): React.JSX.Element {
             </p>
           </>
         )}
+        {inspection !== undefined && (
+          <>
+            <ChangesPanel projectId={inspection.project.projectId} revision={revision} />
+            <GrantsPanel projectId={inspection.project.projectId} revision={revision} />
+          </>
+        )}
+        {/* Outside the project: a new profile has nothing open, and importing
+            a bundle is how it gets something. */}
+        <BundlesPanel
+          projectId={inspection?.project.projectId}
+          taskId={selectedTaskId}
+          onImported={() => {
+            void listProjects().then((records) => {
+              setProjects(records);
+              // Into an empty profile, open what was just imported.
+              const first = records[0];
+              if (inspection === undefined && first !== undefined) {
+                void selectProject(first.projectId);
+              }
+            }, undefined);
+          }}
+        />
       </aside>
     </div>
   );

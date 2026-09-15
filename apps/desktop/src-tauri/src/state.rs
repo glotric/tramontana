@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tauri::AppHandle;
 use tramontana_adapters_tools::{FilesystemTools, GitTools, RecipeTools};
@@ -33,12 +34,21 @@ pub(crate) struct AppState {
     pub(crate) approver: Arc<DesktopApprover>,
     /// Where grants live, so they can be listed and revoked.
     pub(crate) approvals: Arc<InMemoryApprovalStore>,
-    /// Runtimes this process started, held for the life of the window.
+    /// Runtimes this process started, held for the life of the window and
+    /// stopped by [`AppState::shut_down`] as it exits.
     ///
-    /// Dropping it stops them, which is why the desktop keeps it rather than
-    /// letting assembly go out of scope: a model runtime that outlived the
-    /// application would hold gigabytes with nothing to stop it.
+    /// Tauri ends the process without dropping managed state, so the
+    /// runtimes' own drop is only a backstop for a panic: a model runtime
+    /// that outlived the application would hold gigabytes until something
+    /// next opened the profile.
     pub(crate) models: Arc<tokio::sync::Mutex<ModelPlane>>,
+    /// The bundle folder the person last inspected, waiting for them to
+    /// confirm the import.
+    pub(crate) staged_bundle: Arc<crate::bundles::StagedSlot>,
+    /// The profile's configured endpoints, which the settings view changes.
+    pub(crate) settings: Arc<SqliteProviderSettingsRepository>,
+    /// The operating system's credential store.
+    pub(crate) vault: Arc<PlatformSecretVault>,
 }
 
 impl AppState {
@@ -53,7 +63,7 @@ impl AppState {
         Self::open_with_chunk_delay(path, 220, Arc::new(DesktopApprover::new(app))).await
     }
 
-    async fn open_with_chunk_delay(
+    pub(crate) async fn open_with_chunk_delay(
         path: &Path,
         chunk_delay_ms: u64,
         approver: Arc<DesktopApprover>,
@@ -80,8 +90,8 @@ impl AppState {
                         .with_recovery_store(tramontana_composition::recovery_store(path)),
                 ) as Arc<dyn ToolProvider>,
                 Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
-                // Registered so both adapters hold the same set; never offered
-                // to a model here, where admission stays read-only.
+                // Registered so both adapters hold the same set; offered to a
+                // model only in a task whose person chose to allow recipes.
                 Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
             ],
             Arc::clone(&approvals) as Arc<dyn ApprovalStore>,
@@ -90,7 +100,8 @@ impl AppState {
         )
         .map_err(|error| format!("could not register tools: {error}"))?;
 
-        let lease = tramontana_platform::ProfileLease::try_acquire(path)
+        let lease = acquire_lease(path, LEASE_PATIENCE)
+            .await
             .map_err(|error| format!("could not acquire runtime profile lease: {error}"))?
             .map(|lease| Arc::new(lease) as Arc<dyn Send + Sync>);
         // Holding the lease proves any runtime recorded for this profile
@@ -108,12 +119,13 @@ impl AppState {
         // The endpoints the user configured, through the same composition the
         // CLI uses. Supervised runtimes are started here because the desktop
         // is long-lived; the plane below owns them and stops them on close.
-        let settings = SqliteProviderSettingsRepository::new(database.clone());
+        let settings = Arc::new(SqliteProviderSettingsRepository::new(database.clone()));
         let configured = settings
             .list()
             .await
             .map_err(|error| format!("could not read provider settings: {error}"))?;
-        let resolver = Arc::new(PlatformSecretVault::new()) as Arc<dyn SecretResolver>;
+        let vault = Arc::new(PlatformSecretVault::new());
+        let resolver = Arc::clone(&vault) as Arc<dyn SecretResolver>;
         let plane = assemble_models_recording(
             &configured,
             &resolver,
@@ -155,9 +167,11 @@ impl AppState {
                 tools: Arc::clone(&registry),
                 permissions: Arc::clone(&permissions),
                 releases: Arc::clone(&releases),
-                // Same strategy and governed tool plane as the CLI. Read-only:
-                // the desktop has no way yet for a person to say a task may
-                // write, so it never offers a model a write (ADR 0021).
+                // Same strategy and governed tool plane as the CLI. The
+                // service's own worker is read-only. A task gets a worker that
+                // may ask to write or run recipes only when the person chose
+                // that in the composer, and each one is still approved as it
+                // happens (ADRs 0021 and 0031).
                 worker: tramontana_composition::assemble_worker(
                     has_configured,
                     tramontana_core::ports::ToolAdmission::READ_ONLY,
@@ -166,7 +180,9 @@ impl AppState {
             Arc::new(SystemClock::new()),
             Arc::new(UuidIdSource::new()),
         );
-        let service = service.with_execution_guard(lease);
+        let service = service
+            .with_worker_choice(tramontana_composition::worker_choice(has_configured))
+            .with_execution_guard(lease);
         service
             .recover()
             .await
@@ -176,13 +192,50 @@ impl AppState {
             approver,
             approvals,
             models: Arc::new(tokio::sync::Mutex::new(plane)),
+            staged_bundle: Arc::new(std::sync::Mutex::new(None)),
+            settings,
+            vault,
         })
+    }
+
+    /// Stop the model runtimes this process started.
+    ///
+    /// Called as the application exits, whether by quitting or by "Restart
+    /// now". Waits for each runtime to stop, up to its grace period.
+    pub(crate) async fn shut_down(&self) {
+        self.models.lock().await.shutdown().await;
+    }
+}
+
+/// How long a starting window waits for the profile's previous owner to let
+/// go of it.
+///
+/// A restart starts the new process a moment before the old one has exited,
+/// so a lease still held for that moment is expected. One held for longer
+/// belongs to another window, and this one opens without running tasks.
+const LEASE_PATIENCE: Duration = Duration::from_secs(3);
+
+/// The profile's lease, waiting up to `patience` for its holder to let go.
+async fn acquire_lease(
+    path: &Path,
+    patience: Duration,
+) -> std::io::Result<Option<tramontana_platform::ProfileLease>> {
+    let deadline = tokio::time::Instant::now() + patience;
+    loop {
+        if let Some(lease) = tramontana_platform::ProfileLease::try_acquire(path)? {
+            return Ok(Some(lease));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
+    clippy::expect_used,
     reason = "tests assert on isolated fixtures; a panic is the failure report"
 )]
 mod tests {
@@ -194,6 +247,251 @@ mod tests {
     use tramontana_platform::{canonicalize_root, discover};
 
     use super::*;
+
+    #[tokio::test]
+    async fn a_restarted_window_waits_for_the_one_before_it_to_let_go() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile = directory.path().join("desktop.sqlite");
+        std::fs::write(&profile, b"").unwrap();
+        let held = tramontana_platform::ProfileLease::try_acquire(&profile)
+            .unwrap()
+            .unwrap();
+        // A restart: the old process lets go a moment after the new one
+        // starts. Without waiting, the new window could not run tasks.
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            drop(held);
+        });
+
+        let lease = acquire_lease(&profile, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(lease.is_some(), "gave up before the previous owner let go");
+        release.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_window_beside_another_stops_waiting_for_the_lease() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile = directory.path().join("desktop.sqlite");
+        std::fs::write(&profile, b"").unwrap();
+        let _held = tramontana_platform::ProfileLease::try_acquire(&profile)
+            .unwrap()
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        let lease = tokio::time::timeout(
+            Duration::from_secs(5),
+            acquire_lease(&profile, Duration::from_millis(300)),
+        )
+        .await
+        .expect("still waiting after its patience ran out")
+        .unwrap();
+        assert!(lease.is_none());
+        assert!(started.elapsed() >= Duration::from_millis(300));
+    }
+
+    #[tokio::test]
+    async fn a_window_that_reattaches_gets_each_later_event_once_in_order() {
+        let directory = tempfile::tempdir().unwrap();
+        // Paced, so the task is still running when the window comes back.
+        let state = AppState::open_with_chunk_delay(
+            &directory.path().join("desktop.sqlite"),
+            100,
+            Arc::new(DesktopApprover::headless()),
+        )
+        .await
+        .unwrap();
+        let task_id = state
+            .service
+            .start_task(StartTaskRequest {
+                goal: "Say hello".to_owned(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Wait until the record holds more than the window saw, so the
+        // reattached window gets some events from the record and the rest
+        // live; a window that came back at once would only test the second.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state
+                .service
+                .replay_task_events(&task_id, 0)
+                .await
+                .unwrap()
+                .len()
+                < 4
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !state
+                .service
+                .get_task(&task_id)
+                .await
+                .unwrap()
+                .state
+                .is_terminal(),
+            "the task ended before the window came back, so nothing was live"
+        );
+
+        // A window that had seen the first two events, then reloaded.
+        let (replayed, updates) = state
+            .service
+            .subscribe_task_events(&task_id, 2)
+            .await
+            .unwrap();
+        let (sender, mut received) = tokio::sync::mpsc::unbounded_channel();
+        crate::commands::forward_updates(
+            Arc::clone(&state.service),
+            task_id.clone(),
+            2,
+            replayed,
+            updates,
+            move |update| sender.send(update).is_ok(),
+        );
+
+        let mut sequences = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(update) = received.recv().await {
+                if let tramontana_core::contracts::TaskUpdate::Event { event } = update {
+                    sequences.push(event.sequence);
+                    if event.is_terminal_outcome() {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        let recorded: Vec<u64> = state
+            .service
+            .replay_task_events(&task_id, 2)
+            .await
+            .unwrap()
+            .iter()
+            .map(|event| event.sequence)
+            .collect();
+        assert_eq!(sequences.first(), Some(&3));
+        assert_eq!(
+            sequences, recorded,
+            "a gap, a repeat, or an event out of order"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_person_reads_the_projects_git_status_and_diff_through_the_desktop() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = directory.path().join("repository");
+        std::fs::create_dir_all(&repository).unwrap();
+        let git = |arguments: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(arguments)
+                .current_dir(&repository)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {arguments:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(repository.join("greeting.txt"), "hello\n").unwrap();
+        git(&["add", "greeting.txt"]);
+        git(&["commit", "-q", "-m", "initial"]);
+        std::fs::write(repository.join("greeting.txt"), "hello, world\n").unwrap();
+        std::fs::write(repository.join("notes.txt"), "new\n").unwrap();
+
+        let state = AppState::open_with_chunk_delay(
+            &directory.path().join("desktop.sqlite"),
+            0,
+            Arc::new(DesktopApprover::headless()),
+        )
+        .await
+        .unwrap();
+        let root = canonicalize_root(&repository).unwrap();
+        let project = state
+            .service
+            .open_project("Diff fixture", vec![root.as_str().to_owned()])
+            .await
+            .unwrap();
+
+        // The same tool ids the command asks for, through the same
+        // composition, so neither can drift from what the core will run.
+        let diff = state
+            .service
+            .read_project(&project.project_id, crate::commands::GIT_DIFF)
+            .await
+            .unwrap();
+        let diff = diff.content["text"].as_str().unwrap().to_owned();
+        assert!(diff.contains("-hello\n+hello, world"), "{diff}");
+        let status = state
+            .service
+            .read_project(&project.project_id, crate::commands::GIT_STATUS)
+            .await
+            .unwrap();
+        let status = status.content["text"].as_str().unwrap().to_owned();
+        assert!(status.contains("?? notes.txt"), "{status}");
+        assert!(state.service.list_tasks(None).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_task_can_ask_for_its_own_admission_and_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = AppState::open_with_chunk_delay(
+            &directory.path().join("desktop.sqlite"),
+            0,
+            Arc::new(DesktopApprover::headless()),
+        )
+        .await
+        .unwrap();
+
+        // Refused as `capabilityUnsupported` by a service that cannot build a
+        // worker per task, which is what the desktop was before M8.
+        let task_id = state
+            .service
+            .start_task(StartTaskRequest {
+                goal: "Say hello".to_owned(),
+                admission: Some(tramontana_core::ports::ToolAdmission::READ_WRITE),
+                routing_mode: Some(tramontana_core::contracts::RoutingMode::LocalOnly),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let events = state.service.replay_task_events(&task_id, 0).await.unwrap();
+        assert!(matches!(
+            events[0].payload,
+            tramontana_core::contracts::EventPayload::TaskCreated {
+                routing_mode: Some(tramontana_core::contracts::RoutingMode::LocalOnly),
+                ..
+            }
+        ));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !state
+                .service
+                .get_task(&task_id)
+                .await
+                .unwrap()
+                .state
+                .is_terminal()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
 
     #[tokio::test]
     async fn reopening_the_desktop_profile_restores_the_same_durable_work() {
@@ -240,6 +538,7 @@ mod tests {
             .start_task(StartTaskRequest {
                 conversation_id: Some(conversation_id),
                 goal: "Survive a desktop restart".to_owned(),
+                ..Default::default()
             })
             .await
             .unwrap();

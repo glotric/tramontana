@@ -7,7 +7,6 @@
 //! Presentation only: which answers are offered comes from the core, and one
 //! that was never offered is refused rather than honored.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -34,7 +33,20 @@ pub(crate) struct DesktopApprover {
     /// interface exists. `ask` then refuses, which is the same fail-closed
     /// answer a headless CLI gives.
     app: Option<AppHandle>,
-    pending: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalDecisionKind>>>>,
+    /// In the order the questions were asked, which is the order a person
+    /// should be shown them.
+    pending: Arc<Mutex<Vec<Waiting>>>,
+}
+
+/// One question waiting for an answer, and where the answer is sent.
+///
+/// The request is kept, not only the channel: a window that reloads loses the
+/// event that raised its card, while the task goes on waiting here. Keeping it
+/// is what lets the card come back instead of the task timing out against
+/// nobody.
+struct Waiting {
+    request: ApprovalRequest,
+    answer: tokio::sync::oneshot::Sender<ApprovalDecisionKind>,
 }
 
 impl std::fmt::Debug for DesktopApprover {
@@ -48,7 +60,7 @@ impl DesktopApprover {
     pub(crate) fn new(app: AppHandle) -> Self {
         Self {
             app: Some(app),
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -57,7 +69,7 @@ impl DesktopApprover {
     pub(crate) fn headless() -> Self {
         Self {
             app: None,
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -67,13 +79,35 @@ impl DesktopApprover {
     /// already-answered approval is reported rather than silently dropped, so
     /// a double-click cannot look like it worked twice.
     pub(crate) fn resolve(&self, approval_id: &ApprovalId, decision: ApprovalDecisionKind) -> bool {
-        let Ok(mut pending) = self.pending.lock() else {
+        let Some(waiting) = self.take(approval_id) else {
             return false;
         };
-        let Some(sender) = pending.remove(approval_id.as_str()) else {
-            return false;
-        };
-        sender.send(decision).is_ok()
+        waiting.answer.send(decision).is_ok()
+    }
+
+    /// Every question still waiting, in the order they were asked.
+    ///
+    /// What a window asks for when it opens, so a question raised before it
+    /// existed — or before it was reloaded — is still put to the person.
+    pub(crate) fn pending(&self) -> Vec<ApprovalRequest> {
+        self.pending.lock().map_or_else(
+            |_| Vec::new(),
+            |pending| {
+                pending
+                    .iter()
+                    .map(|waiting| waiting.request.clone())
+                    .collect()
+            },
+        )
+    }
+
+    /// Take one question out of the queue, if it is still in it.
+    fn take(&self, approval_id: &ApprovalId) -> Option<Waiting> {
+        let mut pending = self.pending.lock().ok()?;
+        let at = pending
+            .iter()
+            .position(|waiting| waiting.request.approval_id == *approval_id)?;
+        Some(pending.remove(at))
     }
 }
 
@@ -96,16 +130,16 @@ impl Approver for DesktopApprover {
                 .pending
                 .lock()
                 .map_err(|_| PermissionError::Unavailable("approval registry poisoned".into()))?;
-            pending.insert(request.approval_id.to_string(), sender);
+            pending.push(Waiting {
+                request: request.clone(),
+                answer: sender,
+            });
         }
 
         // Registered before emitting, so an answer that arrives immediately
         // still finds the question waiting for it.
         if app.emit(APPROVAL_REQUESTED, request).is_err() {
-            self.pending
-                .lock()
-                .ok()
-                .and_then(|mut pending| pending.remove(request.approval_id.as_str()));
+            self.take(&request.approval_id);
             return Err(PermissionError::NoApprover);
         }
 
@@ -114,12 +148,84 @@ impl Approver for DesktopApprover {
             // The window went away mid-question.
             Ok(Err(_)) => Err(PermissionError::NoApprover),
             Err(_) => {
-                self.pending
-                    .lock()
-                    .ok()
-                    .and_then(|mut pending| pending.remove(request.approval_id.as_str()));
+                self.take(&request.approval_id);
                 Err(PermissionError::Expired)
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests assert on isolated fixtures; a panic is the failure report"
+)]
+mod tests {
+    use tramontana_core::contracts::{
+        Capability, CapabilityScope, RiskClass, SCHEMA_VERSION, SideEffect, TaskId,
+    };
+
+    use super::*;
+
+    fn question(id: &str) -> ApprovalRequest {
+        ApprovalRequest {
+            schema_version: SCHEMA_VERSION,
+            approval_id: ApprovalId::new(id),
+            task_id: TaskId::new("task-1"),
+            invocation_id: None,
+            capability: Capability::new("fs.write"),
+            tool_id: "builtin.fs.patch".to_owned(),
+            requested_scope: CapabilityScope {
+                project_id: None,
+                roots: Vec::new(),
+                releases_data: false,
+            },
+            risk_class: RiskClass::Modify,
+            side_effect: SideEffect::LocalReversible,
+            summary: "patch a file".to_owned(),
+            details: Vec::new(),
+            eligible_decisions: vec![ApprovalDecisionKind::AllowOnce, ApprovalDecisionKind::Deny],
+        }
+    }
+
+    /// A question waiting, as `ask` leaves one, without needing a window.
+    fn asked(
+        approver: &DesktopApprover,
+        id: &str,
+    ) -> tokio::sync::oneshot::Receiver<ApprovalDecisionKind> {
+        let (answer, receiver) = tokio::sync::oneshot::channel();
+        approver.pending.lock().unwrap().push(Waiting {
+            request: question(id),
+            answer,
+        });
+        receiver
+    }
+
+    #[test]
+    fn a_window_that_opens_late_is_given_every_question_still_waiting() {
+        let approver = DesktopApprover::headless();
+        let _first = asked(&approver, "approval-1");
+        let _second = asked(&approver, "approval-2");
+
+        let waiting: Vec<String> = approver
+            .pending()
+            .iter()
+            .map(|request| request.approval_id.to_string())
+            .collect();
+        assert_eq!(waiting, ["approval-1", "approval-2"]);
+    }
+
+    #[test]
+    fn a_question_is_answered_once_and_is_then_no_longer_waiting() {
+        let approver = DesktopApprover::headless();
+        let mut receiver = asked(&approver, "approval-1");
+        let id = ApprovalId::new("approval-1");
+
+        assert!(approver.resolve(&id, ApprovalDecisionKind::AllowOnce));
+        assert_eq!(receiver.try_recv(), Ok(ApprovalDecisionKind::AllowOnce));
+        assert!(approver.pending().is_empty());
+        // A second answer — a double click, or a card answered after it timed
+        // out — is reported rather than silently accepted.
+        assert!(!approver.resolve(&id, ApprovalDecisionKind::Deny));
     }
 }

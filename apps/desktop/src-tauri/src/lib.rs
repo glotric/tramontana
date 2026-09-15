@@ -7,7 +7,9 @@
 //! result. The CLI is its peer over the same services.
 
 mod approval;
+mod bundles;
 mod commands;
+mod settings;
 mod state;
 
 use tauri::Manager;
@@ -54,6 +56,7 @@ pub fn run() {
             commands::list_tasks,
             commands::replay_task_events,
             commands::start_task,
+            commands::watch_task,
             commands::cancel_task,
             commands::get_task,
             commands::create_checkpoint,
@@ -61,10 +64,38 @@ pub fn run() {
             commands::resume_task,
             commands::discard_checkpoint,
             commands::resolve_approval,
+            commands::pending_approvals,
+            commands::project_changes,
+            commands::export_bundle,
+            commands::inspect_bundle,
+            commands::import_staged_bundle,
+            commands::list_configured_endpoints,
+            commands::add_openai_endpoint,
+            commands::add_anthropic_endpoint,
+            commands::add_llama_endpoint,
+            commands::set_endpoint_enabled,
+            commands::set_endpoint_tool_calls,
+            commands::remove_endpoint,
+            commands::store_credential,
+            commands::forget_credential,
+            commands::restart_application,
+            commands::restart_supported,
             commands::list_project_grants,
             commands::revoke_project_grant,
             commands::list_model_endpoints,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to start the Tramontana desktop shell");
+        .build(tauri::generate_context!())
+        .expect("failed to start the Tramontana desktop shell")
+        .run(|app, event| {
+            // Quitting, closing the last window and "Restart now" all end
+            // here. Tauri then exits without dropping managed state, so the
+            // model runtimes this process started are stopped now, or they
+            // would outlive the window until something next opened the
+            // profile (ADR 0030).
+            if let tauri::RunEvent::Exit = event
+                && let Some(state) = app.try_state::<state::AppState>()
+            {
+                tauri::async_runtime::block_on(state.shut_down());
+            }
+        });
 }

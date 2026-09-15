@@ -200,6 +200,7 @@ impl Harness {
             .start_task(StartTaskRequest {
                 conversation_id: Some(conversation.conversation_id),
                 goal: "Two steps".into(),
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -439,6 +440,7 @@ async fn startup_recovers_every_nonterminal_state_once_without_executing_any_wor
                 EventPayload::TaskCreated {
                     goal_summary: "Synthetic crashed task".into(),
                     conversation_id: None,
+                    routing_mode: None,
                 },
                 TaskEventKind::TaskCreated,
                 &task,
@@ -504,7 +506,8 @@ async fn a_profile_reader_never_recovers_or_launches_work() {
         reader
             .start_task(StartTaskRequest {
                 conversation_id: None,
-                goal: "blocked".into()
+                goal: "blocked".into(),
+                ..Default::default()
             })
             .await
             .unwrap_err()
