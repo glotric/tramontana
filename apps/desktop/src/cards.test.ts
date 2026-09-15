@@ -207,6 +207,36 @@ describe("activity cards", () => {
     ]);
   });
 
+  it("says the budget once and in words, and leaves the closing note to the Completed card", () => {
+    const budget = JSON.stringify({
+      limits: { steps: 12, tools: 12, timeMs: 600_000, inputBytes: 8_388_608 },
+      tools: 1,
+    });
+    const cards = buildCards([
+      event(1, { kind: "diagnosticRecorded", code: "reference.budget.v1", summary: budget }),
+      event(2, { kind: "diagnosticRecorded", code: "reference.budget.v1", summary: budget }),
+      event(3, { kind: "diagnosticRecorded", code: "reference.budget.v1", summary: "{not json" }),
+      event(4, {
+        kind: "diagnosticRecorded",
+        code: "reference.completed.v1",
+        summary: "message-1",
+      }),
+      event(5, { kind: "taskCompleted", summary: "Done" }),
+    ]);
+
+    expect(cards.map((card) => [card.sequence, card.kind])).toEqual([
+      [1, "note"],
+      [3, "note"],
+      [5, "completed"],
+    ]);
+    const [first, unreadable] = cards;
+    expect(first?.kind === "note" && first.detail).toBe(
+      "Budget: up to 12 steps, 12 tool calls and 10 minutes",
+    );
+    // A note this cannot read is shown as recorded, not dropped.
+    expect(unreadable?.kind === "note" && unreadable.detail).toContain("{not json");
+  });
+
   it("shows what the model said, and the CLI's line for any other message", () => {
     const message = (sequence: number, role: "assistant" | "user", text: string): EventEnvelope =>
       event(sequence, {

@@ -103,11 +103,40 @@ export function describeLocation(location: ExecutionLocation): string {
   return `cloud · ${location.providerId}${region}`;
 }
 
+/**
+ * A worker's budget in words, from the note that records it, or undefined
+ * when the note is not one this can read.
+ */
+function describeBudget(summary: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(summary);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null || !("limits" in parsed)) return undefined;
+  const { limits } = parsed;
+  if (typeof limits !== "object" || limits === null) return undefined;
+  const steps = "steps" in limits ? limits.steps : undefined;
+  const calls = "tools" in limits ? limits.tools : undefined;
+  const time = "timeMs" in limits ? limits.timeMs : undefined;
+  if (typeof steps !== "number" || typeof calls !== "number" || typeof time !== "number") {
+    return undefined;
+  }
+  const minutes = Math.round(time / 60_000);
+  return (
+    `Budget: up to ${steps} steps, ${calls} tool calls and ` +
+    `${minutes} ${minutes === 1 ? "minute" : "minutes"}`
+  );
+}
+
 /** Turn a task's events into cards, in the order they happened. */
 export function buildCards(events: readonly EventEnvelope[]): ActivityCard[] {
   const cards: ActivityCard[] = [];
   const tools = new Map<string, number>();
   const routes = new Map<string, number>();
+  // The worker records its budget before every turn; a card says it once.
+  let budgetShown = false;
 
   // Folds a later event into its invocation's card. Returns false when the
   // request was never seen, so the event is shown on its own instead.
@@ -221,9 +250,24 @@ export function buildCards(events: readonly EventEnvelope[]): ActivityCard[] {
       case "artifactRecorded":
         detail("artifact");
         break;
-      case "diagnosticRecorded":
+      case "diagnosticRecorded": {
+        // The worker's bookkeeping, in words where there are words for it.
+        // Every event is still listed under "All events".
+        if (payload.code === "reference.completed.v1") {
+          // Names the message the Completed card shows; nothing to add.
+          break;
+        }
+        if (payload.code === "reference.budget.v1") {
+          const budget = describeBudget(payload.summary);
+          if (budget !== undefined) {
+            if (!budgetShown) cards.push({ kind: "note", key, sequence, detail: budget });
+            budgetShown = true;
+            break;
+          }
+        }
         detail("note");
         break;
+      }
       case "taskCompleted":
         detail("completed");
         break;
