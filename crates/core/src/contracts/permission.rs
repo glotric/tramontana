@@ -232,8 +232,9 @@ pub struct ProjectGrant {
 pub(crate) struct AuthorizedTarget {
     /// The invocation.
     pub(crate) invocation_id: InvocationId,
-    /// The task it belongs to.
-    pub(crate) task_id: TaskId,
+    /// The task it belongs to, or none when the person asked for it
+    /// themselves (ADR 0032).
+    pub(crate) task_id: Option<TaskId>,
     /// The tool.
     pub(crate) tool_id: String,
     /// Validated arguments.
@@ -262,7 +263,7 @@ pub(crate) struct GrantedAuthority {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthorizedToolRequest {
     invocation_id: InvocationId,
-    task_id: TaskId,
+    task_id: Option<TaskId>,
     tool_id: String,
     arguments: serde_json::Value,
     capability: Capability,
@@ -293,10 +294,11 @@ impl AuthorizedToolRequest {
         &self.invocation_id
     }
 
-    /// The task it belongs to.
+    /// The task it belongs to, or `None` for a read the person asked for
+    /// outside any task (ADR 0032).
     #[must_use]
-    pub fn task_id(&self) -> &TaskId {
-        &self.task_id
+    pub fn task_id(&self) -> Option<&TaskId> {
+        self.task_id.as_ref()
     }
 
     /// The tool it authorizes.

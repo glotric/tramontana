@@ -91,7 +91,7 @@ impl PermissionManager {
         let authorized = AuthorizedToolRequest::new(
             crate::contracts::AuthorizedTarget {
                 invocation_id: invocation_id.clone(),
-                task_id: task_id.clone(),
+                task_id: Some(task_id.clone()),
                 tool_id: query.tool_id.clone(),
                 arguments,
             },
@@ -104,6 +104,55 @@ impl PermissionManager {
         );
 
         Ok((outcome, Some(authorized)))
+    }
+
+    /// Authorize a read the person asked for themselves, outside any task
+    /// (ADR 0032).
+    ///
+    /// Only what the policy already allows a task without asking: a read
+    /// inside an opened project that releases nothing off the device.
+    /// Anything else is refused, never asked. A person is not asked to
+    /// approve their own read, and nothing they start this way may do more
+    /// than read.
+    #[must_use]
+    pub fn authorize_person_read(
+        &self,
+        query: &PermissionQuery,
+        invocation_id: &InvocationId,
+        arguments: serde_json::Value,
+    ) -> (PermissionOutcome, Option<AuthorizedToolRequest>) {
+        let quiet_read = query.risk_class == RiskClass::Read
+            && query.scope.project_id.is_some()
+            && !query.scope.releases_data;
+        if !quiet_read {
+            return (
+                PermissionOutcome::Denied {
+                    reason_code: reason::PERSON_READ_ONLY,
+                },
+                None,
+            );
+        }
+        let authorized = AuthorizedToolRequest::new(
+            crate::contracts::AuthorizedTarget {
+                invocation_id: invocation_id.clone(),
+                task_id: None,
+                tool_id: query.tool_id.clone(),
+                arguments,
+            },
+            crate::contracts::GrantedAuthority {
+                capability: query.capability.clone(),
+                scope: query.scope.clone(),
+                kind: GrantKind::ImplicitSafeDefault,
+                approval_id: None,
+            },
+        );
+        (
+            PermissionOutcome::Allowed {
+                reason_code: reason::SAFE_DEFAULT,
+                approval_id: None,
+            },
+            Some(authorized),
+        )
     }
 
     /// Whether a project grant already covers this request.

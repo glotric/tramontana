@@ -144,6 +144,9 @@ pub mod reason {
     pub const ONCE_ALREADY_CONSUMED: &str = "policy.once_already_consumed";
     /// Policy could not be read, so the request fails closed.
     pub const POLICY_UNAVAILABLE: &str = "policy.unavailable";
+    /// Outside a task a person may only read, and only where no question
+    /// would be needed (ADR 0032).
+    pub const PERSON_READ_ONLY: &str = "policy.person_read_only";
 }
 
 /// The outcome of evaluating a request.

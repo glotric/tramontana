@@ -19,6 +19,7 @@ mod model_history;
 mod model_input;
 mod model_turn;
 mod permission_manager;
+mod person_read;
 mod preparation;
 mod projection;
 mod recipe;

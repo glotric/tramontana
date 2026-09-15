@@ -720,7 +720,7 @@ pub async fn idempotent_tool_contract(
         AuthorizedToolRequest::new(
             AuthorizedTarget {
                 invocation_id: InvocationId::new(format!("contract-{label}")),
-                task_id: TaskId::new("task-contract"),
+                task_id: Some(TaskId::new("task-contract")),
                 tool_id: tool_id.to_owned(),
                 arguments: arguments.clone(),
             },
