@@ -24,7 +24,11 @@ use tramontana_platform::{CanonicalRoot, canonicalize_root, discover};
 use tramontana_core::ports::{ApprovalStore, IdSource, ToolAdmission, ToolOutcome};
 use tramontana_platform::UuidIdSource;
 
+use tramontana_core::ports::Clock;
+use tramontana_platform::SystemClock;
+
 use crate::bundles::{self, ExportScope};
+use crate::settings;
 use crate::state::AppState;
 
 /// Longest goal this boundary accepts.
@@ -448,6 +452,225 @@ pub(crate) async fn import_staged_bundle(
         ));
     };
     bundles::import_from(&state.service, &directory).await
+}
+
+/// Ask the native picker for a file; `None` when the person cancels.
+async fn pick_file(app: &AppHandle, title: &str) -> Result<Option<PathBuf>, ErrorEnvelope> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title(title)
+        .pick_file(move |selection| {
+            let _ = send.send(selection);
+        });
+    let selection = receive
+        .await
+        .map_err(|_| internal("the file picker closed unexpectedly"))?;
+    let Some(selection) = selection else {
+        return Ok(None);
+    };
+    selection
+        .into_path()
+        .map(Some)
+        .map_err(|_| invalid("the selected file is not a local file"))
+}
+
+/// Every configured endpoint, with whether its credential is stored.
+///
+/// What is configured, which can differ from what is running until the next
+/// start: `list_model_endpoints` says what came up.
+///
+/// # Errors
+///
+/// [`ErrorCode::PersistenceError`] when the settings cannot be read.
+#[tauri::command]
+pub(crate) async fn list_configured_endpoints(
+    state: State<'_, AppState>,
+) -> Result<Vec<settings::ConfiguredEndpoint>, ErrorEnvelope> {
+    settings::list(state.settings.as_ref(), state.vault.as_ref()).await
+}
+
+/// Configure an endpoint speaking the OpenAI chat-completions format.
+///
+/// Returns whether work sent to it leaves the device. Takes effect the next
+/// time Tramontana opens.
+///
+/// # Errors
+///
+/// See [`settings::add`].
+#[tauri::command]
+pub(crate) async fn add_openai_endpoint(
+    endpoint_id: String,
+    display_name: Option<String>,
+    base_url: String,
+    model_id: String,
+    credential_key: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<bool, ErrorEnvelope> {
+    settings::add(
+        state.settings.as_ref(),
+        &endpoint_id,
+        display_name,
+        settings::NewEndpoint::OpenAiCompatible {
+            base_url,
+            model_id,
+            credential_key: credential_key.filter(|key| !key.is_empty()),
+        },
+        SystemClock::new().now(),
+    )
+    .await
+}
+
+/// Configure Anthropic's Messages API. Takes effect the next time Tramontana
+/// opens.
+///
+/// # Errors
+///
+/// See [`settings::add`].
+#[tauri::command]
+pub(crate) async fn add_anthropic_endpoint(
+    endpoint_id: String,
+    display_name: Option<String>,
+    base_url: String,
+    model_id: String,
+    credential_key: String,
+    state: State<'_, AppState>,
+) -> Result<bool, ErrorEnvelope> {
+    settings::add(
+        state.settings.as_ref(),
+        &endpoint_id,
+        display_name,
+        settings::NewEndpoint::Anthropic {
+            base_url,
+            model_id,
+            credential_key,
+        },
+        SystemClock::new().now(),
+    )
+    .await
+}
+
+/// Configure a `llama-server` this application starts and stops, from an
+/// executable and a model file the person picks. `None` when they cancel
+/// either picker. Takes effect the next time Tramontana opens.
+///
+/// # Errors
+///
+/// See [`settings::add`].
+#[tauri::command]
+pub(crate) async fn add_llama_endpoint(
+    endpoint_id: String,
+    display_name: Option<String>,
+    model_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<bool>, ErrorEnvelope> {
+    let Some(binary_path) = pick_file(&app, "Choose the llama-server executable").await? else {
+        return Ok(None);
+    };
+    let Some(model_path) = pick_file(&app, "Choose the GGUF model file").await? else {
+        return Ok(None);
+    };
+    settings::add(
+        state.settings.as_ref(),
+        &endpoint_id,
+        display_name,
+        settings::NewEndpoint::LlamaServer {
+            binary_path,
+            model_path,
+            model_id,
+        },
+        SystemClock::new().now(),
+    )
+    .await
+    .map(Some)
+}
+
+/// Turn an endpoint on or off, keeping its configuration.
+///
+/// # Errors
+///
+/// See [`settings::toggle`].
+#[tauri::command]
+pub(crate) async fn set_endpoint_enabled(
+    endpoint_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    settings::toggle(
+        state.settings.as_ref(),
+        &endpoint_id,
+        settings::Toggle::Enabled(enabled),
+    )
+    .await
+}
+
+/// Record whether the person verified this endpoint's tool-call support.
+///
+/// # Errors
+///
+/// See [`settings::toggle`].
+#[tauri::command]
+pub(crate) async fn set_endpoint_tool_calls(
+    endpoint_id: String,
+    supported: bool,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    settings::toggle(
+        state.settings.as_ref(),
+        &endpoint_id,
+        settings::Toggle::ToolCalls(supported),
+    )
+    .await
+}
+
+/// Remove an endpoint. Its credential stays in the store.
+///
+/// # Errors
+///
+/// See [`settings::remove`].
+#[tauri::command]
+pub(crate) async fn remove_endpoint(
+    endpoint_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    settings::remove(state.settings.as_ref(), &endpoint_id).await
+}
+
+/// Store a credential the person typed. Returns its length, never the value.
+///
+/// # Errors
+///
+/// See [`settings::store_credential`].
+#[tauri::command]
+pub(crate) async fn store_credential(
+    key: String,
+    value: String,
+    state: State<'_, AppState>,
+) -> Result<usize, ErrorEnvelope> {
+    settings::store_credential(state.vault.as_ref(), &key, &value).await
+}
+
+/// Remove a credential from the store. Returns whether one was there.
+///
+/// # Errors
+///
+/// See [`settings::forget_credential`].
+#[tauri::command]
+pub(crate) async fn forget_credential(
+    key: String,
+    state: State<'_, AppState>,
+) -> Result<bool, ErrorEnvelope> {
+    settings::forget_credential(state.vault.as_ref(), &key).await
+}
+
+/// Restart Tramontana, so endpoints configured since it opened are used.
+///
+/// Running tasks are interrupted as any unclean stop interrupts them, and
+/// recovered on the next start; the window says so before offering this.
+#[tauri::command]
+pub(crate) fn restart_application(app: AppHandle) {
+    app.restart();
 }
 
 async fn resolve_stored_project(

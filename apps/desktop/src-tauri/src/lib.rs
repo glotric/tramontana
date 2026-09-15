@@ -9,6 +9,7 @@
 mod approval;
 mod bundles;
 mod commands;
+mod settings;
 mod state;
 
 use tauri::Manager;
@@ -67,6 +68,16 @@ pub fn run() {
             commands::export_bundle,
             commands::inspect_bundle,
             commands::import_staged_bundle,
+            commands::list_configured_endpoints,
+            commands::add_openai_endpoint,
+            commands::add_anthropic_endpoint,
+            commands::add_llama_endpoint,
+            commands::set_endpoint_enabled,
+            commands::set_endpoint_tool_calls,
+            commands::remove_endpoint,
+            commands::store_credential,
+            commands::forget_credential,
+            commands::restart_application,
             commands::list_project_grants,
             commands::revoke_project_grant,
             commands::list_model_endpoints,

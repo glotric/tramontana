@@ -42,6 +42,10 @@ pub(crate) struct AppState {
     /// The bundle folder the person last inspected, waiting for them to
     /// confirm the import.
     pub(crate) staged_bundle: Arc<crate::bundles::StagedSlot>,
+    /// The profile's configured endpoints, which the settings view changes.
+    pub(crate) settings: Arc<SqliteProviderSettingsRepository>,
+    /// The operating system's credential store.
+    pub(crate) vault: Arc<PlatformSecretVault>,
 }
 
 impl AppState {
@@ -111,12 +115,13 @@ impl AppState {
         // The endpoints the user configured, through the same composition the
         // CLI uses. Supervised runtimes are started here because the desktop
         // is long-lived; the plane below owns them and stops them on close.
-        let settings = SqliteProviderSettingsRepository::new(database.clone());
+        let settings = Arc::new(SqliteProviderSettingsRepository::new(database.clone()));
         let configured = settings
             .list()
             .await
             .map_err(|error| format!("could not read provider settings: {error}"))?;
-        let resolver = Arc::new(PlatformSecretVault::new()) as Arc<dyn SecretResolver>;
+        let vault = Arc::new(PlatformSecretVault::new());
+        let resolver = Arc::clone(&vault) as Arc<dyn SecretResolver>;
         let plane = assemble_models_recording(
             &configured,
             &resolver,
@@ -184,6 +189,8 @@ impl AppState {
             approvals,
             models: Arc::new(tokio::sync::Mutex::new(plane)),
             staged_bundle: Arc::new(std::sync::Mutex::new(None)),
+            settings,
+            vault,
         })
     }
 }
