@@ -39,6 +39,9 @@ pub(crate) struct AppState {
     /// letting assembly go out of scope: a model runtime that outlived the
     /// application would hold gigabytes with nothing to stop it.
     pub(crate) models: Arc<tokio::sync::Mutex<ModelPlane>>,
+    /// The bundle folder the person last inspected, waiting for them to
+    /// confirm the import.
+    pub(crate) staged_bundle: Arc<crate::bundles::StagedSlot>,
 }
 
 impl AppState {
@@ -53,7 +56,7 @@ impl AppState {
         Self::open_with_chunk_delay(path, 220, Arc::new(DesktopApprover::new(app))).await
     }
 
-    async fn open_with_chunk_delay(
+    pub(crate) async fn open_with_chunk_delay(
         path: &Path,
         chunk_delay_ms: u64,
         approver: Arc<DesktopApprover>,
@@ -180,6 +183,7 @@ impl AppState {
             approver,
             approvals,
             models: Arc::new(tokio::sync::Mutex::new(plane)),
+            staged_bundle: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 }

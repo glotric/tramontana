@@ -7,6 +7,7 @@
 //! No command accepts a shell string, and none makes a decision the core has
 //! not already made.
 
+use std::path::PathBuf;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
@@ -14,14 +15,16 @@ use tramontana_core::config::ConfigurationSelection;
 use tramontana_core::contracts::{
     ApprovalDecisionKind, ApprovalId, ApprovalRequest, CheckpointId, ConversationId,
     ConversationRecord, CorrelationId, EffectiveConfiguration, ErrorCode, ErrorEnvelope,
-    EventEnvelope, ProjectGrant, ProjectId, ProjectRecord, RoutingMode, SCHEMA_VERSION,
-    TaskCheckpoint, TaskId, TaskRecord, TaskSnapshot, TaskUpdate,
+    EventEnvelope, ExportManifest, ExportOptions, ProjectGrant, ProjectId, ProjectRecord,
+    RoutingMode, SCHEMA_VERSION, TaskCheckpoint, TaskId, TaskRecord, TaskSnapshot, TaskUpdate,
 };
 use tramontana_core::services::StartTaskRequest;
 use tramontana_platform::{CanonicalRoot, canonicalize_root, discover};
 
-use tramontana_core::ports::{ApprovalStore, ToolAdmission, ToolOutcome};
+use tramontana_core::ports::{ApprovalStore, IdSource, ToolAdmission, ToolOutcome};
+use tramontana_platform::UuidIdSource;
 
+use crate::bundles::{self, ExportScope};
 use crate::state::AppState;
 
 /// Longest goal this boundary accepts.
@@ -309,26 +312,142 @@ pub(crate) async fn start_task(
     Ok(task_id)
 }
 
-async fn pick_project_root(app: &AppHandle) -> Result<Option<CanonicalRoot>, ErrorEnvelope> {
+/// Ask the native picker for a folder; `None` when the person cancels.
+///
+/// The only way a filesystem path enters from the window: the webview never
+/// supplies one.
+async fn pick_folder(app: &AppHandle, title: &str) -> Result<Option<PathBuf>, ErrorEnvelope> {
     let (send, receive) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .set_title("Open a Tramontana project")
+        .set_title(title)
         .pick_folder(move |selection| {
             let _ = send.send(selection);
         });
     let selection = receive
         .await
-        .map_err(|_| internal("the project picker closed unexpectedly"))?;
+        .map_err(|_| internal("the folder picker closed unexpectedly"))?;
     let Some(selection) = selection else {
         return Ok(None);
     };
-    let path = selection
+    selection
         .into_path()
-        .map_err(|_| invalid("the selected project is not a local directory"))?;
+        .map(Some)
+        .map_err(|_| invalid("the selected folder is not a local directory"))
+}
+
+async fn pick_project_root(app: &AppHandle) -> Result<Option<CanonicalRoot>, ErrorEnvelope> {
+    let Some(path) = pick_folder(app, "Open a Tramontana project").await? else {
+        return Ok(None);
+    };
     canonicalize_root(&path)
         .map(Some)
         .map_err(|error| invalid(format!("could not open the selected project: {error}")))
+}
+
+/// A bundle that was written, and what it holds.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExportReport {
+    pub schema_version: u32,
+    /// The folder the person chose, to show them where it went.
+    pub directory: String,
+    /// The bundle's table of contents, including what it left out.
+    pub manifest: ExportManifest,
+}
+
+/// Write a bundle for one task or one project into a folder the person picks.
+///
+/// Absolute paths and raw tool output stay out unless the person asks for
+/// them, and the manifest says what was left out. `None` when they cancel.
+///
+/// # Errors
+///
+/// [`ErrorCode::InvalidRequest`] unless exactly one of a task or a project is
+/// named, or whatever the export reports.
+#[tauri::command]
+pub(crate) async fn export_bundle(
+    task_id: Option<TaskId>,
+    project_id: Option<ProjectId>,
+    include_absolute_paths: bool,
+    include_raw_tool_output: bool,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<ExportReport>, ErrorEnvelope> {
+    let scope = match (task_id, project_id) {
+        (Some(task_id), None) => ExportScope::Task(task_id),
+        (None, Some(project_id)) => ExportScope::Project(project_id),
+        _ => return Err(invalid("export one task or one project")),
+    };
+    let Some(directory) = pick_folder(&app, "Choose where to write the bundle").await? else {
+        return Ok(None);
+    };
+    let options = ExportOptions {
+        include_absolute_paths,
+        include_raw_tool_output,
+        include_artifacts: false,
+    };
+    let manifest = bundles::export_to(&state.service, &scope, options, &directory).await?;
+    Ok(Some(ExportReport {
+        schema_version: SCHEMA_VERSION,
+        directory: directory.display().to_string(),
+        manifest,
+    }))
+}
+
+/// A bundle the person picked and inspected, waiting for them to confirm.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StagedBundleView {
+    /// What the import confirms, instead of a path.
+    pub staging_id: String,
+    pub inspection: bundles::BundleInspection,
+}
+
+/// Pick a bundle folder and say what it holds, writing nothing.
+///
+/// `None` when the person cancels.
+///
+/// # Errors
+///
+/// [`ErrorCode::InvalidRequest`] when the folder is not a bundle, or the
+/// bundle breaks a rule.
+#[tauri::command]
+pub(crate) async fn inspect_bundle(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<StagedBundleView>, ErrorEnvelope> {
+    let Some(directory) = pick_folder(&app, "Choose a bundle to import").await? else {
+        return Ok(None);
+    };
+    let inspection = bundles::inspect(&state.service, &directory)?;
+    let staging_id = UuidIdSource::new().next("bundle");
+    bundles::stage(&state.staged_bundle, staging_id.clone(), directory);
+    Ok(Some(StagedBundleView {
+        staging_id,
+        inspection,
+    }))
+}
+
+/// Import the bundle the person inspected, validating it again first.
+///
+/// # Errors
+///
+/// [`ErrorCode::NotFound`] when this is not the bundle last inspected, or
+/// whatever the import reports.
+#[tauri::command]
+pub(crate) async fn import_staged_bundle(
+    staging_id: String,
+    state: State<'_, AppState>,
+) -> Result<bundles::ImportReport, ErrorEnvelope> {
+    let Some(directory) = bundles::take_staged(&state.staged_bundle, &staging_id) else {
+        return Err(ErrorEnvelope::new(
+            ErrorCode::NotFound,
+            "inspect the bundle again before importing it",
+            CorrelationId::new("ipc"),
+        ));
+    };
+    bundles::import_from(&state.service, &directory).await
 }
 
 async fn resolve_stored_project(

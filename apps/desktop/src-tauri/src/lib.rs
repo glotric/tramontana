@@ -7,6 +7,7 @@
 //! result. The CLI is its peer over the same services.
 
 mod approval;
+mod bundles;
 mod commands;
 mod state;
 
@@ -63,6 +64,9 @@ pub fn run() {
             commands::resolve_approval,
             commands::pending_approvals,
             commands::project_changes,
+            commands::export_bundle,
+            commands::inspect_bundle,
+            commands::import_staged_bundle,
             commands::list_project_grants,
             commands::revoke_project_grant,
             commands::list_model_endpoints,
