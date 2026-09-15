@@ -141,6 +141,61 @@ export async function listModelEndpoints(): Promise<readonly ModelEndpointStatus
   return invoke<ModelEndpointStatus[]>("list_model_endpoints");
 }
 
+/** What every new endpoint is given. */
+interface NewEndpoint {
+  /** The name routing records use. No spaces. */
+  readonly endpointId: string;
+  /** What to call it in the window; the name when absent. */
+  readonly displayName?: string;
+  readonly modelId: string;
+}
+
+/**
+ * Configure a server speaking the OpenAI chat-completions format.
+ *
+ * Resolves with whether work sent to it leaves the device. Takes effect when
+ * Tramontana restarts.
+ */
+export async function addOpenAiEndpoint(
+  endpoint: NewEndpoint & { readonly baseUrl: string; readonly credentialKey?: string },
+): Promise<boolean> {
+  return invoke<boolean>("add_openai_endpoint", {
+    endpointId: endpoint.endpointId,
+    displayName: endpoint.displayName ?? null,
+    baseUrl: endpoint.baseUrl,
+    modelId: endpoint.modelId,
+    credentialKey: endpoint.credentialKey ?? null,
+  });
+}
+
+/** Configure Anthropic's Messages API, which needs a credential. */
+export async function addAnthropicEndpoint(
+  endpoint: NewEndpoint & { readonly baseUrl: string; readonly credentialKey: string },
+): Promise<boolean> {
+  return invoke<boolean>("add_anthropic_endpoint", {
+    endpointId: endpoint.endpointId,
+    displayName: endpoint.displayName ?? null,
+    baseUrl: endpoint.baseUrl,
+    modelId: endpoint.modelId,
+    credentialKey: endpoint.credentialKey,
+  });
+}
+
+/**
+ * Configure a llama-server Tramontana starts. The shell asks the native picker
+ * for the executable and the model file; resolves `undefined` when either is
+ * cancelled, and nothing is saved.
+ */
+export async function addLlamaEndpoint(endpoint: NewEndpoint): Promise<boolean | undefined> {
+  return (
+    (await invoke<boolean | null>("add_llama_endpoint", {
+      endpointId: endpoint.endpointId,
+      displayName: endpoint.displayName ?? null,
+      modelId: endpoint.modelId,
+    })) ?? undefined
+  );
+}
+
 /** Turn an endpoint on or off. Takes effect when Tramontana restarts. */
 export async function setEndpointEnabled(endpointId: string, enabled: boolean): Promise<void> {
   return invoke("set_endpoint_enabled", { endpointId, enabled });

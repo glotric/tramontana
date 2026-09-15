@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { AddEndpointForm } from "./AddEndpointForm.js";
 import {
   asErrorEnvelope,
   forgetCredential,
@@ -319,6 +320,15 @@ export function ModelsView({ onClose }: ModelsViewProps): React.JSX.Element {
           })}
         </ul>
       )}
+
+      <AddEndpointForm
+        onAdded={(message) => {
+          setFailure(undefined);
+          setNote(message);
+          setChanged(true);
+          setReads((count) => count + 1);
+        }}
+      />
     </section>
   );
 }

@@ -11,6 +11,9 @@ const listen = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/event", () => ({ listen }));
 
 const {
+  addAnthropicEndpoint,
+  addLlamaEndpoint,
+  addOpenAiEndpoint,
   asErrorEnvelope,
   cancelTask,
   createConversation,
@@ -121,6 +124,46 @@ describe("models and credentials", () => {
     invoke.mockResolvedValue(undefined);
     await restartApplication();
     expect(invoke).toHaveBeenLastCalledWith("restart_application");
+  });
+
+  it("adds each kind of endpoint by name, and never with a path", async () => {
+    invoke.mockResolvedValue(false);
+    await addOpenAiEndpoint({
+      endpointId: "local",
+      baseUrl: "http://127.0.0.1:8080",
+      modelId: "qwen",
+    });
+    expect(invoke).toHaveBeenLastCalledWith("add_openai_endpoint", {
+      endpointId: "local",
+      displayName: null,
+      baseUrl: "http://127.0.0.1:8080",
+      modelId: "qwen",
+      credentialKey: null,
+    });
+
+    invoke.mockResolvedValue(true);
+    await addAnthropicEndpoint({
+      endpointId: "claude",
+      displayName: "Claude",
+      baseUrl: "https://api.anthropic.com",
+      modelId: "claude",
+      credentialKey: "anthropic.apiKey",
+    });
+    expect(invoke).toHaveBeenLastCalledWith("add_anthropic_endpoint", {
+      endpointId: "claude",
+      displayName: "Claude",
+      baseUrl: "https://api.anthropic.com",
+      modelId: "claude",
+      credentialKey: "anthropic.apiKey",
+    });
+
+    invoke.mockResolvedValue(null);
+    expect(await addLlamaEndpoint({ endpointId: "llama", modelId: "qwen" })).toBeUndefined();
+    expect(invoke).toHaveBeenLastCalledWith("add_llama_endpoint", {
+      endpointId: "llama",
+      displayName: null,
+      modelId: "qwen",
+    });
   });
 });
 

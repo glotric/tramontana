@@ -970,6 +970,59 @@ button:disabled {
   font: 13px/1.2 var(--mono);
 }
 
+.add-endpoint {
+  display: grid;
+  max-width: 520px;
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  gap: 8px;
+}
+
+.add-endpoint h2 {
+  margin: 0;
+  font-family: var(--heading);
+  font-size: 16px;
+}
+
+.add-endpoint label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.add-endpoint input:not([type="radio"]) {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  font: 13px/1.2 var(--mono);
+}
+
+.add-endpoint-kinds {
+  display: flex;
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line-soft);
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.add-endpoint-kinds label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.add-endpoint-hint {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.add-endpoint button[type="submit"] {
+  justify-self: start;
+}
+
 .rail-row--settings {
   margin: 8px 0;
 }

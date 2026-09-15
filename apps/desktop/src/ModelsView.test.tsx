@@ -15,6 +15,7 @@ const removeEndpoint = vi.hoisted(() => vi.fn());
 const storeCredential = vi.hoisted(() => vi.fn());
 const forgetCredential = vi.hoisted(() => vi.fn());
 const restartApplication = vi.hoisted(() => vi.fn());
+const addLlamaEndpoint = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -28,6 +29,7 @@ vi.mock("./core.js", async () => {
     storeCredential,
     forgetCredential,
     restartApplication,
+    addLlamaEndpoint,
   };
 });
 
@@ -96,9 +98,11 @@ describe("the Models view", () => {
       storeCredential,
       forgetCredential,
       restartApplication,
+      addLlamaEndpoint,
     ]) {
       mock.mockReset();
     }
+    addLlamaEndpoint.mockResolvedValue(false);
     listConfiguredEndpoints.mockResolvedValue([llama, openai, added, off]);
     listModelEndpoints.mockResolvedValue(health);
     setEndpointEnabled.mockResolvedValue(undefined);
@@ -189,6 +193,26 @@ describe("the Models view", () => {
     await user.click(screen.getByRole("button", { name: "Forget credential" }));
     await waitFor(() => {
       expect(forgetCredential).toHaveBeenCalledWith("openai.apiKey");
+    });
+  });
+
+  it("says what was added and where it runs, reads the list again, and offers the restart", async () => {
+    const user = userEvent.setup();
+    render(<ModelsView onClose={() => undefined} />);
+    await screen.findByRole("heading", { name: "Local Qwen" });
+    expect(listConfiguredEndpoints).toHaveBeenCalledTimes(1);
+
+    const form = screen.getByRole("form", { name: "Add an endpoint" });
+    await user.type(within(form).getByLabelText("Name"), "second");
+    await user.type(within(form).getByLabelText("Model"), "qwen");
+    await user.click(within(form).getByRole("button", { name: "Choose files and add…" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Added second. Work sent to it runs on this device.",
+    );
+    expect(screen.getByRole("note")).toHaveTextContent("used once Tramontana restarts");
+    await waitFor(() => {
+      expect(listConfiguredEndpoints).toHaveBeenCalledTimes(2);
     });
   });
 
