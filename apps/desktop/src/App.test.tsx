@@ -29,6 +29,7 @@ const cancelTask = vi.hoisted(() => vi.fn());
 const listPendingApprovals = vi.hoisted(() => vi.fn());
 const onApprovalRequested = vi.hoisted(() => vi.fn());
 const resolveApproval = vi.hoisted(() => vi.fn());
+const projectChanges = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -47,6 +48,7 @@ vi.mock("./core.js", async () => {
     listPendingApprovals,
     onApprovalRequested,
     resolveApproval,
+    projectChanges,
   };
 });
 
@@ -167,9 +169,11 @@ describe("M2 durable desktop surface", () => {
       listPendingApprovals,
       onApprovalRequested,
       resolveApproval,
+      projectChanges,
     ]) {
       mock.mockReset();
     }
+    projectChanges.mockResolvedValue({ schemaVersion: 1, status: "", diff: "", truncated: false });
     listPendingApprovals.mockResolvedValue([]);
     onApprovalRequested.mockResolvedValue(() => undefined);
     resolveApproval.mockResolvedValue(undefined);
@@ -190,9 +194,9 @@ describe("M2 durable desktop surface", () => {
 
     expect(screen.getByText("/work/tramontana")).toBeInTheDocument();
     expect(screen.getByText("Existing durable task")).toBeInTheDocument();
-    expect(
-      screen.getByRole("complementary", { name: "Effective configuration" }),
-    ).toHaveTextContent(configuration.manifestHash);
+    expect(screen.getByRole("complementary", { name: "Project inspector" })).toHaveTextContent(
+      configuration.manifestHash,
+    );
     expect(screen.getByText("AGENTS.md")).toBeInTheDocument();
     expect(replayTaskEvents).toHaveBeenCalledWith(task.taskId);
   });
@@ -440,6 +444,25 @@ describe("M2 durable desktop surface", () => {
     expect(goal).toHaveValue("Patch the greeting");
     expect(goal).toHaveFocus();
     expect(startTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the working tree again when a task ends", async () => {
+    const updates = captureUpdates();
+    const user = userEvent.setup();
+    await renderLoaded();
+    await waitFor(() => {
+      expect(projectChanges).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalled();
+    });
+    updates.emit({ kind: "event", event: event(1, { kind: "taskCompleted", summary: "Done" }) });
+
+    await waitFor(() => {
+      expect(projectChanges).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("surfaces a normalized failure from the boundary", async () => {

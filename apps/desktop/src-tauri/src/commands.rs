@@ -20,7 +20,7 @@ use tramontana_core::contracts::{
 use tramontana_core::services::StartTaskRequest;
 use tramontana_platform::{CanonicalRoot, canonicalize_root, discover};
 
-use tramontana_core::ports::{ApprovalStore, ToolAdmission};
+use tramontana_core::ports::{ApprovalStore, ToolAdmission, ToolOutcome};
 
 use crate::state::AppState;
 
@@ -510,6 +510,60 @@ pub(crate) fn resolve_approval(
 #[tauri::command]
 pub(crate) fn pending_approvals(state: State<'_, AppState>) -> Vec<ApprovalRequest> {
     state.approver.pending()
+}
+
+/// The Git reads the Changes panel runs for the person (ADR 0032). The core
+/// accepts any read that takes no arguments; these are the two this boundary
+/// asks for.
+pub(crate) const GIT_STATUS: &str = "builtin.git.status";
+pub(crate) const GIT_DIFF: &str = "builtin.git.diff";
+
+/// A project's working tree as Git sees it.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProjectChanges {
+    /// Version of this response envelope.
+    pub schema_version: u32,
+    /// Git's status, including files it does not track yet.
+    pub status: String,
+    /// Git's per-file summary and patch for tracked files.
+    pub diff: String,
+    /// Whether either read was cut short by its output limit.
+    pub truncated: bool,
+}
+
+/// Read a project's Git status and diff for the person.
+///
+/// Belongs to no task and changes nothing: the core runs these reads only
+/// where it would let a task read without asking (ADR 0032).
+///
+/// # Errors
+///
+/// Whatever the core reports: an unknown project, a refused read, or Git's
+/// own failure, such as a project that is not a repository.
+#[tauri::command]
+pub(crate) async fn project_changes(
+    project_id: ProjectId,
+    state: State<'_, AppState>,
+) -> Result<ProjectChanges, ErrorEnvelope> {
+    let status = state.service.read_project(&project_id, GIT_STATUS).await?;
+    let diff = state.service.read_project(&project_id, GIT_DIFF).await?;
+    Ok(ProjectChanges {
+        schema_version: SCHEMA_VERSION,
+        status: text_of(&status),
+        diff: text_of(&diff),
+        truncated: status.truncated || diff.truncated,
+    })
+}
+
+/// The text a Git read returned.
+fn text_of(outcome: &ToolOutcome) -> String {
+    outcome
+        .content
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// Every live grant for a project, so the user can see what they have allowed.

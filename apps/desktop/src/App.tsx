@@ -14,6 +14,7 @@ import { describeEvent, isTerminal, projectState } from "./activity.js";
 import { ActivityCards } from "./ActivityCards.js";
 import { ApprovalCard } from "./ApprovalCard.js";
 import { buildCards, describeHeader, MODE_LABEL } from "./cards.js";
+import { ChangesPanel } from "./ChangesPanel.js";
 import { TaskHeader } from "./TaskHeader.js";
 import { CheckpointPanel } from "./CheckpointPanel.js";
 import {
@@ -115,6 +116,8 @@ export function App(): React.JSX.Element {
   const [mayRunRecipes, setMayRunRecipes] = useState(false);
   const [conversationTitle, setConversationTitle] = useState("");
   const [approvals, setApprovals] = useState<readonly ApprovalRequest[]>([]);
+  // Moves on whenever a task ends, so the Changes panel reads the tree again.
+  const [revision, setRevision] = useState(0);
   const [failure, setFailure] = useState<string | undefined>();
   const [loadingProject, setLoadingProject] = useState(false);
   const [openingProject, setOpeningProject] = useState(false);
@@ -364,6 +367,7 @@ export function App(): React.JSX.Element {
             event.payload.kind === "taskCancelled"
           ) {
             refreshTasks();
+            setRevision((current) => current + 1);
           }
           break;
         }
@@ -723,7 +727,7 @@ export function App(): React.JSX.Element {
         )}
       </main>
 
-      <aside className="inspector" aria-label="Effective configuration">
+      <aside className="inspector" aria-label="Project inspector">
         <div className="inspector-header">
           <span className="eyebrow">Effective configuration</span>
           <h2>Instruction manifest</h2>
@@ -766,6 +770,9 @@ export function App(): React.JSX.Element {
               events capture the secret-free manifest used at start.
             </p>
           </>
+        )}
+        {inspection !== undefined && (
+          <ChangesPanel projectId={inspection.project.projectId} revision={revision} />
         )}
       </aside>
     </div>

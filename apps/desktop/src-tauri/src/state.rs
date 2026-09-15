@@ -200,6 +200,67 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn a_person_reads_the_projects_git_status_and_diff_through_the_desktop() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = directory.path().join("repository");
+        std::fs::create_dir_all(&repository).unwrap();
+        let git = |arguments: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(arguments)
+                .current_dir(&repository)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {arguments:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(repository.join("greeting.txt"), "hello\n").unwrap();
+        git(&["add", "greeting.txt"]);
+        git(&["commit", "-q", "-m", "initial"]);
+        std::fs::write(repository.join("greeting.txt"), "hello, world\n").unwrap();
+        std::fs::write(repository.join("notes.txt"), "new\n").unwrap();
+
+        let state = AppState::open_with_chunk_delay(
+            &directory.path().join("desktop.sqlite"),
+            0,
+            Arc::new(DesktopApprover::headless()),
+        )
+        .await
+        .unwrap();
+        let root = canonicalize_root(&repository).unwrap();
+        let project = state
+            .service
+            .open_project("Diff fixture", vec![root.as_str().to_owned()])
+            .await
+            .unwrap();
+
+        // The same tool ids the command asks for, through the same
+        // composition, so neither can drift from what the core will run.
+        let diff = state
+            .service
+            .read_project(&project.project_id, crate::commands::GIT_DIFF)
+            .await
+            .unwrap();
+        let diff = diff.content["text"].as_str().unwrap().to_owned();
+        assert!(diff.contains("-hello\n+hello, world"), "{diff}");
+        let status = state
+            .service
+            .read_project(&project.project_id, crate::commands::GIT_STATUS)
+            .await
+            .unwrap();
+        let status = status.content["text"].as_str().unwrap().to_owned();
+        assert!(status.contains("?? notes.txt"), "{status}");
+        assert!(state.service.list_tasks(None).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn a_task_can_ask_for_its_own_admission_and_mode() {
         let directory = tempfile::tempdir().unwrap();
         let state = AppState::open_with_chunk_delay(

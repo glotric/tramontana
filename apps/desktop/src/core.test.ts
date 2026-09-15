@@ -23,6 +23,7 @@ const {
   listTasks,
   onApprovalRequested,
   openProject,
+  projectChanges,
   replayTaskEvents,
   resolveApproval,
   startTask,
@@ -66,6 +67,18 @@ describe("approval IPC", () => {
 
     stop();
     expect(unlisten).toHaveBeenCalledOnce();
+  });
+});
+
+describe("project changes", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  it("asks the shell for the project's status and diff by project", async () => {
+    invoke.mockResolvedValue({ schemaVersion: 1, status: "", diff: "", truncated: false });
+    await projectChanges("project-1");
+    expect(invoke).toHaveBeenCalledWith("project_changes", { projectId: "project-1" });
   });
 });
 

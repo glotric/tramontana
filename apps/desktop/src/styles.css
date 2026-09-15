@@ -800,6 +800,39 @@ button:disabled {
   cursor: pointer;
 }
 
+/* The project's working tree. Lines keep Git's own + and - marks; the
+   colors only repeat them. Long lines scroll inside the panel, not the page. */
+.changes {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.changes-status,
+.changes-diff {
+  max-height: 320px;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  background: var(--surface-soft);
+  font: 11px/1.5 var(--mono);
+  white-space: pre;
+}
+
+.diff-line[data-line="added"] {
+  color: var(--success);
+}
+
+.diff-line[data-line="removed"] {
+  color: var(--danger);
+}
+
+.diff-line[data-line="hunk"],
+.diff-line[data-line="file"] {
+  color: var(--ink-faint);
+}
+
 .event-list {
   padding: 0;
   margin: 0;

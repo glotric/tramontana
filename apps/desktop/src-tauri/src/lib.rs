@@ -62,6 +62,7 @@ pub fn run() {
             commands::discard_checkpoint,
             commands::resolve_approval,
             commands::pending_approvals,
+            commands::project_changes,
             commands::list_project_grants,
             commands::revoke_project_grant,
             commands::list_model_endpoints,

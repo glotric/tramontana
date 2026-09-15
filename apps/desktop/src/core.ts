@@ -77,6 +77,26 @@ export async function listTasks(conversationId?: string): Promise<readonly TaskR
   return invoke<TaskRecord[]>("list_tasks", { conversationId: conversationId ?? null });
 }
 
+/** A project's working tree as Git sees it. */
+export interface ProjectChanges {
+  readonly schemaVersion: number;
+  /** Git's status, including files it does not track yet. */
+  readonly status: string;
+  /** Git's per-file summary and patch for tracked files. */
+  readonly diff: string;
+  /** Whether either read was cut short by its output limit. */
+  readonly truncated: boolean;
+}
+
+/**
+ * Read a project's Git status and diff for the person.
+ *
+ * Changes nothing and belongs to no task (ADR 0032).
+ */
+export async function projectChanges(projectId: string): Promise<ProjectChanges> {
+  return invoke<ProjectChanges>("project_changes", { projectId });
+}
+
 /** Replay canonical durable events for a task. */
 export async function replayTaskEvents(taskId: string): Promise<readonly EventEnvelope[]> {
   return invoke<EventEnvelope[]>("replay_task_events", { taskId });
