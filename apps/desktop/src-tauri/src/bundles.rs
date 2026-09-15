@@ -195,6 +195,7 @@ mod tests {
     use std::time::Duration;
 
     use tramontana_core::config::ConfigurationSelection;
+    use tramontana_core::contracts::EventEnvelope;
     use tramontana_core::services::StartTaskRequest;
     use tramontana_platform::{canonicalize_root, discover};
 
@@ -242,10 +243,13 @@ mod tests {
             .unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                let snapshot = state.service.get_task(&task_id).await.unwrap();
+                // The outcome event itself, not the state: the state turns
+                // terminal one event before `taskCompleted` is written, and a
+                // record read in between is one event short of the export.
                 let events = state.service.replay_task_events(&task_id, 0).await.unwrap();
-                if snapshot.state.is_terminal()
-                    && events.last().map(|event| event.sequence) == Some(snapshot.last_sequence)
+                if events
+                    .last()
+                    .is_some_and(EventEnvelope::is_terminal_outcome)
                 {
                     break;
                 }
