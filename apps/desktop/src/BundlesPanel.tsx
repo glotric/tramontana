@@ -38,7 +38,11 @@ function describeCounts(counts: BundleCounts): string {
 }
 
 interface BundlesPanelProps {
-  readonly projectId: string;
+  /**
+   * The open project, which can be exported. Absent in a profile with no
+   * project yet, where importing one is the only thing to do.
+   */
+  readonly projectId: string | undefined;
   /** The task on screen, which can be exported on its own. */
   readonly taskId: string | undefined;
   /** Called after an import wrote records, so the shell can reload its lists. */
@@ -101,50 +105,56 @@ export function BundlesPanel({
     <section className="bundles" aria-labelledby="bundles-heading">
       <h2 id="bundles-heading">Bundles</h2>
 
-      <div className="bundle-options">
-        <label>
-          <input
-            type="checkbox"
-            checked={includeAbsolutePaths}
-            onChange={(changed) => {
-              setIncludeAbsolutePaths(changed.target.checked);
-            }}
-          />
-          Keep absolute paths (they name this machine)
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={includeRawToolOutput}
-            onChange={(changed) => {
-              setIncludeRawToolOutput(changed.target.checked);
-            }}
-          />
-          Keep raw tool output (it can hold file contents)
-        </label>
-      </div>
+      {projectId !== undefined && (
+        <div className="bundle-options">
+          <label>
+            <input
+              type="checkbox"
+              checked={includeAbsolutePaths}
+              onChange={(changed) => {
+                setIncludeAbsolutePaths(changed.target.checked);
+              }}
+            />
+            Keep absolute paths (they name this machine)
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={includeRawToolOutput}
+              onChange={(changed) => {
+                setIncludeRawToolOutput(changed.target.checked);
+              }}
+            />
+            Keep raw tool output (it can hold file contents)
+          </label>
+        </div>
+      )}
 
       <div className="bundle-actions">
-        <button
-          type="button"
-          className="button button--secondary"
-          disabled={busy}
-          onClick={() => {
-            onExport({ projectId });
-          }}
-        >
-          Export project…
-        </button>
-        <button
-          type="button"
-          className="button button--secondary"
-          disabled={busy || taskId === undefined}
-          onClick={() => {
-            if (taskId !== undefined) onExport({ taskId });
-          }}
-        >
-          Export this task…
-        </button>
+        {projectId !== undefined && (
+          <>
+            <button
+              type="button"
+              className="button button--secondary"
+              disabled={busy}
+              onClick={() => {
+                onExport({ projectId });
+              }}
+            >
+              Export project…
+            </button>
+            <button
+              type="button"
+              className="button button--secondary"
+              disabled={busy || taskId === undefined}
+              onClick={() => {
+                if (taskId !== undefined) onExport({ taskId });
+              }}
+            >
+              Export this task…
+            </button>
+          </>
+        )}
         <button
           type="button"
           className="button button--secondary"

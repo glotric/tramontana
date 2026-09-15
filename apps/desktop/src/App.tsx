@@ -874,15 +874,24 @@ export function App(): React.JSX.Element {
           <>
             <ChangesPanel projectId={inspection.project.projectId} revision={revision} />
             <GrantsPanel projectId={inspection.project.projectId} revision={revision} />
-            <BundlesPanel
-              projectId={inspection.project.projectId}
-              taskId={selectedTaskId}
-              onImported={() => {
-                void listProjects().then(setProjects, () => undefined);
-              }}
-            />
           </>
         )}
+        {/* Outside the project: a new profile has nothing open, and importing
+            a bundle is how it gets something. */}
+        <BundlesPanel
+          projectId={inspection?.project.projectId}
+          taskId={selectedTaskId}
+          onImported={() => {
+            void listProjects().then((records) => {
+              setProjects(records);
+              // Into an empty profile, open what was just imported.
+              const first = records[0];
+              if (inspection === undefined && first !== undefined) {
+                void selectProject(first.projectId);
+              }
+            }, undefined);
+          }}
+        />
       </aside>
     </div>
   );

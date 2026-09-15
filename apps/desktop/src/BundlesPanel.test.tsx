@@ -110,6 +110,13 @@ describe("the Bundles panel", () => {
     expect(onImported).toHaveBeenCalledOnce();
   });
 
+  it("offers import alone when no project is open, as in a new profile", () => {
+    render(<BundlesPanel projectId={undefined} taskId={undefined} onImported={() => undefined} />);
+    expect(screen.getByRole("button", { name: "Import a bundle…" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Export project…" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Export this task…" })).not.toBeInTheDocument();
+  });
+
   it("imports nothing when the person cancels, and says why a bundle was refused", async () => {
     const user = userEvent.setup();
     render(<BundlesPanel projectId="project-1" taskId={undefined} onImported={() => undefined} />);

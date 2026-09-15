@@ -481,6 +481,14 @@ describe("M2 durable desktop surface", () => {
     });
   });
 
+  it("offers to import a bundle into a profile with no project yet", async () => {
+    listProjects.mockResolvedValue([]);
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Import a bundle…" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Export project…" })).not.toBeInTheDocument();
+  });
+
   it("says what is selected and what state a task is in, not by color alone", async () => {
     replayTaskEvents.mockResolvedValue([
       event(1, { kind: "taskCreated", goalSummary: "Existing durable task" }),
