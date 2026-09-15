@@ -876,6 +876,104 @@ button:disabled {
   word-break: break-all;
 }
 
+/* Models and credentials. Each endpoint says where it runs and whether it is
+   in use in words; the danger color only repeats "Leaves this device". */
+.models-view {
+  padding: 16px 20px;
+  overflow-y: auto;
+}
+
+.models-view h1 {
+  margin: 0;
+  font-family: var(--heading);
+  font-size: 22px;
+}
+
+.models-restart {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.models-restart p {
+  margin: 0;
+}
+
+.endpoint-list {
+  display: grid;
+  margin: 14px 0 0;
+  padding: 0;
+  gap: 10px;
+  list-style: none;
+}
+
+.endpoint {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.endpoint h2 {
+  margin: 0;
+  font-family: var(--heading);
+  font-size: 16px;
+}
+
+.endpoint p {
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+
+.endpoint [data-leaves="true"] {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.endpoint-use {
+  color: var(--ink-soft);
+}
+
+.endpoint-switches,
+.endpoint-actions {
+  display: flex;
+  margin-top: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  font-size: 12px;
+}
+
+.endpoint-switches label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.endpoint-credential {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.endpoint-credential label {
+  display: grid;
+  margin-top: 6px;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.endpoint-credential input[type="password"] {
+  max-width: 360px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  font: 13px/1.2 var(--mono);
+}
+
+.rail-row--settings {
+  margin: 8px 0;
+}
+
 .event-list {
   padding: 0;
   margin: 0;

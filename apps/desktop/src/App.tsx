@@ -16,6 +16,7 @@ import { ApprovalCard } from "./ApprovalCard.js";
 import { BundlesPanel } from "./BundlesPanel.js";
 import { buildCards, describeHeader, MODE_LABEL } from "./cards.js";
 import { ChangesPanel } from "./ChangesPanel.js";
+import { ModelsView } from "./ModelsView.js";
 import { TaskHeader } from "./TaskHeader.js";
 import { CheckpointPanel } from "./CheckpointPanel.js";
 import {
@@ -119,6 +120,8 @@ export function App(): React.JSX.Element {
   const [approvals, setApprovals] = useState<readonly ApprovalRequest[]>([]);
   // Moves on whenever a task ends, so the Changes panel reads the tree again.
   const [revision, setRevision] = useState(0);
+  // The work area, or the models and credentials the tasks run against.
+  const [view, setView] = useState<"work" | "models">("work");
   const [failure, setFailure] = useState<string | undefined>();
   const [loadingProject, setLoadingProject] = useState(false);
   const [openingProject, setOpeningProject] = useState(false);
@@ -493,6 +496,17 @@ export function App(): React.JSX.Element {
           )}
         </nav>
 
+        <button
+          type="button"
+          className="rail-row rail-row--settings"
+          aria-pressed={view === "models"}
+          onClick={() => {
+            setView((current) => (current === "models" ? "work" : "models"));
+          }}
+        >
+          Models and credentials
+        </button>
+
         <footer className="rail-status">
           <span className="status-dot" data-state={status.kind} />
           <span>{describeCoreStatus(status)}</span>
@@ -500,230 +514,244 @@ export function App(): React.JSX.Element {
       </aside>
 
       <main className="workspace">
-        <header className="workspace-header">
-          <div>
-            <span className="eyebrow">Repository work</span>
-            <h1>{selectedConversation?.title ?? inspection?.project.name ?? "Open a project"}</h1>
-            <p>
-              {inspection?.project.roots[0] ??
-                "Choose a local directory to create a canonical, restart-safe project record."}
-            </p>
-          </div>
-          <div
-            className="runtime-chip"
-            title="Inspect task activity for the selected worker, model and destination"
-          >
-            <span className="status-dot" data-state="ready" />
-            governed task runtime
-          </div>
-        </header>
-
-        {failure !== undefined && (
-          <div className="notice notice--error" role="alert">
-            {failure}
-          </div>
-        )}
-
-        {approvals[0] !== undefined && (
-          <ApprovalCard
-            key={approvals[0].approvalId}
-            request={approvals[0]}
-            waiting={approvals.length - 1}
-            onAnswered={onApprovalAnswered}
+        {view === "models" ? (
+          <ModelsView
+            onClose={() => {
+              setView("work");
+            }}
           />
-        )}
-
-        {loadingProject ? (
-          <p className="workspace-loading">Loading durable project record…</p>
-        ) : inspection === undefined ? (
-          <section className="empty-state" aria-labelledby="empty-heading">
-            <div className="blueprint-corners" aria-hidden="true" />
-            <span className="eyebrow">Local by default</span>
-            <h2 id="empty-heading">Start with an approved project root.</h2>
-            <p>
-              Tramontana stores project identity, conversations, task history, and configuration
-              manifests in the local profile. Markdown is parsed as configuration data and never
-              executed.
-            </p>
-            <button
-              type="button"
-              className="button button--primary"
-              onClick={onOpenProject}
-              disabled={status.kind !== "ready" || openingProject}
-            >
-              Open a project folder
-            </button>
-          </section>
         ) : (
           <>
-            <section className="task-strip" aria-labelledby="tasks-heading">
-              <div className="section-heading-row">
-                <h2 id="tasks-heading">Recent tasks</h2>
-                <span>{tasks.length} in this conversation</span>
+            <header className="workspace-header">
+              <div>
+                <span className="eyebrow">Repository work</span>
+                <h1>
+                  {selectedConversation?.title ?? inspection?.project.name ?? "Open a project"}
+                </h1>
+                <p>
+                  {inspection?.project.roots[0] ??
+                    "Choose a local directory to create a canonical, restart-safe project record."}
+                </p>
               </div>
-              {selectedConversation === undefined ? (
-                <p className="inline-empty">Create a conversation to begin durable work.</p>
-              ) : tasks.length === 0 ? (
-                <p className="inline-empty">No tasks yet. The first run will appear here.</p>
-              ) : (
-                <div className="task-tabs" role="list">
-                  {tasks.map((task) => (
-                    <button
-                      type="button"
-                      role="listitem"
-                      key={task.taskId}
-                      data-selected={selectedTaskId === task.taskId}
-                      onClick={() => void selectTask(task.taskId)}
-                    >
-                      <span data-task-state={task.state}>{task.state}</span>
-                      <strong>{task.goalSummary}</strong>
-                      <code>{shortId(task.taskId)}</code>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </section>
+              <div
+                className="runtime-chip"
+                title="Inspect task activity for the selected worker, model and destination"
+              >
+                <span className="status-dot" data-state="ready" />
+                governed task runtime
+              </div>
+            </header>
 
-            {selectedTask?.state === "interrupted" && selectedTaskId !== undefined && (
-              <CheckpointPanel
-                key={selectedTaskId}
-                taskId={selectedTaskId}
-                onChanged={() => {
-                  if (selectedConversationId !== undefined) {
-                    void selectConversation(selectedConversationId);
-                  }
-                }}
+            {failure !== undefined && (
+              <div className="notice notice--error" role="alert">
+                {failure}
+              </div>
+            )}
+
+            {approvals[0] !== undefined && (
+              <ApprovalCard
+                key={approvals[0].approvalId}
+                request={approvals[0]}
+                waiting={approvals.length - 1}
+                onAnswered={onApprovalAnswered}
               />
             )}
 
-            <section className="activity" aria-labelledby="activity-heading">
-              <div className="section-heading-row">
-                <h2 id="activity-heading">Activity</h2>
-                <span>
-                  {selectedTask === undefined
-                    ? "No selected task"
-                    : `${shortId(selectedTask.taskId)} · ${events.length} durable events`}
-                </span>
-              </div>
-              {events.length === 0 ? (
-                <div className="activity-empty">
-                  <span className="eyebrow">Sequence gap-free</span>
-                  <p>Start a task to see its canonical event stream.</p>
-                </div>
-              ) : (
-                <>
-                  <TaskHeader header={header} onRetry={onRetry} />
-                  <ActivityCards cards={cards} />
-                  {/* The record itself, one line per event, as the CLI replays it. */}
-                  <details className="raw-events">
-                    <summary>All events ({events.length})</summary>
-                    <ol className="event-list" aria-label="Task event stream">
-                      {events.map((event) => {
-                        const line = describeEvent(event);
-                        return (
-                          <li key={event.eventId}>
-                            <span className="event-sequence">{line.sequence}</span>
-                            <code>{line.kind}</code>
-                            <span>{line.detail}</span>
-                          </li>
-                        );
-                      })}
-                    </ol>
-                  </details>
-                </>
-              )}
-              {streamed !== "" && (
-                <div className="stream-output">
-                  <span>live frame</span>
-                  <p>{streamed}</p>
-                </div>
-              )}
-            </section>
-
-            <form
-              className="composer"
-              onSubmit={(submitted) => {
-                submitted.preventDefault();
-                onStart();
-              }}
-            >
-              <label htmlFor="goal">Task goal</label>
-              <textarea
-                ref={goalInput}
-                id="goal"
-                value={goal}
-                onChange={(changed) => {
-                  setGoal(changed.target.value);
-                }}
-                disabled={running}
-                rows={2}
-              />
-              <fieldset className="composer-options" disabled={running}>
-                <legend className="sr-only">How this task may run</legend>
-                <fieldset className="composer-modes">
-                  <legend className="sr-only">Where models may run</legend>
-                  {MODES.map((mode) => (
-                    <label key={mode} data-selected={routingMode === mode}>
-                      <input
-                        type="radio"
-                        name="routing-mode"
-                        value={mode}
-                        checked={routingMode === mode}
-                        onChange={() => {
-                          setRoutingMode(mode);
-                        }}
-                      />
-                      {MODE_LABEL[mode]}
-                    </label>
-                  ))}
-                </fieldset>
-                <label className="composer-toggle">
-                  <input
-                    type="checkbox"
-                    checked={mayWrite}
-                    onChange={(changed) => {
-                      setMayWrite(changed.target.checked);
-                    }}
-                  />
-                  May edit files
-                </label>
-                <label className="composer-toggle">
-                  <input
-                    type="checkbox"
-                    checked={mayRunRecipes}
-                    onChange={(changed) => {
-                      setMayRunRecipes(changed.target.checked);
-                    }}
-                  />
-                  May run recipes
-                </label>
-              </fieldset>
-              <p className="composer-disclosure">
-                {describeChoices(routingMode, mayWrite, mayRunRecipes)}
-              </p>
-              <div className="composer-footer">
-                <span>
-                  {configuration === undefined
-                    ? "No configuration manifest"
-                    : `${configuration.sources.filter((source) => source.active).length} active sources · ${configuration.manifestHash.slice(0, 12)}`}
-                </span>
+            {loadingProject ? (
+              <p className="workspace-loading">Loading durable project record…</p>
+            ) : inspection === undefined ? (
+              <section className="empty-state" aria-labelledby="empty-heading">
+                <div className="blueprint-corners" aria-hidden="true" />
+                <span className="eyebrow">Local by default</span>
+                <h2 id="empty-heading">Start with an approved project root.</h2>
+                <p>
+                  Tramontana stores project identity, conversations, task history, and configuration
+                  manifests in the local profile. Markdown is parsed as configuration data and never
+                  executed.
+                </p>
                 <button
                   type="button"
-                  className="button button--secondary"
-                  onClick={onCancel}
-                  disabled={!running}
-                >
-                  Stop
-                </button>
-                <button
-                  type="submit"
                   className="button button--primary"
-                  disabled={running || selectedConversationId === undefined || goal.trim() === ""}
+                  onClick={onOpenProject}
+                  disabled={status.kind !== "ready" || openingProject}
                 >
-                  Start task
+                  Open a project folder
                 </button>
-              </div>
-            </form>
+              </section>
+            ) : (
+              <>
+                <section className="task-strip" aria-labelledby="tasks-heading">
+                  <div className="section-heading-row">
+                    <h2 id="tasks-heading">Recent tasks</h2>
+                    <span>{tasks.length} in this conversation</span>
+                  </div>
+                  {selectedConversation === undefined ? (
+                    <p className="inline-empty">Create a conversation to begin durable work.</p>
+                  ) : tasks.length === 0 ? (
+                    <p className="inline-empty">No tasks yet. The first run will appear here.</p>
+                  ) : (
+                    <div className="task-tabs" role="list">
+                      {tasks.map((task) => (
+                        <button
+                          type="button"
+                          role="listitem"
+                          key={task.taskId}
+                          data-selected={selectedTaskId === task.taskId}
+                          onClick={() => void selectTask(task.taskId)}
+                        >
+                          <span data-task-state={task.state}>{task.state}</span>
+                          <strong>{task.goalSummary}</strong>
+                          <code>{shortId(task.taskId)}</code>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                {selectedTask?.state === "interrupted" && selectedTaskId !== undefined && (
+                  <CheckpointPanel
+                    key={selectedTaskId}
+                    taskId={selectedTaskId}
+                    onChanged={() => {
+                      if (selectedConversationId !== undefined) {
+                        void selectConversation(selectedConversationId);
+                      }
+                    }}
+                  />
+                )}
+
+                <section className="activity" aria-labelledby="activity-heading">
+                  <div className="section-heading-row">
+                    <h2 id="activity-heading">Activity</h2>
+                    <span>
+                      {selectedTask === undefined
+                        ? "No selected task"
+                        : `${shortId(selectedTask.taskId)} · ${events.length} durable events`}
+                    </span>
+                  </div>
+                  {events.length === 0 ? (
+                    <div className="activity-empty">
+                      <span className="eyebrow">Sequence gap-free</span>
+                      <p>Start a task to see its canonical event stream.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <TaskHeader header={header} onRetry={onRetry} />
+                      <ActivityCards cards={cards} />
+                      {/* The record itself, one line per event, as the CLI replays it. */}
+                      <details className="raw-events">
+                        <summary>All events ({events.length})</summary>
+                        <ol className="event-list" aria-label="Task event stream">
+                          {events.map((event) => {
+                            const line = describeEvent(event);
+                            return (
+                              <li key={event.eventId}>
+                                <span className="event-sequence">{line.sequence}</span>
+                                <code>{line.kind}</code>
+                                <span>{line.detail}</span>
+                              </li>
+                            );
+                          })}
+                        </ol>
+                      </details>
+                    </>
+                  )}
+                  {streamed !== "" && (
+                    <div className="stream-output">
+                      <span>live frame</span>
+                      <p>{streamed}</p>
+                    </div>
+                  )}
+                </section>
+
+                <form
+                  className="composer"
+                  onSubmit={(submitted) => {
+                    submitted.preventDefault();
+                    onStart();
+                  }}
+                >
+                  <label htmlFor="goal">Task goal</label>
+                  <textarea
+                    ref={goalInput}
+                    id="goal"
+                    value={goal}
+                    onChange={(changed) => {
+                      setGoal(changed.target.value);
+                    }}
+                    disabled={running}
+                    rows={2}
+                  />
+                  <fieldset className="composer-options" disabled={running}>
+                    <legend className="sr-only">How this task may run</legend>
+                    <fieldset className="composer-modes">
+                      <legend className="sr-only">Where models may run</legend>
+                      {MODES.map((mode) => (
+                        <label key={mode} data-selected={routingMode === mode}>
+                          <input
+                            type="radio"
+                            name="routing-mode"
+                            value={mode}
+                            checked={routingMode === mode}
+                            onChange={() => {
+                              setRoutingMode(mode);
+                            }}
+                          />
+                          {MODE_LABEL[mode]}
+                        </label>
+                      ))}
+                    </fieldset>
+                    <label className="composer-toggle">
+                      <input
+                        type="checkbox"
+                        checked={mayWrite}
+                        onChange={(changed) => {
+                          setMayWrite(changed.target.checked);
+                        }}
+                      />
+                      May edit files
+                    </label>
+                    <label className="composer-toggle">
+                      <input
+                        type="checkbox"
+                        checked={mayRunRecipes}
+                        onChange={(changed) => {
+                          setMayRunRecipes(changed.target.checked);
+                        }}
+                      />
+                      May run recipes
+                    </label>
+                  </fieldset>
+                  <p className="composer-disclosure">
+                    {describeChoices(routingMode, mayWrite, mayRunRecipes)}
+                  </p>
+                  <div className="composer-footer">
+                    <span>
+                      {configuration === undefined
+                        ? "No configuration manifest"
+                        : `${configuration.sources.filter((source) => source.active).length} active sources · ${configuration.manifestHash.slice(0, 12)}`}
+                    </span>
+                    <button
+                      type="button"
+                      className="button button--secondary"
+                      onClick={onCancel}
+                      disabled={!running}
+                    >
+                      Stop
+                    </button>
+                    <button
+                      type="submit"
+                      className="button button--primary"
+                      disabled={
+                        running || selectedConversationId === undefined || goal.trim() === ""
+                      }
+                    >
+                      Start task
+                    </button>
+                  </div>
+                </form>
+              </>
+            )}
           </>
         )}
       </main>

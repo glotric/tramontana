@@ -16,8 +16,16 @@ const {
   createConversation,
   exportBundle,
   fetchCoreInfo,
+  forgetCredential,
   importStagedBundle,
   inspectBundle,
+  listConfiguredEndpoints,
+  listModelEndpoints,
+  removeEndpoint,
+  restartApplication,
+  setEndpointEnabled,
+  setEndpointToolCalls,
+  storeCredential,
   getTask,
   inspectProject,
   listConversations,
@@ -70,6 +78,49 @@ describe("approval IPC", () => {
 
     stop();
     expect(unlisten).toHaveBeenCalledOnce();
+  });
+});
+
+describe("models and credentials", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(undefined);
+  });
+
+  it("invokes the settings commands the shell registers", async () => {
+    invoke.mockResolvedValue([]);
+    await listConfiguredEndpoints();
+    expect(invoke).toHaveBeenLastCalledWith("list_configured_endpoints");
+    await listModelEndpoints();
+    expect(invoke).toHaveBeenLastCalledWith("list_model_endpoints");
+
+    invoke.mockResolvedValue(undefined);
+    await setEndpointEnabled("local", false);
+    expect(invoke).toHaveBeenLastCalledWith("set_endpoint_enabled", {
+      endpointId: "local",
+      enabled: false,
+    });
+    await setEndpointToolCalls("local", true);
+    expect(invoke).toHaveBeenLastCalledWith("set_endpoint_tool_calls", {
+      endpointId: "local",
+      supported: true,
+    });
+    await removeEndpoint("local");
+    expect(invoke).toHaveBeenLastCalledWith("remove_endpoint", { endpointId: "local" });
+
+    invoke.mockResolvedValue(7);
+    expect(await storeCredential("openai.apiKey", "sk-test")).toBe(7);
+    expect(invoke).toHaveBeenLastCalledWith("store_credential", {
+      key: "openai.apiKey",
+      value: "sk-test",
+    });
+    invoke.mockResolvedValue(true);
+    await forgetCredential("openai.apiKey");
+    expect(invoke).toHaveBeenLastCalledWith("forget_credential", { key: "openai.apiKey" });
+
+    invoke.mockResolvedValue(undefined);
+    await restartApplication();
+    expect(invoke).toHaveBeenLastCalledWith("restart_application");
   });
 });
 

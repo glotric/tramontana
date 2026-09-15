@@ -30,6 +30,8 @@ const listPendingApprovals = vi.hoisted(() => vi.fn());
 const onApprovalRequested = vi.hoisted(() => vi.fn());
 const resolveApproval = vi.hoisted(() => vi.fn());
 const projectChanges = vi.hoisted(() => vi.fn());
+const listConfiguredEndpoints = vi.hoisted(() => vi.fn());
+const listModelEndpoints = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -49,6 +51,8 @@ vi.mock("./core.js", async () => {
     onApprovalRequested,
     resolveApproval,
     projectChanges,
+    listConfiguredEndpoints,
+    listModelEndpoints,
   };
 });
 
@@ -170,9 +174,13 @@ describe("M2 durable desktop surface", () => {
       onApprovalRequested,
       resolveApproval,
       projectChanges,
+      listConfiguredEndpoints,
+      listModelEndpoints,
     ]) {
       mock.mockReset();
     }
+    listConfiguredEndpoints.mockResolvedValue([]);
+    listModelEndpoints.mockResolvedValue([]);
     projectChanges.mockResolvedValue({ schemaVersion: 1, status: "", diff: "", truncated: false });
     listPendingApprovals.mockResolvedValue([]);
     onApprovalRequested.mockResolvedValue(() => undefined);
@@ -463,6 +471,20 @@ describe("M2 durable desktop surface", () => {
     await waitFor(() => {
       expect(projectChanges).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("opens the models and credentials, and goes back to work", async () => {
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    await user.click(screen.getByRole("button", { name: "Models and credentials" }));
+    expect(
+      await screen.findByRole("heading", { name: "Models and credentials" }),
+    ).toBeInTheDocument();
+    expect(listConfiguredEndpoints).toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Back to work" }));
+    expect(await screen.findByRole("heading", { name: "M2 Conversation" })).toBeInTheDocument();
   });
 
   it("surfaces a normalized failure from the boundary", async () => {

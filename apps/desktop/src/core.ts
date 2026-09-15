@@ -98,6 +98,79 @@ export async function projectChanges(projectId: string): Promise<ProjectChanges>
   return invoke<ProjectChanges>("project_changes", { projectId });
 }
 
+/** Whether a credential is stored, never its value. */
+export interface CredentialStatus {
+  /** The key it is filed under, such as `openai.apiKey`. */
+  readonly key: string;
+  /** Whether one is stored; absent when the store could not answer. */
+  readonly configured?: boolean;
+  /** Why the store could not answer, when it could not. */
+  readonly unavailableReason?: string;
+}
+
+/** One configured model endpoint. */
+export interface ConfiguredEndpoint {
+  readonly endpointId: string;
+  readonly displayName: string;
+  readonly kind: "openAiCompatible" | "anthropic" | "llamaServer";
+  readonly modelId: string;
+  /** Whether work sent here leaves the device. Derived, never declared. */
+  readonly leavesTheDevice: boolean;
+  readonly enabled: boolean;
+  /** Tool-call support the person verified. Unknown is off. */
+  readonly supportsToolCalls: boolean;
+  readonly credential?: CredentialStatus;
+}
+
+/** Whether a configured endpoint came up when Tramontana opened. */
+export interface ModelEndpointStatus {
+  readonly endpointId: string;
+  readonly models: readonly string[];
+  readonly leavesTheDevice: boolean;
+  readonly available: boolean;
+  readonly unavailableReason?: string;
+}
+
+/** Every configured endpoint, with whether its credential is stored. */
+export async function listConfiguredEndpoints(): Promise<readonly ConfiguredEndpoint[]> {
+  return invoke<ConfiguredEndpoint[]>("list_configured_endpoints");
+}
+
+/** The endpoints that came up when Tramontana opened, and those that did not. */
+export async function listModelEndpoints(): Promise<readonly ModelEndpointStatus[]> {
+  return invoke<ModelEndpointStatus[]>("list_model_endpoints");
+}
+
+/** Turn an endpoint on or off. Takes effect when Tramontana restarts. */
+export async function setEndpointEnabled(endpointId: string, enabled: boolean): Promise<void> {
+  return invoke("set_endpoint_enabled", { endpointId, enabled });
+}
+
+/** Record whether the person verified an endpoint's tool-call support. */
+export async function setEndpointToolCalls(endpointId: string, supported: boolean): Promise<void> {
+  return invoke("set_endpoint_tool_calls", { endpointId, supported });
+}
+
+/** Remove an endpoint. Its credential stays in the store. */
+export async function removeEndpoint(endpointId: string): Promise<void> {
+  return invoke("remove_endpoint", { endpointId });
+}
+
+/** Store a credential. Resolves with its length, never the value. */
+export async function storeCredential(key: string, value: string): Promise<number> {
+  return invoke<number>("store_credential", { key, value });
+}
+
+/** Remove a credential from the store. Resolves with whether one was there. */
+export async function forgetCredential(key: string): Promise<boolean> {
+  return invoke<boolean>("forget_credential", { key });
+}
+
+/** Restart Tramontana, so endpoints configured since it opened are used. */
+export async function restartApplication(): Promise<void> {
+  return invoke("restart_application");
+}
+
 /** How many records of each kind a bundle holds, or an import wrote. */
 export interface BundleCounts {
   readonly projects: number;
