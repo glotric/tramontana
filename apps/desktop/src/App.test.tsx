@@ -233,10 +233,12 @@ describe("M2 durable desktop surface", () => {
 
     await user.click(screen.getByRole("button", { name: "Start task" }));
     await waitFor(() => {
+      // Read-only and Automatic unless the person chose otherwise.
       expect(startTask).toHaveBeenCalledWith(
         "Say hello",
         expect.any(Function),
         conversation.conversationId,
+        { writes: false, recipes: false, routingMode: "automatic" },
       );
     });
     updates.emit({
@@ -346,6 +348,30 @@ describe("M2 durable desktop surface", () => {
     ).toBeInTheDocument();
     // The first question is still the one being asked.
     expect(screen.getByText("builtin.fs.patch wants to write approval-1")).toBeInTheDocument();
+  });
+
+  it("starts a task with the mode and access the person chose, and says what they mean", async () => {
+    const user = userEvent.setup();
+    await renderLoaded();
+    expect(screen.getByText(/Read-only: the model can look/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: "Local only" }));
+    await user.click(screen.getByRole("checkbox", { name: "May edit files" }));
+    await user.click(screen.getByRole("checkbox", { name: "May run recipes" }));
+    expect(
+      screen.getByText(/Local only governs where models run, not the commands a recipe runs/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/each one is put to you before it runs/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalledWith(
+        "Say hello",
+        expect.any(Function),
+        conversation.conversationId,
+        { writes: true, recipes: true, routingMode: "localOnly" },
+      );
+    });
   });
 
   it("surfaces a normalized failure from the boundary", async () => {

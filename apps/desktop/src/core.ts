@@ -9,6 +9,7 @@ import type {
   ErrorEnvelope,
   EventEnvelope,
   ProjectRecord,
+  RoutingMode,
   TaskCheckpoint,
   TaskRecord,
   TaskSnapshot,
@@ -82,21 +83,40 @@ export async function replayTaskEvents(taskId: string): Promise<readonly EventEn
 }
 
 /**
+ * What a person chose for one task before starting it (ADR 0031).
+ *
+ * Choices, not permissions: `writes` and `recipes` only let the model ask,
+ * and each write or recipe run is still put to the person as an approval.
+ */
+export interface TaskOptions {
+  /** Let the model ask to make local, reversible file changes. */
+  readonly writes: boolean;
+  /** Let the model ask to run the project's configured recipes. */
+  readonly recipes: boolean;
+  /** Where this task's models may run. Kept if the task is resumed. */
+  readonly routingMode: RoutingMode;
+}
+
+/**
  * Start a task, delivering every update to `onUpdate`.
  *
  * Resolves with the task identifier as soon as the task is registered, not
  * when it finishes — the work continues and reports through the channel.
+ * Without `options` the task runs read-only under the profile's mode.
  */
 export async function startTask(
   goal: string,
   onUpdate: (update: TaskUpdate) => void,
   conversationId?: string,
+  options?: TaskOptions,
 ): Promise<string> {
   const channel = new Channel<TaskUpdate>();
   channel.onmessage = onUpdate;
   return invoke<string>("start_task", {
     goal,
     conversationId: conversationId ?? null,
+    admission: options === undefined ? null : { writes: options.writes, recipes: options.recipes },
+    routingMode: options?.routingMode ?? null,
     channel,
   });
 }

@@ -14,13 +14,13 @@ use tramontana_core::config::ConfigurationSelection;
 use tramontana_core::contracts::{
     ApprovalDecisionKind, ApprovalId, ApprovalRequest, CheckpointId, ConversationId,
     ConversationRecord, CorrelationId, EffectiveConfiguration, ErrorCode, ErrorEnvelope,
-    EventEnvelope, ProjectGrant, ProjectId, ProjectRecord, SCHEMA_VERSION, TaskCheckpoint, TaskId,
-    TaskRecord, TaskSnapshot, TaskUpdate,
+    EventEnvelope, ProjectGrant, ProjectId, ProjectRecord, RoutingMode, SCHEMA_VERSION,
+    TaskCheckpoint, TaskId, TaskRecord, TaskSnapshot, TaskUpdate,
 };
 use tramontana_core::services::StartTaskRequest;
 use tramontana_platform::{CanonicalRoot, canonicalize_root, discover};
 
-use tramontana_core::ports::ApprovalStore;
+use tramontana_core::ports::{ApprovalStore, ToolAdmission};
 
 use crate::state::AppState;
 
@@ -185,6 +185,11 @@ pub(crate) async fn replay_task_events(
 /// background and reports through the channel. A long-running operation must
 /// never block the interface (`CORE_CONTRACTS.md` §13).
 ///
+/// `admission` and `routing_mode` are what the person chose for this task in
+/// the composer (ADR 0031). Absent, the task runs read-only under the
+/// profile's mode. Admission only lets the model ask: every write and every
+/// recipe run is still put to the person as an approval.
+///
 /// # Errors
 ///
 /// [`ErrorCode::InvalidRequest`] for an empty or oversized goal, or whatever
@@ -193,6 +198,8 @@ pub(crate) async fn replay_task_events(
 pub(crate) async fn start_task(
     goal: String,
     conversation_id: Option<ConversationId>,
+    admission: Option<ToolAdmission>,
+    routing_mode: Option<RoutingMode>,
     channel: Channel<TaskUpdate>,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ErrorEnvelope> {
@@ -217,7 +224,8 @@ pub(crate) async fn start_task(
         .start_task(StartTaskRequest {
             conversation_id,
             goal,
-            ..Default::default()
+            admission,
+            routing_mode,
         })
         .await?;
 

@@ -5,6 +5,7 @@ import type {
   ConversationRecord,
   EventEnvelope,
   ProjectRecord,
+  RoutingMode,
   TaskRecord,
   TaskUpdate,
 } from "@tramontana/shared";
@@ -58,6 +59,45 @@ function shortId(value: string): string {
   return parts.length > 2 ? `${parts[0]}-${parts.at(-1)?.slice(0, 8)}` : value;
 }
 
+/** Where a task's models may run, as the composer offers the choice. */
+const MODES: readonly (readonly [RoutingMode, string])[] = [
+  ["localOnly", "Local only"],
+  ["automatic", "Automatic"],
+  ["cloudPreferred", "Prefer cloud"],
+];
+
+/** What each mode means for the task about to start. */
+const MODE_TEXT: Record<RoutingMode, string> = {
+  localOnly: "Local only: models run on this device, and nothing is sent to a cloud model.",
+  automatic:
+    "Automatic: a model is chosen for you, and anything sent to a cloud model is asked about first.",
+  cloudPreferred:
+    "Prefer cloud: a cloud model is chosen when one is available, and each release to it is asked about first.",
+};
+
+/**
+ * Say, before the task starts, what the person's choices let it do.
+ *
+ * Local Only governs where models run, not what a command does: an approved
+ * recipe can still reach the network, so choosing both says so (ADR 0028's
+ * boundary statement, and the recipe prompt, say the same).
+ */
+function describeChoices(mode: RoutingMode, writes: boolean, recipes: boolean): string {
+  const asks = [
+    ...(writes ? ["edit files"] : []),
+    ...(recipes ? ["run the project's recipes"] : []),
+  ];
+  const access =
+    asks.length === 0
+      ? "Read-only: the model can look at the project but change nothing."
+      : `The model may ask to ${asks.join(" and ")}; each one is put to you before it runs.`;
+  const commands =
+    mode === "localOnly" && recipes
+      ? " Local only governs where models run, not the commands a recipe runs."
+      : "";
+  return `${MODE_TEXT[mode]} ${access}${commands}`;
+}
+
 /** M2 desktop surface over the same durable service and profile as the CLI. */
 export function App(): React.JSX.Element {
   const [status, setStatus] = useState<CoreStatus>({ kind: "connecting" });
@@ -70,6 +110,10 @@ export function App(): React.JSX.Element {
   const [events, setEvents] = useState<readonly EventEnvelope[]>([]);
   const [streamed, setStreamed] = useState("");
   const [goal, setGoal] = useState("Say hello");
+  // Read-only and Automatic until the person says otherwise, for each task.
+  const [routingMode, setRoutingMode] = useState<RoutingMode>("automatic");
+  const [mayWrite, setMayWrite] = useState(false);
+  const [mayRunRecipes, setMayRunRecipes] = useState(false);
   const [conversationTitle, setConversationTitle] = useState("");
   const [approvals, setApprovals] = useState<readonly ApprovalRequest[]>([]);
   const [failure, setFailure] = useState<string | undefined>();
@@ -321,7 +365,11 @@ export function App(): React.JSX.Element {
       }
     };
 
-    void startTask(goal, onUpdate, selectedConversationId).then(
+    void startTask(goal, onUpdate, selectedConversationId, {
+      writes: mayWrite,
+      recipes: mayRunRecipes,
+      routingMode,
+    }).then(
       (id) => {
         setSelectedTaskId(id);
         refreshTasks();
@@ -330,7 +378,7 @@ export function App(): React.JSX.Element {
         setFailure(failureText(error, "Could not start the task."));
       },
     );
-  }, [goal, refreshTasks, selectedConversationId]);
+  }, [goal, mayRunRecipes, mayWrite, refreshTasks, routingMode, selectedConversationId]);
 
   const onCancel = useCallback(() => {
     if (selectedTaskId === undefined) return;
@@ -441,7 +489,7 @@ export function App(): React.JSX.Element {
       <main className="workspace">
         <header className="workspace-header">
           <div>
-            <span className="eyebrow">M6 · Read-only repository work</span>
+            <span className="eyebrow">Repository work</span>
             <h1>{selectedConversation?.title ?? inspection?.project.name ?? "Open a project"}</h1>
             <p>
               {inspection?.project.roots[0] ??
@@ -588,6 +636,49 @@ export function App(): React.JSX.Element {
                 disabled={running}
                 rows={2}
               />
+              <fieldset className="composer-options" disabled={running}>
+                <legend className="sr-only">How this task may run</legend>
+                <fieldset className="composer-modes">
+                  <legend className="sr-only">Where models may run</legend>
+                  {MODES.map(([mode, label]) => (
+                    <label key={mode} data-selected={routingMode === mode}>
+                      <input
+                        type="radio"
+                        name="routing-mode"
+                        value={mode}
+                        checked={routingMode === mode}
+                        onChange={() => {
+                          setRoutingMode(mode);
+                        }}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </fieldset>
+                <label className="composer-toggle">
+                  <input
+                    type="checkbox"
+                    checked={mayWrite}
+                    onChange={(changed) => {
+                      setMayWrite(changed.target.checked);
+                    }}
+                  />
+                  May edit files
+                </label>
+                <label className="composer-toggle">
+                  <input
+                    type="checkbox"
+                    checked={mayRunRecipes}
+                    onChange={(changed) => {
+                      setMayRunRecipes(changed.target.checked);
+                    }}
+                  />
+                  May run recipes
+                </label>
+              </fieldset>
+              <p className="composer-disclosure">
+                {describeChoices(routingMode, mayWrite, mayRunRecipes)}
+              </p>
               <div className="composer-footer">
                 <span>
                   {configuration === undefined

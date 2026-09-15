@@ -764,6 +764,65 @@ button:disabled {
   line-height: 1.55;
 }
 
+/* How a task may run, chosen before it starts. Native radios and checkboxes,
+   so keyboard use and screen-reader meaning come from the platform; the
+   selected mode keeps its radio dot, so it is not shown by color alone. */
+.composer-options {
+  display: flex;
+  margin: 8px 0 0;
+  padding: 0;
+  border: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+}
+
+.composer-modes {
+  display: inline-flex;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+}
+
+.composer-modes label {
+  display: inline-flex;
+  padding: 6px 10px;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font: 600 11px/1 var(--heading);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.composer-modes label + label {
+  border-left: 1px solid var(--line);
+}
+
+.composer-modes label[data-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+}
+
+.composer-modes input,
+.composer-toggle input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.composer-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.composer-disclosure {
+  margin: 6px 0 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
 .composer-footer {
   display: flex;
   min-width: 0;

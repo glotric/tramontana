@@ -80,8 +80,8 @@ impl AppState {
                         .with_recovery_store(tramontana_composition::recovery_store(path)),
                 ) as Arc<dyn ToolProvider>,
                 Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
-                // Registered so both adapters hold the same set; never offered
-                // to a model here, where admission stays read-only.
+                // Registered so both adapters hold the same set; offered to a
+                // model only in a task whose person chose to allow recipes.
                 Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
             ],
             Arc::clone(&approvals) as Arc<dyn ApprovalStore>,
@@ -155,9 +155,11 @@ impl AppState {
                 tools: Arc::clone(&registry),
                 permissions: Arc::clone(&permissions),
                 releases: Arc::clone(&releases),
-                // Same strategy and governed tool plane as the CLI. Read-only:
-                // the desktop has no way yet for a person to say a task may
-                // write, so it never offers a model a write (ADR 0021).
+                // Same strategy and governed tool plane as the CLI. The
+                // service's own worker is read-only. A task gets a worker that
+                // may ask to write or run recipes only when the person chose
+                // that in the composer, and each one is still approved as it
+                // happens (ADRs 0021 and 0031).
                 worker: tramontana_composition::assemble_worker(
                     has_configured,
                     tramontana_core::ports::ToolAdmission::READ_ONLY,
@@ -166,7 +168,9 @@ impl AppState {
             Arc::new(SystemClock::new()),
             Arc::new(UuidIdSource::new()),
         );
-        let service = service.with_execution_guard(lease);
+        let service = service
+            .with_worker_choice(tramontana_composition::worker_choice(has_configured))
+            .with_execution_guard(lease);
         service
             .recover()
             .await
@@ -194,6 +198,54 @@ mod tests {
     use tramontana_platform::{canonicalize_root, discover};
 
     use super::*;
+
+    #[tokio::test]
+    async fn a_task_can_ask_for_its_own_admission_and_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = AppState::open_with_chunk_delay(
+            &directory.path().join("desktop.sqlite"),
+            0,
+            Arc::new(DesktopApprover::headless()),
+        )
+        .await
+        .unwrap();
+
+        // Refused as `capabilityUnsupported` by a service that cannot build a
+        // worker per task, which is what the desktop was before M8.
+        let task_id = state
+            .service
+            .start_task(StartTaskRequest {
+                goal: "Say hello".to_owned(),
+                admission: Some(tramontana_core::ports::ToolAdmission::READ_WRITE),
+                routing_mode: Some(tramontana_core::contracts::RoutingMode::LocalOnly),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let events = state.service.replay_task_events(&task_id, 0).await.unwrap();
+        assert!(matches!(
+            events[0].payload,
+            tramontana_core::contracts::EventPayload::TaskCreated {
+                routing_mode: Some(tramontana_core::contracts::RoutingMode::LocalOnly),
+                ..
+            }
+        ));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !state
+                .service
+                .get_task(&task_id)
+                .await
+                .unwrap()
+                .state
+                .is_terminal()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
 
     #[tokio::test]
     async fn reopening_the_desktop_profile_restores_the_same_durable_work() {

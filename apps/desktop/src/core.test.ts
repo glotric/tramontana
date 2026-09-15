@@ -69,6 +69,34 @@ describe("approval IPC", () => {
   });
 });
 
+describe("task options", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue("task-1");
+  });
+
+  it("sends what the person chose, and nothing when they chose nothing", async () => {
+    await startTask("hello", () => undefined, "conversation-1", {
+      writes: true,
+      recipes: false,
+      routingMode: "localOnly",
+    });
+    expect(invoke).toHaveBeenLastCalledWith(
+      "start_task",
+      expect.objectContaining({
+        admission: { writes: true, recipes: false },
+        routingMode: "localOnly",
+      }),
+    );
+
+    await startTask("hello", () => undefined);
+    expect(invoke).toHaveBeenLastCalledWith(
+      "start_task",
+      expect.objectContaining({ admission: null, routingMode: null }),
+    );
+  });
+});
+
 describe("core IPC client", () => {
   beforeEach(() => {
     invoke.mockReset();
