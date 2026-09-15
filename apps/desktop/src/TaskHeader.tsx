@@ -25,7 +25,11 @@ export function TaskHeader({ header, onRetry }: TaskHeaderProps): React.JSX.Elem
       <dl className="task-facts">
         <div>
           <dt>State</dt>
-          <dd data-state={header.state}>{header.state ?? "not started"}</dd>
+          {/* Announced when it changes, so a task finishing is heard as
+              well as seen. */}
+          <dd data-state={header.state} aria-live="polite">
+            {header.state ?? "not started"}
+          </dd>
         </div>
         <div>
           <dt>Worker</dt>

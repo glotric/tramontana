@@ -481,6 +481,36 @@ describe("M2 durable desktop surface", () => {
     });
   });
 
+  it("says what is selected and what state a task is in, not by color alone", async () => {
+    replayTaskEvents.mockResolvedValue([
+      event(1, { kind: "taskCreated", goalSummary: "Existing durable task" }),
+    ]);
+    const { container } = render(<App />);
+    await screen.findByRole("heading", { name: "M2 Conversation" });
+
+    expect(screen.getByRole("button", { name: "Tramontana" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "M2 Conversation" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    // A task tab is a button in a list, so it is announced as one.
+    const tabs = screen.getByRole("list", { name: "Tasks in this conversation" });
+    expect(within(tabs).getByRole("button", { name: /Existing durable task/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+
+    // Colored dots carry nothing a screen reader needs; the words beside them do.
+    for (const dot of container.querySelectorAll(".status-dot")) {
+      expect(dot).toHaveAttribute("aria-hidden", "true");
+    }
+    const summary = await screen.findByRole("region", { name: "Task summary" });
+    expect(summary.querySelector('[aria-live="polite"]')).toHaveTextContent("queued");
+  });
+
   it("follows a task still running after a reload, from the last event it has", async () => {
     listTasks.mockResolvedValue([{ ...task, state: "running", lastSequence: 2 }]);
     replayTaskEvents.mockResolvedValue([

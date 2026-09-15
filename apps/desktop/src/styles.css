@@ -482,12 +482,18 @@ button:disabled {
 .task-tabs {
   display: flex;
   min-width: 0;
+  margin: 0;
+  padding: 0 0 2px;
   gap: 6px;
   overflow-x: auto;
-  padding-bottom: 2px;
+  list-style: none;
 }
 
-.task-tabs > button {
+.task-tabs > li {
+  display: flex;
+}
+
+.task-tabs > li > button {
   display: grid;
   min-width: 170px;
   max-width: 230px;
@@ -500,8 +506,8 @@ button:disabled {
   text-align: left;
 }
 
-.task-tabs > button:hover,
-.task-tabs > button[data-selected="true"] {
+.task-tabs > li > button:hover,
+.task-tabs > li > button[data-selected="true"] {
   border-color: var(--accent);
   background: var(--accent-soft);
 }

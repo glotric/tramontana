@@ -486,9 +486,12 @@ export function App(): React.JSX.Element {
                       type="button"
                       className="rail-row"
                       data-selected={inspection?.project.projectId === project.projectId}
+                      aria-current={
+                        inspection?.project.projectId === project.projectId ? "true" : undefined
+                      }
                       onClick={() => void selectProject(project.projectId)}
                     >
-                      <span className="status-dot" />
+                      <span className="status-dot" aria-hidden="true" />
                       <span>{project.name}</span>
                     </button>
                   </li>
@@ -532,6 +535,11 @@ export function App(): React.JSX.Element {
                         type="button"
                         className="rail-row rail-row--conversation"
                         data-selected={selectedConversationId === conversation.conversationId}
+                        aria-current={
+                          selectedConversationId === conversation.conversationId
+                            ? "true"
+                            : undefined
+                        }
                         onClick={() => void selectConversation(conversation.conversationId)}
                       >
                         <span>{conversation.title}</span>
@@ -556,7 +564,7 @@ export function App(): React.JSX.Element {
         </button>
 
         <footer className="rail-status">
-          <span className="status-dot" data-state={status.kind} />
+          <span className="status-dot" data-state={status.kind} aria-hidden="true" />
           <span>{describeCoreStatus(status)}</span>
         </footer>
       </aside>
@@ -585,7 +593,7 @@ export function App(): React.JSX.Element {
                 className="runtime-chip"
                 title="Inspect task activity for the selected worker, model and destination"
               >
-                <span className="status-dot" data-state="ready" />
+                <span className="status-dot" data-state="ready" aria-hidden="true" />
                 governed task runtime
               </div>
             </header>
@@ -638,21 +646,22 @@ export function App(): React.JSX.Element {
                   ) : tasks.length === 0 ? (
                     <p className="inline-empty">No tasks yet. The first run will appear here.</p>
                   ) : (
-                    <div className="task-tabs" role="list">
+                    <ul className="task-tabs" aria-label="Tasks in this conversation">
                       {tasks.map((task) => (
-                        <button
-                          type="button"
-                          role="listitem"
-                          key={task.taskId}
-                          data-selected={selectedTaskId === task.taskId}
-                          onClick={() => void selectTask(task.taskId)}
-                        >
-                          <span data-task-state={task.state}>{task.state}</span>
-                          <strong>{task.goalSummary}</strong>
-                          <code>{shortId(task.taskId)}</code>
-                        </button>
+                        <li key={task.taskId}>
+                          <button
+                            type="button"
+                            data-selected={selectedTaskId === task.taskId}
+                            aria-current={selectedTaskId === task.taskId ? "true" : undefined}
+                            onClick={() => void selectTask(task.taskId)}
+                          >
+                            <span data-task-state={task.state}>{task.state}</span>
+                            <strong>{task.goalSummary}</strong>
+                            <code>{shortId(task.taskId)}</code>
+                          </button>
+                        </li>
                       ))}
-                    </div>
+                    </ul>
                   )}
                 </section>
 
