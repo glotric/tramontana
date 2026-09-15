@@ -8,6 +8,18 @@ use crate::ports::ToolProvider;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum RegistryError {
+    /// A tool outside its provider's namespace, where one of the two is an
+    /// App's (ADR 0035).
+    ///
+    /// An App could otherwise register under a built-in's name, or another
+    /// App's, and a built-in provider could appear to be an App.
+    #[error("tool `{tool_id}` is outside the namespace of provider `{provider}`")]
+    OutsideNamespace {
+        /// The identifier offered.
+        tool_id: String,
+        /// The provider that offered it.
+        provider: String,
+    },
     /// Two providers offered the same tool identifier.
     ///
     /// Rejected rather than resolved. Picking a winner would make which
@@ -116,6 +128,12 @@ impl ToolRegistry {
                     existing_provider: existing.descriptor.provider_id.clone(),
                 });
             }
+            if !within_namespace(&descriptor.tool_id, provider.id().as_str()) {
+                return Err(RegistryError::OutsideNamespace {
+                    tool_id: descriptor.tool_id.clone(),
+                    provider: provider.id().as_str().to_owned(),
+                });
+            }
         }
 
         for descriptor in descriptors {
@@ -154,6 +172,30 @@ impl ToolRegistry {
             )
         })
     }
+}
+
+/// The namespace reserved for an App's tools (ADR 0035).
+pub const APP_NAMESPACE: &str = "mcp.";
+
+/// Whether a tool is an App's.
+///
+/// A fact rather than a guess, because the registry reserves the namespace:
+/// only an `mcp.<app>` provider can register under `mcp.`, and it can
+/// register nothing else (ADR 0035).
+#[must_use]
+pub fn is_app_tool(tool_id: &str) -> bool {
+    tool_id.starts_with(APP_NAMESPACE)
+}
+
+/// Whether `tool_id` may come from `provider_id`: an App's provider only
+/// under its own `mcp.<app>.`, and any other provider never under `mcp.`.
+fn within_namespace(tool_id: &str, provider_id: &str) -> bool {
+    if !provider_id.starts_with(APP_NAMESPACE) {
+        return !is_app_tool(tool_id);
+    }
+    tool_id
+        .strip_prefix(provider_id)
+        .is_some_and(|rest| rest.starts_with('.'))
 }
 
 /// Require a namespaced `<origin>.<area>.<name>` identifier.
@@ -314,6 +356,52 @@ mod tests {
         assert!(
             registry.get("mcp.app.search").is_none(),
             "the acceptable tool must not survive a rejected registration"
+        );
+    }
+
+    #[test]
+    fn an_app_may_register_only_in_its_own_namespace() {
+        let mut registry = ToolRegistry::new();
+        for tool_id in ["builtin.fs.fresh", "mcp.other.search", "mcp.notesy.search"] {
+            let error = registry
+                .register(provider(
+                    "mcp.notes",
+                    vec![descriptor(tool_id, "mcp.notes", "mcp.notes")],
+                ))
+                .unwrap_err();
+            assert_eq!(
+                error,
+                RegistryError::OutsideNamespace {
+                    tool_id: tool_id.to_owned(),
+                    provider: "mcp.notes".to_owned(),
+                },
+                "{tool_id}"
+            );
+        }
+        registry
+            .register(provider(
+                "mcp.notes",
+                vec![descriptor("mcp.notes.search", "mcp.notes", "mcp.notes")],
+            ))
+            .unwrap();
+        assert!(registry.get("mcp.notes.search").is_some());
+    }
+
+    #[test]
+    fn nothing_but_an_app_may_register_under_the_app_namespace() {
+        let mut registry = ToolRegistry::new();
+        let error = registry
+            .register(provider(
+                "builtin",
+                vec![descriptor("mcp.notes.search", "builtin", "mcp.notes")],
+            ))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            RegistryError::OutsideNamespace {
+                tool_id: "mcp.notes.search".to_owned(),
+                provider: "builtin".to_owned(),
+            }
         );
     }
 
