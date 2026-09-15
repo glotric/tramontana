@@ -1,7 +1,8 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  ApprovalRequest,
   ConversationRecord,
   EffectiveConfiguration,
   EventEnvelope,
@@ -25,6 +26,9 @@ const listTasks = vi.hoisted(() => vi.fn());
 const replayTaskEvents = vi.hoisted(() => vi.fn());
 const startTask = vi.hoisted(() => vi.fn());
 const cancelTask = vi.hoisted(() => vi.fn());
+const listPendingApprovals = vi.hoisted(() => vi.fn());
+const onApprovalRequested = vi.hoisted(() => vi.fn());
+const resolveApproval = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -40,6 +44,9 @@ vi.mock("./core.js", async () => {
     replayTaskEvents,
     startTask,
     cancelTask,
+    listPendingApprovals,
+    onApprovalRequested,
+    resolveApproval,
   };
 });
 
@@ -108,6 +115,22 @@ function event(sequence: number, payload: EventPayload): EventEnvelope {
   };
 }
 
+function approval(approvalId: string): ApprovalRequest {
+  return {
+    schemaVersion: 1,
+    approvalId,
+    taskId: "task-1",
+    capability: "fs.write",
+    toolId: "builtin.fs.patch",
+    requestedScope: { projectId: project.projectId, roots: project.roots, releasesData: false },
+    riskClass: "modify",
+    sideEffect: "localReversible",
+    summary: `builtin.fs.patch wants to write ${approvalId}`,
+    details: [],
+    eligibleDecisions: ["allowOnce", "deny"],
+  };
+}
+
 function captureUpdates(): { emit: (update: TaskUpdate) => void } {
   let sink: (update: TaskUpdate) => void = () => undefined;
   startTask.mockImplementation(
@@ -141,9 +164,15 @@ describe("M2 durable desktop surface", () => {
       replayTaskEvents,
       startTask,
       cancelTask,
+      listPendingApprovals,
+      onApprovalRequested,
+      resolveApproval,
     ]) {
       mock.mockReset();
     }
+    listPendingApprovals.mockResolvedValue([]);
+    onApprovalRequested.mockResolvedValue(() => undefined);
+    resolveApproval.mockResolvedValue(undefined);
     fetchCoreInfo.mockResolvedValue({ schemaVersion: 1, appVersion: "0.1.0" });
     listProjects.mockResolvedValue([project]);
     inspectProject.mockResolvedValue({ schemaVersion: 1, project, configuration });
@@ -281,6 +310,42 @@ describe("M2 durable desktop surface", () => {
       }),
     });
     await waitFor(() => expect(stop).toBeDisabled());
+  });
+
+  it("puts a question raised before this window opened to the person", async () => {
+    listPendingApprovals.mockResolvedValue([approval("approval-1")]);
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    expect(await screen.findByRole("heading", { name: "Approval needed" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Allow once" }));
+    await waitFor(() => {
+      expect(resolveApproval).toHaveBeenCalledWith("approval-1", "allowOnce");
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("heading", { name: "Approval needed" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("queues a second question behind the one on screen", async () => {
+    listPendingApprovals.mockResolvedValue([approval("approval-1")]);
+    let raise: (request: ApprovalRequest) => void = () => undefined;
+    onApprovalRequested.mockImplementation((handler: (request: ApprovalRequest) => void) => {
+      raise = handler;
+      return Promise.resolve(() => undefined);
+    });
+    await renderLoaded();
+    await screen.findByRole("heading", { name: "Approval needed" });
+
+    act(() => {
+      raise(approval("approval-2"));
+    });
+
+    expect(
+      await screen.findByText("1 more question is waiting behind this one."),
+    ).toBeInTheDocument();
+    // The first question is still the one being asked.
+    expect(screen.getByText("builtin.fs.patch wants to write approval-1")).toBeInTheDocument();
   });
 
   it("surfaces a normalized failure from the boundary", async () => {

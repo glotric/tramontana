@@ -57,9 +57,122 @@
       ],
       "type": "object"
     },
+    "ApprovalDecisionKind": {
+      "description": "What the user may choose when asked.",
+      "oneOf": [
+        {
+          "const": "allowOnce",
+          "description": "Allow this request only, once.",
+          "type": "string"
+        },
+        {
+          "const": "allowProject",
+          "description": "Allow this capability in this project until revoked.",
+          "type": "string"
+        },
+        {
+          "const": "deny",
+          "description": "Refuse.",
+          "type": "string"
+        }
+      ]
+    },
+    "ApprovalDetail": {
+      "description": "One labelled fact shown in an approval prompt.",
+      "properties": {
+        "label": {
+          "description": "What this fact is.",
+          "type": "string"
+        },
+        "value": {
+          "description": "The value. Never a secret, never raw file content.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "type": "object"
+    },
     "ApprovalId": {
       "description": "One approval request and its decision.",
       "type": "string"
+    },
+    "ApprovalRequest": {
+      "description": "A question put to the user.",
+      "properties": {
+        "approvalId": {
+          "$ref": "#/$defs/ApprovalId",
+          "description": "Identifies this question and the decision that answers it."
+        },
+        "capability": {
+          "$ref": "#/$defs/Capability",
+          "description": "What is being asked for."
+        },
+        "details": {
+          "description": "Label/value pairs shown beneath the summary. Already redacted.",
+          "items": {
+            "$ref": "#/$defs/ApprovalDetail"
+          },
+          "type": "array"
+        },
+        "eligibleDecisions": {
+          "description": "Which answers are offered.\n\n`AllowProject` is omitted for anything the policy declares\nnon-persistable, so the interface cannot offer a choice the core would\nrefuse to honor.",
+          "items": {
+            "$ref": "#/$defs/ApprovalDecisionKind"
+          },
+          "type": "array"
+        },
+        "invocationId": {
+          "$ref": "#/$defs/InvocationId",
+          "description": "The invocation waiting on it, when a tool call prompted the question."
+        },
+        "requestedScope": {
+          "$ref": "#/$defs/CapabilityScope",
+          "description": "What it is limited to."
+        },
+        "riskClass": {
+          "$ref": "#/$defs/RiskClass",
+          "description": "How much damage it could do."
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sideEffect": {
+          "$ref": "#/$defs/SideEffect",
+          "description": "What it would change."
+        },
+        "summary": {
+          "description": "One-line summary for the prompt.",
+          "type": "string"
+        },
+        "taskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "The task waiting on it."
+        },
+        "toolId": {
+          "description": "The exact tool.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "approvalId",
+        "taskId",
+        "capability",
+        "toolId",
+        "requestedScope",
+        "riskClass",
+        "sideEffect",
+        "summary",
+        "details",
+        "eligibleDecisions"
+      ],
+      "type": "object"
     },
     "ArtifactContent": {
       "description": "What an artifact holds.",
@@ -205,6 +318,10 @@
           "type": "string"
         }
       ]
+    },
+    "Capability": {
+      "description": "What a tool needs permission to do.\n\nA dotted, namespaced name such as `filesystem.read` or `git.read`. Grants\nare matched on the exact capability; there is no wildcard and no implied\nhierarchy, so `filesystem.read` never confers `filesystem.modify`.",
+      "type": "string"
     },
     "CapabilityScope": {
       "description": "What an authorization is limited to.\n\n`SECURITY_AND_PERMISSIONS.md` §3.2. A scope binds the project and, for\nfilesystem work, the canonical roots it may touch. Authorizations are\nnon-transferable: a grant naming one project authorizes nothing in another.",

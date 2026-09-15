@@ -7,6 +7,8 @@ const Channel = vi.hoisted(() =>
   }),
 );
 vi.mock("@tauri-apps/api/core", () => ({ invoke, Channel }));
+const listen = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/event", () => ({ listen }));
 
 const {
   asErrorEnvelope,
@@ -16,12 +18,56 @@ const {
   getTask,
   inspectProject,
   listConversations,
+  listPendingApprovals,
   listProjects,
   listTasks,
+  onApprovalRequested,
   openProject,
   replayTaskEvents,
+  resolveApproval,
   startTask,
 } = await import("./core.js");
+
+describe("approval IPC", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    listen.mockReset();
+  });
+
+  it("asks for the questions still waiting and answers one by identifier", async () => {
+    invoke.mockResolvedValue([]);
+    await listPendingApprovals();
+    expect(invoke).toHaveBeenCalledWith("pending_approvals");
+
+    invoke.mockResolvedValue(undefined);
+    await resolveApproval("approval-1", "allowOnce");
+    expect(invoke).toHaveBeenCalledWith("resolve_approval", {
+      approvalId: "approval-1",
+      decision: "allowOnce",
+    });
+  });
+
+  it("delivers each question the shell raises, until told to stop", async () => {
+    const unlisten = vi.fn();
+    let deliver: (event: { payload: unknown }) => void = () => undefined;
+    listen.mockImplementation((name: string, handler: (event: { payload: unknown }) => void) => {
+      // The name `approval.rs` emits under; nothing at compile time links them.
+      expect(name).toBe("tramontana://approval-requested");
+      deliver = handler;
+      return Promise.resolve(unlisten);
+    });
+
+    const seen: unknown[] = [];
+    const stop = await onApprovalRequested((request) => {
+      seen.push(request);
+    });
+    deliver({ payload: { approvalId: "approval-1" } });
+    expect(seen).toEqual([{ approvalId: "approval-1" }]);
+
+    stop();
+    expect(unlisten).toHaveBeenCalledOnce();
+  });
+});
 
 describe("core IPC client", () => {
   beforeEach(() => {

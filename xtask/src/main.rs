@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings};
 use tramontana_core::contracts::{
-    AgentDescriptor, BundleEntry, CheckpointWorker, ConfigurationDiagnostic, ConfigurationKind,
+    AgentDescriptor, ApprovalDecisionKind, ApprovalDetail, ApprovalRequest, BundleEntry,
+    Capability, CapabilityScope, CheckpointWorker, ConfigurationDiagnostic, ConfigurationKind,
     ConfigurationSource, ContextCategory, ContextManifest, ContextReleasePlan, ContextSource,
     ConversationRecord, DataClass, DestinationClass, DiagnosticSeverity, EffectiveConfiguration,
     ErrorCode, ErrorEnvelope, EventEnvelope, EventPayload, ExecutionLocation, ExportManifest,
@@ -152,6 +153,13 @@ fn emit_schema(dir: &Path) -> Result<PathBuf> {
     register::<ExportManifest>(&mut generator);
     register::<HandoffEntry>(&mut generator);
     register::<HandoffBundle>(&mut generator);
+    // The approval question and its answer: the desktop renders this payload,
+    // so the interface should break at compile time when it changes.
+    register::<Capability>(&mut generator);
+    register::<CapabilityScope>(&mut generator);
+    register::<ApprovalDecisionKind>(&mut generator);
+    register::<ApprovalDetail>(&mut generator);
+    register::<ApprovalRequest>(&mut generator);
 
     let mut defs = generator.take_definitions(true);
     for schema in defs.values_mut() {

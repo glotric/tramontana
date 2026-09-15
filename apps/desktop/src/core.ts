@@ -1,5 +1,8 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type {
+  ApprovalDecisionKind,
+  ApprovalRequest,
   ConversationRecord,
   CoreInfo,
   EffectiveConfiguration,
@@ -126,6 +129,41 @@ export async function latestCheckpoint(taskId: string): Promise<TaskCheckpoint |
  */
 export async function resumeTask(taskId: string, checkpointId: string): Promise<void> {
   return invoke("resume_task", { taskId, checkpointId });
+}
+
+/** The shell's event for a tool call that needs a person's decision. */
+const APPROVAL_REQUESTED = "tramontana://approval-requested";
+
+/**
+ * Approval questions this process is still waiting on, oldest first.
+ *
+ * Asked for on start: the event that raised a card is not replayed, so a
+ * question older than this window would otherwise never be seen.
+ */
+export async function listPendingApprovals(): Promise<readonly ApprovalRequest[]> {
+  return invoke<ApprovalRequest[]>("pending_approvals");
+}
+
+/**
+ * Deliver one decision.
+ *
+ * The decision travels by identifier. Which answers may be given is the core's
+ * to say, and it refuses one it never offered.
+ */
+export async function resolveApproval(
+  approvalId: string,
+  decision: ApprovalDecisionKind,
+): Promise<void> {
+  return invoke("resolve_approval", { approvalId, decision });
+}
+
+/** Watch for approval questions. Resolves with the unsubscribe function. */
+export async function onApprovalRequested(
+  handler: (request: ApprovalRequest) => void,
+): Promise<() => void> {
+  return listen<ApprovalRequest>(APPROVAL_REQUESTED, (event) => {
+    handler(event.payload);
+  });
 }
 
 /** Discard interrupted work. History is kept and no effect is undone. */

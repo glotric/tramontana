@@ -593,6 +593,77 @@ button:disabled {
   font-size: 11px;
 }
 
+/* The approval card.
+
+   Above the activity stream for the same reason the checkpoint panel is: while
+   a question is open the task is stopped, and the question is the only thing
+   worth reading. The accent border, the heading and the note each say so, so
+   none of the meaning is carried by color alone. */
+.approval {
+  margin: 0 20px;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  background: var(--surface);
+}
+
+.approval:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.approval code {
+  color: var(--ink-faint);
+  font: 500 9px/1 var(--mono);
+}
+
+.approval-summary {
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+
+.approval-facts {
+  display: grid;
+  margin: 10px 0 0;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 14px;
+}
+
+.approval-facts dt {
+  color: var(--ink-faint);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.approval-facts dd {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* A detail pair is one grid row of two cells, not a nested box. */
+.approval-detail {
+  display: contents;
+}
+
+.approval-facts [data-risk="modify"],
+.approval-facts [data-risk="dangerous"] {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.approval-actions {
+  display: flex;
+  margin-top: 14px;
+  gap: 8px;
+}
+
+.approval-note {
+  margin: 8px 0 0;
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+
 .activity {
   min-width: 0;
   min-height: 0;

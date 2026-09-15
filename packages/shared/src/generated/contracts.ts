@@ -55,9 +55,83 @@ export interface AgentDescriptor {
 }
 
 /**
+ * What the user may choose when asked.
+ */
+export type ApprovalDecisionKind = "allowOnce" | "allowProject" | "deny";
+
+/**
+ * One labelled fact shown in an approval prompt.
+ */
+export interface ApprovalDetail {
+  /**
+   * What this fact is.
+   */
+  label: string;
+  /**
+   * The value. Never a secret, never raw file content.
+   */
+  value: string;
+}
+
+/**
  * One approval request and its decision.
  */
 export type ApprovalId = string;
+
+/**
+ * A question put to the user.
+ */
+export interface ApprovalRequest {
+  /**
+   * Identifies this question and the decision that answers it.
+   */
+  approvalId: string;
+  /**
+   * What is being asked for.
+   */
+  capability: string;
+  /**
+   * Label/value pairs shown beneath the summary. Already redacted.
+   */
+  details: ApprovalDetail[];
+  /**
+   * Which answers are offered.
+   *
+   * `AllowProject` is omitted for anything the policy declares
+   * non-persistable, so the interface cannot offer a choice the core would
+   * refuse to honor.
+   */
+  eligibleDecisions: ApprovalDecisionKind[];
+  /**
+   * The invocation waiting on it, when a tool call prompted the question.
+   */
+  invocationId?: string;
+  requestedScope: CapabilityScope;
+  /**
+   * How much damage it could do.
+   */
+  riskClass: "read" | "modify" | "dangerous";
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  /**
+   * What it would change.
+   */
+  sideEffect: "none" | "localReversible" | "localIrreversible" | "external";
+  /**
+   * One-line summary for the prompt.
+   */
+  summary: string;
+  /**
+   * The task waiting on it.
+   */
+  taskId: string;
+  /**
+   * The exact tool.
+   */
+  toolId: string;
+}
 
 /**
  * What an artifact holds.
@@ -158,6 +232,15 @@ export interface BundleEntry {
  * Who requested a cancellation.
  */
 export type CancellationOrigin = "user" | "system";
+
+/**
+ * What a tool needs permission to do.
+ *
+ * A dotted, namespaced name such as `filesystem.read` or `git.read`. Grants
+ * are matched on the exact capability; there is no wildcard and no implied
+ * hierarchy, so `filesystem.read` never confers `filesystem.modify`.
+ */
+export type Capability = string;
 
 /**
  * What an authorization is limited to.

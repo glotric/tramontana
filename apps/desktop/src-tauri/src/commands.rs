@@ -12,10 +12,10 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tramontana_core::config::ConfigurationSelection;
 use tramontana_core::contracts::{
-    ApprovalDecisionKind, ApprovalId, CheckpointId, ConversationId, ConversationRecord,
-    CorrelationId, EffectiveConfiguration, ErrorCode, ErrorEnvelope, EventEnvelope, ProjectGrant,
-    ProjectId, ProjectRecord, SCHEMA_VERSION, TaskCheckpoint, TaskId, TaskRecord, TaskSnapshot,
-    TaskUpdate,
+    ApprovalDecisionKind, ApprovalId, ApprovalRequest, CheckpointId, ConversationId,
+    ConversationRecord, CorrelationId, EffectiveConfiguration, ErrorCode, ErrorEnvelope,
+    EventEnvelope, ProjectGrant, ProjectId, ProjectRecord, SCHEMA_VERSION, TaskCheckpoint, TaskId,
+    TaskRecord, TaskSnapshot, TaskUpdate,
 };
 use tramontana_core::services::StartTaskRequest;
 use tramontana_platform::{CanonicalRoot, canonicalize_root, discover};
@@ -492,6 +492,16 @@ pub(crate) fn resolve_approval(
         "that approval is no longer waiting for an answer",
         CorrelationId::new("ipc"),
     ))
+}
+
+/// Approval questions still waiting for an answer, oldest first.
+///
+/// A window asks for these when it opens. The event that raised a card is not
+/// replayed, so a question asked before this window existed — or before it was
+/// reloaded — would otherwise go unanswered while its task waited.
+#[tauri::command]
+pub(crate) fn pending_approvals(state: State<'_, AppState>) -> Vec<ApprovalRequest> {
+    state.approver.pending()
 }
 
 /// Every live grant for a project, so the user can see what they have allowed.

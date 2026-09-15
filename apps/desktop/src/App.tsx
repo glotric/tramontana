@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isSchemaCompatible, SCHEMA_VERSION } from "@tramontana/shared";
 import type {
+  ApprovalRequest,
   ConversationRecord,
   EventEnvelope,
   ProjectRecord,
@@ -9,6 +10,7 @@ import type {
 } from "@tramontana/shared";
 
 import { describeEvent, isTerminal, projectState } from "./activity.js";
+import { ApprovalCard } from "./ApprovalCard.js";
 import { CheckpointPanel } from "./CheckpointPanel.js";
 import {
   asErrorEnvelope,
@@ -17,8 +19,10 @@ import {
   fetchCoreInfo,
   inspectProject,
   listConversations,
+  listPendingApprovals,
   listProjects,
   listTasks,
+  onApprovalRequested,
   openProject,
   replayTaskEvents,
   startTask,
@@ -67,6 +71,7 @@ export function App(): React.JSX.Element {
   const [streamed, setStreamed] = useState("");
   const [goal, setGoal] = useState("Say hello");
   const [conversationTitle, setConversationTitle] = useState("");
+  const [approvals, setApprovals] = useState<readonly ApprovalRequest[]>([]);
   const [failure, setFailure] = useState<string | undefined>();
   const [loadingProject, setLoadingProject] = useState(false);
   const [openingProject, setOpeningProject] = useState(false);
@@ -193,6 +198,36 @@ export function App(): React.JSX.Element {
       taskRequest.current += 1;
     };
   }, [selectProject]);
+
+  // One queue of open questions, in the order they were asked. Questions
+  // raised before this window existed are asked for on start, because the
+  // event that raised them is not replayed and their tasks are still waiting.
+  // A shell that cannot be reached at all is already reported by the core
+  // status line, so a failure here is not raised a second time.
+  useEffect(() => {
+    let active = true;
+    const add = (request: ApprovalRequest): void => {
+      setApprovals((current) =>
+        current.some((waiting) => waiting.approvalId === request.approvalId)
+          ? current
+          : [...current, request],
+      );
+    };
+    void listPendingApprovals().then((waiting) => {
+      if (active) for (const request of waiting) add(request);
+    }, undefined);
+    const subscription = onApprovalRequested(add);
+    return () => {
+      active = false;
+      void subscription.then((unsubscribe) => {
+        unsubscribe();
+      }, undefined);
+    };
+  }, []);
+
+  const onApprovalAnswered = useCallback((approvalId: string) => {
+    setApprovals((current) => current.filter((waiting) => waiting.approvalId !== approvalId));
+  }, []);
 
   const selectedConversation = useMemo(
     () =>
@@ -426,6 +461,15 @@ export function App(): React.JSX.Element {
           <div className="notice notice--error" role="alert">
             {failure}
           </div>
+        )}
+
+        {approvals[0] !== undefined && (
+          <ApprovalCard
+            key={approvals[0].approvalId}
+            request={approvals[0]}
+            waiting={approvals.length - 1}
+            onAnswered={onApprovalAnswered}
+          />
         )}
 
         {loadingProject ? (
