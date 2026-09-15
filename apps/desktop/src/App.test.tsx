@@ -255,6 +255,8 @@ describe("M2 durable desktop surface", () => {
       }),
     });
 
+    // The full record sits behind a disclosure below the cards.
+    await user.click(await screen.findByText("All events (2)"));
     const list = await screen.findByRole("list", { name: "Task event stream" });
     const rendered = within(list).getAllByRole("listitem");
     expect(rendered).toHaveLength(2);
@@ -277,6 +279,7 @@ describe("M2 durable desktop surface", () => {
     updates.emit({ kind: "frame", frame: { streamId: "s", offset: 0, text: "Hel" } });
     updates.emit({ kind: "frame", frame: { streamId: "s", offset: 3, text: "lo" } });
 
+    await user.click(await screen.findByText("All events (1)"));
     const list = await screen.findByRole("list", { name: "Task event stream" });
     expect(within(list).getAllByRole("listitem")).toHaveLength(1);
     expect(screen.getByText("Hello")).toBeInTheDocument();
@@ -372,6 +375,71 @@ describe("M2 durable desktop surface", () => {
         { writes: true, recipes: true, routingMode: "localOnly" },
       );
     });
+  });
+
+  it("shows who ran a task and where, each step as a card, and retries by asking again", async () => {
+    const updates = captureUpdates();
+    const user = userEvent.setup();
+    await renderLoaded();
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalled();
+    });
+
+    updates.emit({
+      kind: "event",
+      event: event(1, {
+        kind: "taskCreated",
+        goalSummary: "Patch the greeting",
+        routingMode: "localOnly",
+      }),
+    });
+    updates.emit({
+      kind: "event",
+      event: event(2, {
+        kind: "toolRequested",
+        invocationId: "i1",
+        toolId: "builtin.fs.read",
+        argumentsSummary: "1 argument(s): path",
+        riskClass: "read",
+      }),
+    });
+    updates.emit({
+      kind: "event",
+      event: event(3, {
+        kind: "toolCompleted",
+        invocationId: "i1",
+        displaySummary: "read greeting.txt",
+        sideEffect: "none",
+        truncated: false,
+      }),
+    });
+    updates.emit({
+      kind: "event",
+      event: event(4, {
+        kind: "taskStateChanged",
+        previous: "running",
+        current: "failed",
+        reasonCode: "worker.failed",
+      }),
+    });
+
+    const summary = await screen.findByRole("region", { name: "Task summary" });
+    expect(summary).toHaveTextContent("Local only");
+    expect(summary).toHaveTextContent("Nothing released off this device");
+    const cards = within(screen.getByRole("list", { name: "Task activity" })).getAllByRole(
+      "listitem",
+    );
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toHaveTextContent("Done");
+    expect(cards[0]).toHaveTextContent("read greeting.txt");
+
+    // Retry puts the goal back for the person to start again; it runs nothing.
+    await user.click(within(summary).getByRole("button", { name: "Retry…" }));
+    const goal = screen.getByLabelText("Task goal");
+    expect(goal).toHaveValue("Patch the greeting");
+    expect(goal).toHaveFocus();
+    expect(startTask).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces a normalized failure from the boundary", async () => {

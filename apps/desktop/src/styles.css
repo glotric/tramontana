@@ -684,6 +684,122 @@ button:disabled {
   margin: 8px 0 0;
 }
 
+/* The task header and its activity cards.
+
+   Hairline boxes on the blueprint grid, as the prototype draws them. Status is
+   always a word on the card; the accent and danger colors only repeat it. */
+.task-header {
+  display: flex;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-facts {
+  display: grid;
+  margin: 0;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px 16px;
+  flex: 1;
+}
+
+.task-facts dt {
+  color: var(--ink-faint);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.task-facts dd {
+  margin: 2px 0 0;
+  font-size: 12px;
+}
+
+.task-facts dd[data-left="true"] {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.cards {
+  display: grid;
+  margin: 10px 0 0;
+  padding: 0;
+  gap: 8px;
+  list-style: none;
+}
+
+.card {
+  position: relative;
+  padding: 10px 12px 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.card p {
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+
+.card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.card-head code {
+  font: 500 12px/1.2 var(--mono);
+}
+
+.card-label {
+  color: var(--ink-faint);
+  font: 600 11px/1 var(--heading);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.card-status {
+  margin-left: auto;
+  font: 600 11px/1 var(--heading);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.card-status[data-status="refused"],
+.card-status[data-status="failed"],
+.card-status[data-leaves="true"],
+.card[data-kind="failed"] .card-label {
+  color: var(--danger);
+}
+
+.card-status[data-status="completed"] {
+  color: var(--success);
+}
+
+.card-meta {
+  color: var(--ink-soft);
+}
+
+.card-sequence {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink-faint);
+  font: 500 9px/1 var(--mono);
+}
+
+.raw-events {
+  margin-top: 12px;
+}
+
+.raw-events summary {
+  color: var(--ink-soft);
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .event-list {
   padding: 0;
   margin: 0;

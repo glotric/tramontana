@@ -207,6 +207,30 @@ describe("activity cards", () => {
     ]);
   });
 
+  it("shows what the model said, and the CLI's line for any other message", () => {
+    const message = (sequence: number, role: "assistant" | "user", text: string): EventEnvelope =>
+      event(sequence, {
+        kind: "messageCommitted",
+        message: {
+          schemaVersion: 1,
+          messageId: `message-${sequence}`,
+          role,
+          status: "committed",
+          parts: [{ kind: "text", text }],
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      });
+
+    const cards = buildCards([
+      message(1, "assistant", "I read the file."),
+      message(2, "user", "Say hello"),
+    ]);
+    expect(cards.map((card) => card.kind === "message" && card.detail)).toEqual([
+      "I read the file.",
+      "user message, 1 part(s)",
+    ]);
+  });
+
   it("shows a tool result whose request it never saw, rather than dropping it", () => {
     const cards = buildCards([
       event(1, {
@@ -234,6 +258,7 @@ describe("task header", () => {
 
     expect(header).toEqual({
       state: "queued",
+      goal: "Say hello",
       worker: undefined,
       model: "qwen2.5-7b-instruct",
       location: "this device · llama.cpp",

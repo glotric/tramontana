@@ -11,7 +11,10 @@ import type {
 } from "@tramontana/shared";
 
 import { describeEvent, isTerminal, projectState } from "./activity.js";
+import { ActivityCards } from "./ActivityCards.js";
 import { ApprovalCard } from "./ApprovalCard.js";
+import { buildCards, describeHeader, MODE_LABEL } from "./cards.js";
+import { TaskHeader } from "./TaskHeader.js";
 import { CheckpointPanel } from "./CheckpointPanel.js";
 import {
   asErrorEnvelope,
@@ -59,12 +62,8 @@ function shortId(value: string): string {
   return parts.length > 2 ? `${parts[0]}-${parts.at(-1)?.slice(0, 8)}` : value;
 }
 
-/** Where a task's models may run, as the composer offers the choice. */
-const MODES: readonly (readonly [RoutingMode, string])[] = [
-  ["localOnly", "Local only"],
-  ["automatic", "Automatic"],
-  ["cloudPreferred", "Prefer cloud"],
-];
+/** Where a task's models may run, in the order the composer offers them. */
+const MODES: readonly RoutingMode[] = ["localOnly", "automatic", "cloudPreferred"];
 
 /** What each mode means for the task about to start. */
 const MODE_TEXT: Record<RoutingMode, string> = {
@@ -283,6 +282,15 @@ export function App(): React.JSX.Element {
     [selectedTaskId, tasks],
   );
   const taskState = useMemo(() => projectState(events), [events]);
+  const cards = useMemo(() => buildCards(events), [events]);
+  const header = useMemo(() => describeHeader(events), [events]);
+  const goalInput = useRef<HTMLTextAreaElement>(null);
+
+  // Retry puts the goal back where the person chooses again; it starts nothing.
+  const onRetry = useCallback((retried: string) => {
+    setGoal(retried);
+    goalInput.current?.focus();
+  }, []);
   const running = selectedTaskId !== undefined && taskState !== undefined && !isTerminal(taskState);
   const configuration = inspection?.configuration ?? undefined;
 
@@ -598,18 +606,26 @@ export function App(): React.JSX.Element {
                   <p>Start a task to see its canonical event stream.</p>
                 </div>
               ) : (
-                <ol className="event-list" aria-label="Task event stream">
-                  {events.map((event) => {
-                    const line = describeEvent(event);
-                    return (
-                      <li key={event.eventId}>
-                        <span className="event-sequence">{line.sequence}</span>
-                        <code>{line.kind}</code>
-                        <span>{line.detail}</span>
-                      </li>
-                    );
-                  })}
-                </ol>
+                <>
+                  <TaskHeader header={header} onRetry={onRetry} />
+                  <ActivityCards cards={cards} />
+                  {/* The record itself, one line per event, as the CLI replays it. */}
+                  <details className="raw-events">
+                    <summary>All events ({events.length})</summary>
+                    <ol className="event-list" aria-label="Task event stream">
+                      {events.map((event) => {
+                        const line = describeEvent(event);
+                        return (
+                          <li key={event.eventId}>
+                            <span className="event-sequence">{line.sequence}</span>
+                            <code>{line.kind}</code>
+                            <span>{line.detail}</span>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  </details>
+                </>
               )}
               {streamed !== "" && (
                 <div className="stream-output">
@@ -628,6 +644,7 @@ export function App(): React.JSX.Element {
             >
               <label htmlFor="goal">Task goal</label>
               <textarea
+                ref={goalInput}
                 id="goal"
                 value={goal}
                 onChange={(changed) => {
@@ -640,7 +657,7 @@ export function App(): React.JSX.Element {
                 <legend className="sr-only">How this task may run</legend>
                 <fieldset className="composer-modes">
                   <legend className="sr-only">Where models may run</legend>
-                  {MODES.map(([mode, label]) => (
+                  {MODES.map((mode) => (
                     <label key={mode} data-selected={routingMode === mode}>
                       <input
                         type="radio"
@@ -651,7 +668,7 @@ export function App(): React.JSX.Element {
                           setRoutingMode(mode);
                         }}
                       />
-                      {label}
+                      {MODE_LABEL[mode]}
                     </label>
                   ))}
                 </fieldset>

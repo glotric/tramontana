@@ -78,6 +78,13 @@ const GRANT_TEXT = {
   project: "allowed in this project",
 } as const;
 
+/** Each routing mode's name, as the composer, the header and the cards all say it. */
+export const MODE_LABEL: Record<RoutingMode, string> = {
+  localOnly: "Local only",
+  automatic: "Automatic",
+  cloudPreferred: "Prefer cloud",
+};
+
 /** Kinds the header carries, which get no card of their own. */
 const HEADER_KINDS: ReadonlySet<string> = new Set([
   "taskCreated",
@@ -194,9 +201,20 @@ export function buildCards(events: readonly EventEnvelope[]): ActivityCard[] {
       case "contextPrepared":
         detail("context");
         break;
-      case "messageCommitted":
-        detail("message");
+      case "messageCommitted": {
+        // What the model said, when it said something. Anything else gets the
+        // line the CLI prints; tool calls and results have cards of their own.
+        const text = payload.message.parts
+          .flatMap((part) => (part.kind === "text" ? [part.text] : []))
+          .join("")
+          .trim();
+        if (payload.message.role === "assistant" && text !== "") {
+          cards.push({ kind: "message", key, sequence, detail: text });
+        } else {
+          detail("message");
+        }
         break;
+      }
       case "checkpointSaved":
         detail("checkpoint");
         break;
@@ -225,6 +243,8 @@ export function buildCards(events: readonly EventEnvelope[]): ActivityCard[] {
 /** What a task header shows, each fact from the record or absent. */
 export interface TaskHeader {
   readonly state: TaskState | undefined;
+  /** What the task was asked to do, as recorded when it was created. */
+  readonly goal: string | undefined;
   /** The worker running it, by its display name. */
   readonly worker: string | undefined;
   /** The model most recently chosen. */
@@ -248,12 +268,14 @@ export function describeHeader(events: readonly EventEnvelope[]): TaskHeader {
   let worker: string | undefined;
   let model: string | undefined;
   let location: string | undefined;
+  let goal: string | undefined;
   let createdMode: RoutingMode | undefined;
   let routedMode: RoutingMode | undefined;
   let leftDevice = false;
   for (const { payload } of events) {
     switch (payload.kind) {
       case "taskCreated":
+        goal = payload.goalSummary;
         createdMode = payload.routingMode;
         break;
       case "workerSelected":
@@ -273,6 +295,7 @@ export function describeHeader(events: readonly EventEnvelope[]): TaskHeader {
   }
   return {
     state: projectState(events),
+    goal,
     worker,
     model,
     location,
