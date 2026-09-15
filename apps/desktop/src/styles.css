@@ -833,6 +833,49 @@ button:disabled {
   color: var(--ink-faint);
 }
 
+/* Export and import. The options say what they would release, in words. */
+.bundles {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.bundle-options {
+  display: grid;
+  margin-top: 8px;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.bundle-options label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bundle-options input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.bundle-actions {
+  display: flex;
+  margin-top: 10px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bundle-result,
+.bundle-staged {
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.bundle-result code {
+  font: 11px/1.4 var(--mono);
+  word-break: break-all;
+}
+
 .event-list {
   padding: 0;
   margin: 0;

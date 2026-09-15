@@ -13,6 +13,7 @@ import type {
 import { describeEvent, isTerminal, projectState } from "./activity.js";
 import { ActivityCards } from "./ActivityCards.js";
 import { ApprovalCard } from "./ApprovalCard.js";
+import { BundlesPanel } from "./BundlesPanel.js";
 import { buildCards, describeHeader, MODE_LABEL } from "./cards.js";
 import { ChangesPanel } from "./ChangesPanel.js";
 import { TaskHeader } from "./TaskHeader.js";
@@ -772,7 +773,16 @@ export function App(): React.JSX.Element {
           </>
         )}
         {inspection !== undefined && (
-          <ChangesPanel projectId={inspection.project.projectId} revision={revision} />
+          <>
+            <ChangesPanel projectId={inspection.project.projectId} revision={revision} />
+            <BundlesPanel
+              projectId={inspection.project.projectId}
+              taskId={selectedTaskId}
+              onImported={() => {
+                void listProjects().then(setProjects, () => undefined);
+              }}
+            />
+          </>
         )}
       </aside>
     </div>

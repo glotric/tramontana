@@ -14,7 +14,10 @@ const {
   asErrorEnvelope,
   cancelTask,
   createConversation,
+  exportBundle,
   fetchCoreInfo,
+  importStagedBundle,
+  inspectBundle,
   getTask,
   inspectProject,
   listConversations,
@@ -67,6 +70,49 @@ describe("approval IPC", () => {
 
     stop();
     expect(unlisten).toHaveBeenCalledOnce();
+  });
+});
+
+describe("bundles", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  it("names what to export, and never a folder", async () => {
+    invoke.mockResolvedValue(null);
+    expect(
+      await exportBundle(
+        { projectId: "project-1" },
+        { includeAbsolutePaths: false, includeRawToolOutput: false },
+      ),
+    ).toBeUndefined();
+    expect(invoke).toHaveBeenLastCalledWith("export_bundle", {
+      taskId: null,
+      projectId: "project-1",
+      includeAbsolutePaths: false,
+      includeRawToolOutput: false,
+    });
+
+    await exportBundle(
+      { taskId: "task-1" },
+      { includeAbsolutePaths: true, includeRawToolOutput: true },
+    );
+    expect(invoke).toHaveBeenLastCalledWith("export_bundle", {
+      taskId: "task-1",
+      projectId: null,
+      includeAbsolutePaths: true,
+      includeRawToolOutput: true,
+    });
+  });
+
+  it("inspects a picked bundle, then imports it by identifier", async () => {
+    invoke.mockResolvedValue(null);
+    expect(await inspectBundle()).toBeUndefined();
+    expect(invoke).toHaveBeenLastCalledWith("inspect_bundle");
+
+    invoke.mockResolvedValue({ schemaVersion: 1, imported: {}, executedAnything: false });
+    await importStagedBundle("bundle-1");
+    expect(invoke).toHaveBeenLastCalledWith("import_staged_bundle", { stagingId: "bundle-1" });
   });
 });
 

@@ -8,6 +8,7 @@ import type {
   EffectiveConfiguration,
   ErrorEnvelope,
   EventEnvelope,
+  ExportManifest,
   ProjectRecord,
   RoutingMode,
   TaskCheckpoint,
@@ -95,6 +96,74 @@ export interface ProjectChanges {
  */
 export async function projectChanges(projectId: string): Promise<ProjectChanges> {
   return invoke<ProjectChanges>("project_changes", { projectId });
+}
+
+/** How many records of each kind a bundle holds, or an import wrote. */
+export interface BundleCounts {
+  readonly projects: number;
+  readonly conversations: number;
+  readonly tasks: number;
+  readonly events: number;
+  readonly checkpoints: number;
+  readonly configurations: number;
+  /** Opaque worker state that is refused rather than restored. */
+  readonly quarantined: number;
+}
+
+/** A bundle that was written: where, and its table of contents. */
+export interface ExportReport {
+  readonly schemaVersion: number;
+  readonly directory: string;
+  readonly manifest: ExportManifest;
+}
+
+/** A bundle the person picked and inspected, waiting for them to confirm. */
+export interface StagedBundle {
+  /** What the import confirms, instead of a path. */
+  readonly stagingId: string;
+  readonly inspection: {
+    readonly schemaVersion: number;
+    readonly manifest: ExportManifest;
+    readonly contains: BundleCounts;
+  };
+}
+
+/** What an import wrote. */
+export interface ImportReport {
+  readonly schemaVersion: number;
+  readonly imported: BundleCounts;
+  /** Always false: nothing in a bundle is run. */
+  readonly executedAnything: boolean;
+}
+
+/**
+ * Write a bundle for one task or one project into a folder the person picks.
+ *
+ * Resolves `undefined` when the picker is cancelled. The folder never comes
+ * from here: the shell asks the native picker.
+ */
+export async function exportBundle(
+  scope: { readonly taskId: string } | { readonly projectId: string },
+  options: { readonly includeAbsolutePaths: boolean; readonly includeRawToolOutput: boolean },
+): Promise<ExportReport | undefined> {
+  return (
+    (await invoke<ExportReport | null>("export_bundle", {
+      taskId: "taskId" in scope ? scope.taskId : null,
+      projectId: "projectId" in scope ? scope.projectId : null,
+      includeAbsolutePaths: options.includeAbsolutePaths,
+      includeRawToolOutput: options.includeRawToolOutput,
+    })) ?? undefined
+  );
+}
+
+/** Pick a bundle folder and say what it holds. Writes nothing. */
+export async function inspectBundle(): Promise<StagedBundle | undefined> {
+  return (await invoke<StagedBundle | null>("inspect_bundle")) ?? undefined;
+}
+
+/** Import the bundle that was inspected, by the identifier it was given. */
+export async function importStagedBundle(stagingId: string): Promise<ImportReport> {
+  return invoke<ImportReport>("import_staged_bundle", { stagingId });
 }
 
 /** Replay canonical durable events for a task. */
