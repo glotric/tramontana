@@ -194,6 +194,10 @@ impl BrokeredHost {
             Err(error) => {
                 // Provider/approval errors can carry arbitrary bodies. Only
                 // the stable code crosses into canonical records or workers.
+                // The exception is the message of a failure the model can act
+                // on, which is tool output: redacted and bounded (ADR 0029).
+                let explanation =
+                    observable_failure(error.code).then(|| explanation(&error.message));
                 let error = self.tool_error(error.code);
                 self.journal
                     .append_batch(vec![
@@ -208,7 +212,10 @@ impl BrokeredHost {
                             MessageRole::Tool,
                             MessagePart::ToolResult {
                                 invocation_id: invocation,
-                                content: json!({"status":"failed","errorCode":error.code}),
+                                content: match explanation {
+                                    Some(message) => json!({"status":"failed","errorCode":error.code,"message":message}),
+                                    None => json!({"status":"failed","errorCode":error.code}),
+                                },
                                 truncated: false,
                             },
                         ),
@@ -236,9 +243,12 @@ impl BrokeredHost {
         // exactly the command the tool will be handed, and a name the project
         // does not declare is refused without a question (ADR 0025).
         let (arguments, details) = if descriptor.tool_id == crate::services::RECIPE_TOOL_ID {
-            let resolved =
-                crate::services::recipe::resolve(self.tools.configuration.as_deref(), &arguments)
-                    .map_err(|code| self.tool_error(code))?;
+            let resolved = crate::services::recipe::resolve(
+                self.tools.configuration.as_deref(),
+                &arguments,
+                self.routing_mode == RoutingMode::LocalOnly,
+            )
+            .map_err(|code| self.tool_error(code))?;
             (resolved.arguments, resolved.details)
         } else {
             (arguments, Vec::new())
@@ -338,6 +348,34 @@ impl BrokeredHost {
             self.journal.correlation_id().clone(),
         )
     }
+}
+
+/// Whether a tool's failure goes back to the model as the call's result
+/// rather than ending the task: the failures a model can act on (ADR 0029).
+pub(super) fn observable_failure(code: ErrorCode) -> bool {
+    matches!(
+        code,
+        ErrorCode::InvalidRequest
+            | ErrorCode::NotFound
+            | ErrorCode::Conflict
+            | ErrorCode::ToolFailed
+            | ErrorCode::Timeout
+    )
+}
+
+/// A failure's message as the model may see it: redacted, and at most a short
+/// paragraph.
+fn explanation(message: &str) -> String {
+    const LIMIT: usize = 512;
+    let text = redact(message).text;
+    if text.len() <= LIMIT {
+        return text;
+    }
+    let mut cut = LIMIT;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}…", &text[..cut])
 }
 
 fn sanitize_output(mut value: Value) -> (Value, Vec<String>, bool) {

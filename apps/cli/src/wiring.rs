@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tramontana_adapters_tools::{FilesystemTools, GitTools, RecipeTools};
-use tramontana_composition::{ModelPlane, Supervision, assemble_models};
+use tramontana_composition::{ModelPlane, Supervision, assemble_models_recording};
 use tramontana_core::ports::AgentProvider;
 use tramontana_core::ports::EventStore;
 use tramontana_core::ports::{
@@ -134,6 +134,18 @@ async fn open_with(
     let lease = tramontana_platform::ProfileLease::try_acquire(path)
         .map_err(|error| format!("could not acquire runtime profile lease: {error}"))?
         .map(|lease| Arc::new(lease) as Arc<dyn Send + Sync>);
+    // Holding the lease proves any runtime recorded for this profile outlived
+    // the process that started it: stop those before starting more. Without
+    // the lease they may be in use, so nothing is stopped or recorded
+    // (ADR 0030).
+    if lease.is_some() {
+        for note in tramontana_composition::reap_runtimes(path).await {
+            eprintln!("note: {note}");
+        }
+    }
+    let records = lease
+        .is_some()
+        .then(|| tramontana_composition::runtime_records(path));
     let events = Arc::new(SqliteEventStore::new(database.clone())) as Arc<dyn EventStore>;
 
     // Real providers, from what the user configured. Credentials are resolved
@@ -145,7 +157,8 @@ async fn open_with(
         .await
         .map_err(|error| format!("could not read provider settings: {error}"))?;
     let resolver = Arc::new(PlatformSecretVault::new()) as Arc<dyn SecretResolver>;
-    let plane = assemble_models(&configured, &resolver, supervision).await;
+    let plane =
+        assemble_models_recording(&configured, &resolver, supervision, records.as_deref()).await;
 
     for failure in &plane.failures {
         eprintln!(

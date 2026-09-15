@@ -1,0 +1,435 @@
+//! Shared by the CLI's end-to-end tests: the CLI binary, Git, a fixture
+//! repository, a scripted model, the CLI's own assembly with a chosen
+//! approver, and a look at real processes.
+
+#![allow(
+    dead_code,
+    unreachable_pub,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test support: a panic is the failure report, and each test file uses a part of it"
+)]
+
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+use tramontana_adapters_tools::{FilesystemTools, GitTools, RecipeTools};
+use tramontana_composition::{
+    ModelPlane, Supervision, assemble_models, assemble_worker, recovery_store,
+};
+use tramontana_core::config::ConfigurationSelection;
+use tramontana_core::contracts::{ConversationId, EventEnvelope, TaskEventKind, TaskId};
+use tramontana_core::ports::{
+    ApprovalStore, Approver, EventStore, ProviderSettingsRepository, SecretResolver, ToolAdmission,
+    ToolProvider,
+};
+use tramontana_core::services::{Providers, Repositories, StartTaskRequest, TaskService};
+use tramontana_core::testing::{InMemoryApprovalStore, InMemorySecretVault, assemble_tool_plane};
+use tramontana_persistence::{
+    Database, SqliteCheckpointRepository, SqliteConfigurationRepository,
+    SqliteConversationRepository, SqliteEventStore, SqliteProjectRepository,
+    SqliteProviderSettingsRepository, SqliteTaskRepository,
+};
+use tramontana_platform::{SystemClock, UuidIdSource, canonicalize_root, discover};
+
+/// Run the CLI against `profile`, requiring success.
+pub fn cli(profile: &Path, args: &[&str]) -> Output {
+    let out = Command::new(env!("CARGO_BIN_EXE_tramontana"))
+        .args(args)
+        .arg("--profile")
+        .arg(profile)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{args:?}\n{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out
+}
+
+pub fn cli_json(profile: &Path, args: &[&str]) -> Value {
+    serde_json::from_slice(&cli(profile, args).stdout).unwrap()
+}
+
+/// Git, unaffected by whoever runs the test.
+pub fn git(root: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .current_dir(root)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args([
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "init.defaultBranch=main",
+        ])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+pub struct Fixture {
+    pub temp: tempfile::TempDir,
+    pub root: PathBuf,
+    pub profile: PathBuf,
+    /// The durations `slow.sh` sleeps for, unique to this run so no other
+    /// process is mistaken for its tree.
+    pub sleeps: [u32; 2],
+}
+
+/// A committed Git repository whose project declares two recipes: a test that
+/// passes only once the greeting names Tramontana, and a slow process tree.
+pub fn fixture() -> Fixture {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("repository");
+    std::fs::create_dir_all(root.join(".tramontana")).unwrap();
+    std::fs::write(root.join("greeting.txt"), "Hello, world\n").unwrap();
+    std::fs::write(
+        root.join("check.sh"),
+        "grep -qx 'Hello, Tramontana' greeting.txt || { echo 'greeting.txt does not greet Tramontana'; exit 1; }\n\
+         echo '1 test passed'\n",
+    )
+    .unwrap();
+    // Unique to this process and to each fixture in it, so tests running side
+    // by side never see each other's sleeps.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let base = 3000
+        + (std::process::id() % 2500) * 2
+        + NEXT.fetch_add(2, std::sync::atomic::Ordering::SeqCst) * 5000;
+    let sleeps = [base, base + 1];
+    std::fs::write(
+        root.join("slow.sh"),
+        format!("sleep {} &\nsleep {} &\nwait\n", sleeps[0], sleeps[1]),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join(".tramontana/project.md"),
+        "---\nid: fixture\nrecipes:\n  test: [sh, check.sh]\n  slow: [sh, slow.sh]\n---\n# Fixture\n",
+    )
+    .unwrap();
+    git(&root, &["init", "--quiet"]);
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "--quiet", "-m", "fixture"]);
+    let profile = temp.path().join("tramontana.sqlite");
+    Fixture {
+        temp,
+        root,
+        profile,
+        sleeps,
+    }
+}
+
+/// A conversation in the fixture's project, created through the CLI.
+pub fn conversation(f: &Fixture, title: &str) -> ConversationId {
+    let project = cli_json(&f.profile, &["project", "open", f.root.to_str().unwrap()]);
+    let project_id = project["project"]["projectId"].as_str().unwrap();
+    let created = cli_json(
+        &f.profile,
+        &["conversation", "create", title, "--project-id", project_id],
+    );
+    ConversationId::new(created["conversationId"].as_str().unwrap())
+}
+
+/// One scripted turn: what the model sends back for request number `turn`.
+pub type Script = fn(usize, &Value) -> (Value, &'static str);
+
+/// Configure a scripted OpenAI-compatible model for `profile` and serve it.
+/// Each request gets the next turn of `script`, and its body is passed on.
+pub fn scripted_model(profile: &Path, script: Script) -> mpsc::Receiver<Value> {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    cli(
+        profile,
+        &[
+            "provider",
+            "add-openai",
+            "fixture",
+            "--base-url",
+            &base,
+            "--model",
+            "synthetic",
+        ],
+    );
+    cli(profile, &["provider", "tool-calls", "fixture"]);
+    let (sender, bodies) = mpsc::channel();
+    std::thread::spawn(move || serve(listener, sender, script));
+    bodies
+}
+
+fn serve(listener: TcpListener, bodies: mpsc::Sender<Value>, script: Script) {
+    for turn in 0_usize.. {
+        let Ok((mut socket, _)) = listener.accept() else {
+            return;
+        };
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let body = read_body(&mut socket);
+        let (delta, finish) = script(turn, &body);
+        let payload = format!(
+            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            json!({"choices":[{"delta":delta,"finish_reason":null}]}),
+            json!({"choices":[{"delta":{},"finish_reason":finish}]})
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        socket.write_all(response.as_bytes()).unwrap();
+        if bodies.send(body).is_err() {
+            return;
+        }
+    }
+}
+
+fn read_body(socket: &mut std::net::TcpStream) -> Value {
+    let mut bytes = Vec::new();
+    loop {
+        let mut chunk = [0; 4096];
+        let read = socket.read(&mut chunk).unwrap();
+        assert!(read > 0);
+        bytes.extend_from_slice(&chunk[..read]);
+        assert!(bytes.len() < 2_000_000);
+        if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+            let headers = String::from_utf8_lossy(&bytes[..end]);
+            let len: usize = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|s| s.trim().parse().unwrap())
+                })
+                .unwrap();
+            if bytes.len() >= end + 4 + len {
+                return serde_json::from_slice(&bytes[end + 4..end + 4 + len]).unwrap();
+            }
+        }
+    }
+}
+
+/// A scripted tool call to the tool whose description starts with
+/// `description`. The names on the wire are aliases, so tools are found by
+/// what they say they do.
+pub fn call(
+    turn: usize,
+    body: &Value,
+    description: &str,
+    arguments: Value,
+) -> (Value, &'static str) {
+    let call = json!({
+        "index": 0,
+        "id": format!("call-{turn}"),
+        "type": "function",
+        "function": { "name": tool_named(body, description), "arguments": arguments.to_string() },
+    });
+    (json!({ "tool_calls": [call] }), "tool_calls")
+}
+
+/// A scripted final answer.
+pub fn answer(text: &str) -> (Value, &'static str) {
+    (json!({ "content": text }), "stop")
+}
+
+fn tool_named(body: &Value, description: &str) -> Value {
+    body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| {
+            tool["function"]["description"]
+                .as_str()
+                .unwrap()
+                .starts_with(description)
+        })
+        .unwrap_or_else(|| panic!("no tool described as {description:?} was offered"))["function"]
+        ["name"]
+        .clone()
+}
+
+/// The latest tool result the model was shown.
+pub fn observation(body: &Value) -> String {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|message| message["role"] == "tool")
+        .unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// The content hash in the latest read the model was shown. The adapter wraps
+/// the brokered result as `{content, truncated}`.
+pub fn read_hash(body: &Value) -> String {
+    let seen = observation(body);
+    let read: Value = serde_json::from_str(&seen).unwrap();
+    read["content"]["output"]["contentHash"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no contentHash in the read the model saw: {seen}"))
+        .to_owned()
+}
+
+pub struct Running {
+    pub service: Arc<TaskService>,
+    _models: ModelPlane,
+}
+
+/// The CLI's assembly (`wiring.rs`), with `approver` in place of the terminal
+/// prompt, and what `--allow-writes --allow-recipes` admits. `supervision`
+/// starts a managed `llama-server` when the profile has one.
+pub async fn assemble(
+    profile: &Path,
+    approver: Arc<dyn Approver>,
+    supervision: Supervision,
+) -> Running {
+    let database = Database::open(profile).await.unwrap();
+    let (tools, permissions, releases) = assemble_tool_plane(
+        vec![
+            Arc::new(FilesystemTools::new().with_recovery_store(recovery_store(profile)))
+                as Arc<dyn ToolProvider>,
+            Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
+            Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
+        ],
+        Arc::new(InMemoryApprovalStore::new()) as Arc<dyn ApprovalStore>,
+        approver,
+        Arc::new(UuidIdSource::new()),
+    )
+    .unwrap();
+    let configured = SqliteProviderSettingsRepository::new(database.clone())
+        .list()
+        .await
+        .unwrap();
+    let resolver = Arc::new(InMemorySecretVault::new()) as Arc<dyn SecretResolver>;
+    let models = assemble_models(&configured, &resolver, supervision).await;
+    assert!(models.failures.is_empty(), "{:?}", models.failures);
+    let service = TaskService::new(
+        Repositories {
+            projects: Arc::new(SqliteProjectRepository::new(database.clone())),
+            conversations: Arc::new(SqliteConversationRepository::new(database.clone())),
+            tasks: Arc::new(SqliteTaskRepository::new(database.clone())),
+            events: Arc::new(SqliteEventStore::new(database.clone())) as Arc<dyn EventStore>,
+            checkpoints: Arc::new(SqliteCheckpointRepository::new(database.clone())),
+            configuration: Arc::new(SqliteConfigurationRepository::new(database)),
+        },
+        Providers {
+            models: models.providers.clone(),
+            tools,
+            permissions,
+            releases,
+            worker: assemble_worker(true, ToolAdmission::READ_WRITE.with_recipes()),
+        },
+        Arc::new(SystemClock::new()),
+        Arc::new(UuidIdSource::new()),
+    );
+    service.recover().await.unwrap();
+    Running {
+        service: Arc::new(service),
+        _models: models,
+    }
+}
+
+/// Start a task as `tramontana task` does: the project's configuration is
+/// resolved from disk first.
+pub async fn start(service: &TaskService, conversation: &ConversationId, goal: &str) -> TaskId {
+    let project_id = service
+        .get_conversation(conversation)
+        .await
+        .unwrap()
+        .project_id
+        .unwrap();
+    let project = service.get_project(&project_id).await.unwrap();
+    let root = canonicalize_root(Path::new(&project.roots[0])).unwrap();
+    service
+        .resolve_configuration(
+            &project_id,
+            discover(&root),
+            &ConfigurationSelection::default(),
+        )
+        .await
+        .unwrap();
+    service
+        .start_task(StartTaskRequest {
+            conversation_id: Some(conversation.clone()),
+            goal: goal.to_owned(),
+        })
+        .await
+        .unwrap()
+}
+
+/// The task's events once it has ended, waiting at most `limit`.
+pub async fn finished(service: &TaskService, task: &TaskId, limit: Duration) -> Vec<EventEnvelope> {
+    let deadline = Instant::now() + limit;
+    loop {
+        let events = service.replay_task_events(task, 0).await.unwrap();
+        if events.last().is_some_and(|event| {
+            matches!(
+                event.kind,
+                TaskEventKind::TaskCompleted
+                    | TaskEventKind::TaskFailed
+                    | TaskEventKind::TaskCancelled
+            )
+        }) {
+            return events;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the task never ended: {events:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Whether a process is running. A zombie has exited, so it counts as gone.
+/// Without `ps` this panics rather than calling every process gone.
+pub fn is_alive(pid: i32) -> bool {
+    let output = Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .expect("`ps` must be available to tell whether a process is running");
+    let state = String::from_utf8_lossy(&output.stdout);
+    let state = state.trim();
+    !state.is_empty() && !state.starts_with('Z')
+}
+
+pub fn parent(pid: i32) -> Option<i32> {
+    let output = Command::new("ps")
+        .args(["-o", "ppid=", "-p", &pid.to_string()])
+        .output()
+        .expect("`ps` must be available");
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+/// The running processes that are this fixture's sleeps.
+pub fn sleepers(sleeps: [u32; 2]) -> Vec<i32> {
+    let output = Command::new("pgrep")
+        .args(["-f", &format!("^sleep ({}|{})$", sleeps[0], sleeps[1])])
+        .output()
+        .expect("`pgrep` must be available");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .filter(|pid| is_alive(*pid))
+        .collect()
+}

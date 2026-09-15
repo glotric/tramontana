@@ -77,6 +77,9 @@ pub struct LlamaServerSpec {
     pub extra_args: Vec<String>,
     /// How long to wait for the server to report itself healthy.
     pub readiness_timeout: Duration,
+    /// Where to record the runtime while it runs, so a later process can stop
+    /// it if this one is killed outright (ADR 0030). `None` records nothing.
+    pub records: Option<PathBuf>,
 }
 
 impl LlamaServerSpec {
@@ -92,6 +95,7 @@ impl LlamaServerSpec {
             // long. It is a bound on *silence*, not on the whole start: a
             // child that exits fails immediately whatever this says.
             readiness_timeout: Duration::from_secs(120),
+            records: None,
         }
     }
 }
@@ -202,13 +206,26 @@ pub async fn probe_version(binary: &Path) -> Result<ProbedVersion, StartError> {
 /// than as zero — "we could not tell" and "it is ancient" are different facts,
 /// and only one of them should refuse to start.
 fn build_number(reported: &str) -> Option<u64> {
+    // Current banners name the build: "version: 0.4.1-dev (build 10964,
+    // commit b29c606e2)". The version there is a release number, and reading
+    // it as a build made every current runtime look older than the minimum.
+    if let Some(after) = reported.split("(build ").nth(1) {
+        return leading_number(after).map(|(number, _)| number);
+    }
+    // Earlier ones put the build first: "version: 3527 (a1b2c3d)". A dotted
+    // number with no build is a release, which says nothing about the build.
     let after = reported.split("version:").nth(1)?;
-    let digits: String = after
-        .trim_start()
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    digits.parse().ok()
+    match leading_number(after.trim_start())? {
+        (_, Some('.')) => None,
+        (number, _) => Some(number),
+    }
+}
+
+/// The number `text` starts with, and the character after it.
+fn leading_number(text: &str) -> Option<(u64, Option<char>)> {
+    let digits: String = text.chars().take_while(char::is_ascii_digit).collect();
+    let number = digits.parse().ok()?;
+    Some((number, text[digits.len()..].chars().next()))
 }
 
 /// A running `llama-server` this process owns.
@@ -225,6 +242,8 @@ pub struct SupervisedLlamaServer {
     readers: Vec<tokio::task::JoinHandle<()>>,
     client: reqwest::Client,
     version: ProbedVersion,
+    /// This runtime's record, removed when it stops.
+    record: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for SupervisedLlamaServer {
@@ -297,6 +316,25 @@ impl SupervisedLlamaServer {
             readers.push(capture(stderr, Arc::clone(&logs)));
         }
 
+        // Recorded while it runs, so a process that inherits the profile after
+        // this one is killed outright can stop it (ADR 0030).
+        let record = spec.records.as_deref().and_then(|directory| {
+            let record = crate::runtime_records::RuntimeRecord {
+                pid: child.id()?,
+                binary: spec.binary.clone(),
+                port,
+            };
+            match crate::runtime_records::write(directory, &record) {
+                Ok(path) => Some(path),
+                Err(failure) => {
+                    tracing::warn!(
+                        "could not record the runtime, so a crash would leave it running: {failure}"
+                    );
+                    None
+                }
+            }
+        });
+
         let mut server = Self {
             child: Some(child),
             port,
@@ -307,6 +345,7 @@ impl SupervisedLlamaServer {
                 .build()
                 .map_err(|failure| StartError::Spawn(failure.to_string()))?,
             version,
+            record,
         };
 
         match server.await_ready(spec.readiness_timeout).await {
@@ -372,6 +411,7 @@ impl SupervisedLlamaServer {
     /// nobody dares put in an error path.
     pub async fn shutdown(&mut self) {
         let Some(mut child) = self.child.take() else {
+            self.forget_record();
             return;
         };
 
@@ -384,6 +424,15 @@ impl SupervisedLlamaServer {
             // than hoping.
             let _ = child.kill().await;
             let _ = child.wait().await;
+        }
+        self.forget_record();
+    }
+
+    /// Remove this runtime's record: it is stopping, so nothing is left
+    /// behind to find.
+    fn forget_record(&mut self) {
+        if let Some(path) = self.record.take() {
+            let _ = std::fs::remove_file(path);
         }
     }
 
@@ -476,6 +525,7 @@ impl Drop for SupervisedLlamaServer {
             request_stop(child);
             let _ = child.start_kill();
         }
+        self.forget_record();
     }
 }
 
@@ -750,6 +800,13 @@ mod tests {
             Some(3527)
         );
         assert_eq!(build_number("llama-server version: 9999"), Some(9999));
+        // The banner of b10964, the release V3 runs on.
+        assert_eq!(
+            build_number(
+                "version: 0.4.1-dev (build 10964, commit b29c606e2)\nbuilt with AppleClang 21.0.0.21000101 for Darwin arm64"
+            ),
+            Some(10964)
+        );
     }
 
     #[test]
@@ -759,6 +816,8 @@ mod tests {
         assert_eq!(build_number("some future format"), None);
         assert_eq!(build_number(""), None);
         assert_eq!(build_number("version: unknown"), None);
+        // A release number is not a build number.
+        assert_eq!(build_number("version: 0.5.0 (commit abcdef0)"), None);
     }
 
     #[test]

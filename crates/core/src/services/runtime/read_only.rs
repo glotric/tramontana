@@ -11,6 +11,9 @@ use std::collections::BTreeSet;
 const BUDGET: &str = "reference.budget.v1";
 const COMPLETE: &str = "reference.completed.v1";
 const TOOL_BYTES: u64 = 262_144;
+/// How many calls a turn may ask for. Only the first runs (ADR 0029).
+const CALLS_PER_TURN: usize = 8;
+const CALLS_NOT_RUN: &str = "reference.callsNotRun";
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -101,9 +104,16 @@ impl BrokeredHost {
                             content,
                             ..
                         } => {
-                            if content.get("status").and_then(serde_json::Value::as_str)
-                                == Some("failed")
-                            {
+                            // A failure the model could act on is part of its
+                            // history (ADR 0029). Any other ends the work.
+                            let failed = content.get("status").and_then(serde_json::Value::as_str)
+                                == Some("failed");
+                            let observable = content
+                                .get("errorCode")
+                                .cloned()
+                                .and_then(|code| serde_json::from_value::<ErrorCode>(code).ok())
+                                .is_some_and(super::tool::observable_failure);
+                            if failed && !observable {
                                 return Err(error(ErrorCode::ToolFailed));
                             }
                             results.insert(invocation_id.clone());
@@ -193,7 +203,7 @@ impl BrokeredHost {
                 ModelTurnLimits {
                     content_bytes: limits.turn_bytes,
                     argument_bytes: limits.turn_bytes.min(crate::services::TOOL_INPUT_BYTES),
-                    tool_calls: 1,
+                    tool_calls: CALLS_PER_TURN,
                     ..ModelTurnLimits::default()
                 },
                 false,
@@ -220,11 +230,14 @@ impl BrokeredHost {
                 Ok(ReadOnlyTurn::Completed { summary: turn.text })
             }
             StopReason::ToolCall => {
-                let call = turn
-                    .tool_calls
-                    .into_iter()
+                // One call at a time. The others never enter the canonical
+                // history, so the model sees one call and its result, and asks
+                // for the next step itself (ADR 0029).
+                let mut calls = turn.tool_calls.into_iter();
+                let call = calls
                     .next()
                     .ok_or_else(|| error(ErrorCode::ProtocolError))?;
+                let not_run = calls.count();
                 if !names.contains(&call.name.as_str()) {
                     return Err(error(ErrorCode::PermissionDenied));
                 }
@@ -235,6 +248,20 @@ impl BrokeredHost {
                     .ok_or_else(|| error(ErrorCode::NotFound))?;
                 ToolInputSchema::compile(&registered.descriptor.input_schema)?
                     .validate(&call.arguments)?;
+                if not_run > 0 {
+                    // Counted, not named: the others' names are the model's
+                    // words, never checked against the catalogue.
+                    self.journal
+                        .append(diagnostic(
+                            CALLS_NOT_RUN,
+                            format!(
+                                "The model asked for {} tool calls in one turn. Only the first, {}, was run; it can ask for the others again.",
+                                not_run + 1,
+                                call.name
+                            ),
+                        ))
+                        .await?;
+                }
                 // Complete the model action even for a tool-only answer. Tool
                 // intent/result have their own M4 pending-action lifecycle.
                 self.turn_tool(
@@ -389,9 +416,45 @@ impl BrokeredHost {
         // `TOOL_RUN_LIMIT` (ADR 0027).
         let child = cancel.child_token();
         let _cancel_on_drop = child.clone().drop_guard();
-        self.run_tool_step_with_answer(step, name, arguments, &child, answer)
-            .await
-            .map(|_| ())
+        let result = self
+            .run_tool_step_with_answer(step, name, arguments, &child, answer)
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            // A failure the model can act on, recorded as the call's result,
+            // is an observation: the model sees it on its next turn (ADR
+            // 0029). A failure before the call was recorded has no result to
+            // show, and ends the task like any other.
+            Err(failure) => {
+                if super::tool::observable_failure(failure.code)
+                    && self.failure_recorded(step).await
+                {
+                    Ok(())
+                } else {
+                    Err(failure)
+                }
+            }
+        }
+    }
+
+    /// Whether the latest attempt at `step` was recorded as a failed call.
+    async fn failure_recorded(&self, step: &str) -> bool {
+        let Ok(events) = self.journal.replay().await else {
+            return false;
+        };
+        let Some(invocation) = events.iter().rev().find_map(|event| match &event.payload {
+            EventPayload::ToolRequested {
+                invocation_id,
+                step_id: Some(id),
+                ..
+            } if id == step => Some(invocation_id.clone()),
+            _ => None,
+        }) else {
+            return false;
+        };
+        events.iter().any(|event| {
+            matches!(&event.payload, EventPayload::ToolFailed { invocation_id, .. } if *invocation_id == invocation)
+        })
     }
 }
 

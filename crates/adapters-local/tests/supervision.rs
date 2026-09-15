@@ -16,6 +16,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt as _;
+use tramontana_adapters_local::runtime_records::{self, Reaped, RuntimeRecord};
 use tramontana_adapters_local::{
     LlamaServerSpec, MINIMUM_BUILD, StartError, SupervisedLlamaServer, probe_version,
 };
@@ -217,6 +220,141 @@ async fn stopping_a_runtime_takes_its_children_with_it() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("the helper survived the supervisor's shutdown");
+}
+
+/// The records in `directory`, as written.
+fn records_in(directory: &Path) -> Vec<serde_json::Value> {
+    std::fs::read_dir(directory)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| {
+                    serde_json::from_str(&std::fs::read_to_string(entry.path()).unwrap()).unwrap()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether a process is running. A zombie has exited, so it counts as gone:
+/// a runtime this test abandoned is never waited for, and stays a zombie.
+#[cfg(unix)]
+fn is_running(pid: u32) -> bool {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .expect("`ps` must be available to tell whether a process is running");
+    let state = String::from_utf8_lossy(&output.stdout);
+    let state = state.trim();
+    !state.is_empty() && !state.starts_with('Z')
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_runtime_is_recorded_while_it_runs_and_forgotten_when_it_stops() {
+    let directory = tempfile::tempdir().unwrap();
+    let records = directory.path().join("runtimes");
+    let mut spec = spec(&directory);
+    spec.records = Some(records.clone());
+    let mut server = start_in_mode(&spec, "ready", 0).await.unwrap();
+
+    let written = records_in(&records);
+    assert_eq!(written.len(), 1, "{written:?}");
+    assert_eq!(
+        written[0]["binary"],
+        fake_binary().to_string_lossy().as_ref()
+    );
+
+    server.shutdown().await;
+    assert!(records_in(&records).is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(
+    clippy::mem_forget,
+    reason = "forgetting the runtime is how this test leaves one behind, as kill -9 does"
+)]
+async fn a_runtime_left_behind_is_stopped_by_the_next_reap() {
+    let directory = tempfile::tempdir().unwrap();
+    let records = directory.path().join("runtimes");
+    let mut spec = spec(&directory);
+    spec.records = Some(records.clone());
+    let server = start_in_mode(&spec, "ready", 0).await.unwrap();
+    let pid = u32::try_from(records_in(&records)[0]["pid"].as_u64().unwrap()).unwrap();
+    // What its owner being killed outright leaves: a running runtime whose
+    // shutdown and `Drop` never run.
+    std::mem::forget(server);
+    assert!(is_running(pid));
+
+    let reaped = runtime_records::reap(&records).await;
+
+    assert!(
+        matches!(reaped.as_slice(), [Reaped::Stopped(record)] if record.pid == pid),
+        "{reaped:?}"
+    );
+    assert!(!is_running(pid), "the runtime left behind is still running");
+    assert!(records_in(&records).is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_record_naming_another_program_leaves_it_alone() {
+    // A process id can be reused. Whatever now has it is not the runtime.
+    let directory = tempfile::tempdir().unwrap();
+    let records = directory.path().join("runtimes");
+    let mut other = std::process::Command::new("sleep")
+        .arg("30")
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    runtime_records::write(
+        &records,
+        &RuntimeRecord {
+            pid: other.id(),
+            binary: fake_binary(),
+            port: 9,
+        },
+    )
+    .unwrap();
+
+    let reaped = runtime_records::reap(&records).await;
+
+    assert!(
+        matches!(reaped.as_slice(), [Reaped::NotOurs(_)]),
+        "{reaped:?}"
+    );
+    assert!(is_running(other.id()), "another program was stopped");
+    assert!(records_in(&records).is_empty());
+    let _ = other.kill();
+    let _ = other.wait();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_record_of_a_runtime_already_gone_is_cleared() {
+    let directory = tempfile::tempdir().unwrap();
+    let records = directory.path().join("runtimes");
+    let mut gone = std::process::Command::new("true").spawn().unwrap();
+    let pid = gone.id();
+    gone.wait().unwrap();
+    runtime_records::write(
+        &records,
+        &RuntimeRecord {
+            pid,
+            binary: fake_binary(),
+            port: 9,
+        },
+    )
+    .unwrap();
+
+    let reaped = runtime_records::reap(&records).await;
+
+    assert!(
+        matches!(reaped.as_slice(), [Reaped::AlreadyGone(_)]),
+        "{reaped:?}"
+    );
+    assert!(records_in(&records).is_empty());
 }
 
 /// Whether a process exists, without touching it.
