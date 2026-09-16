@@ -465,17 +465,9 @@ async fn list_tools(
 }
 
 fn validate(spec: &McpServerSpec) -> Result<(), StartError> {
-    let id = &spec.app_id;
-    let first_ok = id
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
-    if !first_ok
-        || id.len() > 32
-        || !id
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
-    {
+    // One definition of what an App may be called, shared with the contract
+    // that persists it and the folder named after it (ADR 0036).
+    if !tramontana_core::contracts::is_valid_app_id(&spec.app_id) {
         return Err(StartError::Invalid(
             "an App's identifier is lowercase letters, digits, `_` and `-`, at most 32",
         ));

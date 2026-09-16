@@ -143,6 +143,15 @@ fn admits(admission: ToolAdmission, descriptor: &ToolDescriptor) -> bool {
     if descriptor.tool_id == RECIPE_TOOL_ID && descriptor.provider_id == "builtin" {
         return admission.recipes;
     }
+    if super::is_app_tool(&descriptor.tool_id) {
+        // An App's tool reaches a model only in a task that admits Apps, and
+        // only where the App says it only reads. The claim is the App's own,
+        // so it decides what may be *offered*, never what may run: every call
+        // is still asked about (ADRs 0035 and 0036).
+        return admission.apps
+            && descriptor.risk_class == RiskClass::Read
+            && descriptor.side_effect == SideEffect::None;
+    }
     match (descriptor.risk_class, descriptor.side_effect) {
         (RiskClass::Read, SideEffect::None) => true,
         (RiskClass::Modify, SideEffect::LocalReversible) => admission.writes,

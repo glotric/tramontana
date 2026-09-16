@@ -70,6 +70,15 @@ pub(crate) struct TaskArgs {
     #[arg(long)]
     allow_recipes: bool,
 
+    /// Offer the model the tools of the profile's enabled Apps that say they
+    /// only read.
+    ///
+    /// Every call is still asked about on the terminal: what an App says
+    /// about its own tool decides what may be offered, never what may run
+    /// (ADRs 0035 and 0036).
+    #[arg(long)]
+    apps: bool,
+
     /// Where this task's models may run. Recorded with the task and kept if
     /// it is resumed. Without it the task routes under the default mode,
     /// automatic.
@@ -146,6 +155,10 @@ struct TaskResumeArgs {
     /// Resume with recipes allowed. Must match how the task was started.
     #[arg(long)]
     allow_recipes: bool,
+    /// Resume with the profile's Apps allowed. Must match how the task was
+    /// started.
+    #[arg(long)]
+    apps: bool,
     #[arg(long)]
     json: bool,
     #[arg(long, default_value_t = 120)]
@@ -224,21 +237,26 @@ impl From<ModeArg> for tramontana_core::contracts::RoutingMode {
     }
 }
 
-/// What the reference worker may offer its model, from `--allow-writes` and
-/// `--allow-recipes`: two separate choices, neither implying the other.
-fn admission(allow_writes: bool, allow_recipes: bool) -> tramontana_core::ports::ToolAdmission {
+/// What the reference worker may offer its model, from `--allow-writes`,
+/// `--allow-recipes` and `--apps`: separate choices, none implying another.
+fn admission(
+    allow_writes: bool,
+    allow_recipes: bool,
+    apps: bool,
+) -> tramontana_core::ports::ToolAdmission {
     tramontana_core::ports::ToolAdmission {
         writes: allow_writes,
         recipes: allow_recipes,
+        apps,
     }
 }
 
 async fn run(args: TaskArgs) -> ExitCode {
     let profile = wiring::profile_path(args.profile);
-    let (service, mut models) = match wiring::open_running(
+    let (service, mut models, apps) = match wiring::open_running(
         &profile,
         args.chunk_delay_ms,
-        admission(args.allow_writes, args.allow_recipes),
+        admission(args.allow_writes, args.allow_recipes, args.apps),
     )
     .await
     {
@@ -292,6 +310,7 @@ async fn run(args: TaskArgs) -> ExitCode {
     // which stops the same runtimes without the grace period — correct, and
     // the reason cleanup lives in `Drop` as well as in a method.
     models.shutdown().await;
+    apps.shutdown().await;
     outcome
 }
 
@@ -452,10 +471,10 @@ async fn checkpoint_command(args: TaskShowArgs, operation: &str) -> ExitCode {
 async fn resume(args: TaskResumeArgs) -> ExitCode {
     // Held for the whole command: dropping it stops any runtime this process
     // started, and dropping it early would stop the model mid-answer.
-    let (service, _models) = match wiring::open_running(
+    let (service, _models, _apps) = match wiring::open_running(
         &wiring::profile_path(args.profile),
         args.chunk_delay_ms,
-        admission(args.allow_writes, args.allow_recipes),
+        admission(args.allow_writes, args.allow_recipes, args.apps),
     )
     .await
     {
@@ -547,7 +566,7 @@ fn emit_event(event: &tramontana_core::contracts::EventEnvelope, json: bool) {
 async fn handoff(args: HandoffArgs) -> ExitCode {
     // Held for the whole command: dropping it stops any runtime this process
     // started, and dropping it early would stop the model mid-answer.
-    let (service, _models) = match wiring::open_running(
+    let (service, _models, _apps) = match wiring::open_running(
         &wiring::profile_path(args.profile),
         args.chunk_delay_ms,
         tramontana_core::ports::ToolAdmission::READ_ONLY,

@@ -338,7 +338,7 @@ pub async fn assemble(
             tools,
             permissions,
             releases,
-            worker: assemble_worker(true, ToolAdmission::READ_WRITE.with_recipes()),
+            worker: assemble_worker(true, ToolAdmission::READ_WRITE.with_recipes(), &[]),
         },
         Arc::new(SystemClock::new()),
         Arc::new(UuidIdSource::new()),

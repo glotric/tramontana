@@ -16,8 +16,11 @@
 //! assembly returns the endpoints that worked and a diagnostic for each that
 //! did not, rather than refusing to start.
 
+mod apps;
+
 use std::sync::Arc;
 
+pub use apps::{AppFailure, AppPlane, app_folder, start_app, start_apps};
 use tramontana_adapters_local::{LlamaServerSpec, SupervisedLlamaServer};
 use tramontana_adapters_model::{AnthropicProvider, OpenAiCompatibleProvider, ProviderAuth};
 use tramontana_core::contracts::{
@@ -37,30 +40,46 @@ use tramontana_core::ports::{ModelProvider, SecretResolver, ToolAdmission};
 pub fn assemble_worker(
     configured: bool,
     admission: ToolAdmission,
+    app_tools: &[String],
 ) -> Arc<dyn tramontana_core::ports::AgentProvider> {
     if configured {
-        let mut tools = vec![
+        let mut tools: Vec<String> = [
             "builtin.fs.list",
             "builtin.fs.read",
             "builtin.fs.search",
             "builtin.git.status",
             "builtin.git.diff",
             "builtin.git.log",
-        ];
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
         if admission.writes {
-            tools.extend([
-                "builtin.fs.create",
-                "builtin.fs.patch",
-                "builtin.fs.move",
-                "builtin.fs.delete",
-            ]);
+            tools.extend(
+                [
+                    "builtin.fs.create",
+                    "builtin.fs.patch",
+                    "builtin.fs.move",
+                    "builtin.fs.delete",
+                ]
+                .into_iter()
+                .map(str::to_owned),
+            );
         }
         if admission.recipes {
-            tools.push(tramontana_core::services::RECIPE_TOOL_ID);
+            tools.push(tramontana_core::services::RECIPE_TOOL_ID.to_owned());
+        }
+        if admission.apps {
+            // Tramontana's own tools first: the catalogue refuses a whole
+            // selection of more than `MAX_OFFERED_TOOLS`, so an App with a
+            // great many tools must not be able to crowd out the built-in
+            // ones or fail the task (ADR 0036).
+            let room = MAX_OFFERED_TOOLS.saturating_sub(tools.len());
+            tools.extend(app_tools.iter().take(room).cloned());
         }
         Arc::new(
             tramontana_core::services::ReferenceWorker::new(
-                tools.into_iter().map(str::to_owned).collect(),
+                tools,
                 tramontana_core::ports::ReadOnlyLimits::default(),
             )
             .admitting(admission),
@@ -76,9 +95,19 @@ pub fn assemble_worker(
 /// Every worker [`assemble_worker`] can build, for a service that lets each
 /// task choose what its model may be offered (ADR 0031).
 #[must_use]
-pub fn worker_choice(configured: bool) -> tramontana_core::services::WorkerChoice {
-    Arc::new(move |admission| assemble_worker(configured, admission))
+pub fn worker_choice(
+    configured: bool,
+    app_tools: Vec<String>,
+) -> tramontana_core::services::WorkerChoice {
+    Arc::new(move |admission| assemble_worker(configured, admission, &app_tools))
 }
+
+/// The most tools one task's model may be offered.
+///
+/// The catalogue's own limit: a selection naming more is refused whole
+/// (`ModelToolCatalogue::select`), so composition stops at it rather than
+/// building a selection that would fail the task.
+pub const MAX_OFFERED_TOOLS: usize = 64;
 
 /// Where a profile keeps the files its tasks deleted, so a delete can be undone.
 ///
