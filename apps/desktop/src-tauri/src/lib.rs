@@ -12,6 +12,9 @@ mod commands;
 mod settings;
 mod state;
 
+#[cfg(test)]
+mod scenario;
+
 use tauri::Manager;
 
 /// Build and run the desktop application.
