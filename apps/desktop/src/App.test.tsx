@@ -34,6 +34,7 @@ const listConfiguredEndpoints = vi.hoisted(() => vi.fn());
 const listModelEndpoints = vi.hoisted(() => vi.fn());
 const listProjectGrants = vi.hoisted(() => vi.fn());
 const watchTask = vi.hoisted(() => vi.fn());
+const latestCheckpoint = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -57,6 +58,7 @@ vi.mock("./core.js", async () => {
     listModelEndpoints,
     listProjectGrants,
     watchTask,
+    latestCheckpoint,
   };
 });
 
@@ -182,10 +184,12 @@ describe("M2 durable desktop surface", () => {
       listModelEndpoints,
       listProjectGrants,
       watchTask,
+      latestCheckpoint,
     ]) {
       mock.mockReset();
     }
     watchTask.mockResolvedValue(undefined);
+    latestCheckpoint.mockResolvedValue(undefined);
     listProjectGrants.mockResolvedValue([]);
     listConfiguredEndpoints.mockResolvedValue([]);
     listModelEndpoints.mockResolvedValue([]);
@@ -652,6 +656,59 @@ describe("M2 durable desktop surface", () => {
     ]);
     await renderLoaded();
     await screen.findByText("All events (2)");
+    expect(watchTask).not.toHaveBeenCalled();
+  });
+
+  it("offers a new profile somewhere to start rather than an empty window", async () => {
+    // The first thing a person who has never run Tramontana sees. Nothing is
+    // selected, nothing can be, and every panel that needs a project is gone;
+    // what is left has to say what to do.
+    listProjects.mockResolvedValue([]);
+    listConversations.mockResolvedValue([]);
+    listTasks.mockResolvedValue([]);
+
+    render(<App />);
+
+    expect(await screen.findByText("No durable projects yet.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "+ Open project" })).toBeEnabled();
+    expect(screen.getByRole("heading", { name: "Open a project", level: 1 })).toBeInTheDocument();
+    expect(screen.getByText(/Choose a local directory/)).toBeInTheDocument();
+    // Nothing was read for a project that is not there.
+    expect(inspectProject).not.toHaveBeenCalled();
+    expect(listConversations).not.toHaveBeenCalled();
+    expect(screen.queryByRole("region", { name: "Task summary" })).not.toBeInTheDocument();
+  });
+
+  it("puts an interrupted task to the person instead of waiting on it", async () => {
+    // A task stopped mid-flight: the shell will produce no more events for
+    // it, so following it would leave the window waiting on nothing. What it
+    // needs instead is the checkpoint, and a person to decide.
+    listTasks.mockResolvedValue([{ ...task, state: "interrupted" as const, lastSequence: 4 }]);
+    replayTaskEvents.mockResolvedValue([
+      event(1, { kind: "taskCreated", goalSummary: "Existing durable task" }),
+      event(2, {
+        kind: "taskStateChanged",
+        previous: "running",
+        current: "interrupted",
+        reasonCode: "task.interrupted",
+      }),
+    ]);
+    latestCheckpoint.mockResolvedValue({
+      schemaVersion: 1,
+      checkpointId: "checkpoint-1",
+      taskId: task.taskId,
+      eventSequence: 4,
+      createdAt: "2026-01-01T00:00:05.000Z",
+      taskState: "interrupted",
+      completedStepIds: [],
+      resume: { eligible: true, mode: "sameWorker", reasonCode: "checkpoint.clean" },
+    });
+
+    await renderLoaded();
+
+    const panel = await screen.findByRole("region", { name: "Interrupted" });
+    expect(panel).toHaveTextContent("Resume");
+    expect(latestCheckpoint).toHaveBeenCalledWith(task.taskId);
     expect(watchTask).not.toHaveBeenCalled();
   });
 
