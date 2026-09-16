@@ -21,20 +21,20 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tramontana_adapters_tools::{FilesystemTools, GitTools, RecipeTools};
 use tramontana_composition::{
-    ModelPlane, Supervision, assemble_models, assemble_worker, recovery_store,
+    AppPlane, ModelPlane, Supervision, assemble_models, assemble_worker, recovery_store, start_apps,
 };
 use tramontana_core::config::ConfigurationSelection;
 use tramontana_core::contracts::{ConversationId, EventEnvelope, TaskEventKind, TaskId};
 use tramontana_core::ports::{
-    ApprovalStore, Approver, EventStore, ProviderSettingsRepository, SecretResolver, ToolAdmission,
-    ToolProvider,
+    AppSettingsRepository, ApprovalStore, Approver, EventStore, ProviderSettingsRepository,
+    SecretResolver, ToolAdmission, ToolProvider,
 };
 use tramontana_core::services::{Providers, Repositories, StartTaskRequest, TaskService};
 use tramontana_core::testing::{InMemoryApprovalStore, InMemorySecretVault, assemble_tool_plane};
 use tramontana_persistence::{
-    Database, SqliteCheckpointRepository, SqliteConfigurationRepository,
-    SqliteConversationRepository, SqliteEventStore, SqliteProjectRepository,
-    SqliteProviderSettingsRepository, SqliteTaskRepository,
+    Database, SqliteAppSettingsRepository, SqliteCheckpointRepository,
+    SqliteConfigurationRepository, SqliteConversationRepository, SqliteEventStore,
+    SqliteProjectRepository, SqliteProviderSettingsRepository, SqliteTaskRepository,
 };
 use tramontana_platform::{SystemClock, UuidIdSource, canonicalize_root, discover};
 
@@ -293,7 +293,11 @@ pub fn read_hash(body: &Value) -> String {
 
 pub struct Running {
     pub service: Arc<TaskService>,
+    /// Where grants live, so a test can revoke one and see what changes.
+    pub approvals: Arc<InMemoryApprovalStore>,
     _models: ModelPlane,
+    /// The profile's Apps, stopped when this is dropped.
+    _apps: AppPlane,
 }
 
 /// The CLI's assembly (`wiring.rs`), with `approver` in place of the terminal
@@ -305,14 +309,27 @@ pub async fn assemble(
     supervision: Supervision,
 ) -> Running {
     let database = Database::open(profile).await.unwrap();
+    let resolver = Arc::new(InMemorySecretVault::new()) as Arc<dyn SecretResolver>;
+    // The profile's Apps, as the CLI starts them: registered beside the
+    // built-in tools and under the same permission boundary (ADR 0036).
+    let configured_apps = SqliteAppSettingsRepository::new(database.clone())
+        .list()
+        .await
+        .unwrap();
+    let apps = start_apps(&configured_apps, &resolver, profile).await;
+    assert!(apps.failures.is_empty(), "{:?}", apps.failures);
+    let app_tools = apps.tool_ids();
+    let mut providers: Vec<Arc<dyn ToolProvider>> = vec![
+        Arc::new(FilesystemTools::new().with_recovery_store(recovery_store(profile)))
+            as Arc<dyn ToolProvider>,
+        Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
+        Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
+    ];
+    providers.extend(apps.providers());
+    let approvals = Arc::new(InMemoryApprovalStore::new());
     let (tools, permissions, releases) = assemble_tool_plane(
-        vec![
-            Arc::new(FilesystemTools::new().with_recovery_store(recovery_store(profile)))
-                as Arc<dyn ToolProvider>,
-            Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
-            Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
-        ],
-        Arc::new(InMemoryApprovalStore::new()) as Arc<dyn ApprovalStore>,
+        providers,
+        Arc::clone(&approvals) as Arc<dyn ApprovalStore>,
         approver,
         Arc::new(UuidIdSource::new()),
     )
@@ -321,7 +338,6 @@ pub async fn assemble(
         .list()
         .await
         .unwrap();
-    let resolver = Arc::new(InMemorySecretVault::new()) as Arc<dyn SecretResolver>;
     let models = assemble_models(&configured, &resolver, supervision).await;
     assert!(models.failures.is_empty(), "{:?}", models.failures);
     let service = TaskService::new(
@@ -338,7 +354,11 @@ pub async fn assemble(
             tools,
             permissions,
             releases,
-            worker: assemble_worker(true, ToolAdmission::READ_WRITE.with_recipes(), &[]),
+            worker: assemble_worker(
+                true,
+                ToolAdmission::READ_WRITE.with_recipes().with_apps(),
+                &app_tools,
+            ),
         },
         Arc::new(SystemClock::new()),
         Arc::new(UuidIdSource::new()),
@@ -346,7 +366,9 @@ pub async fn assemble(
     service.recover().await.unwrap();
     Running {
         service: Arc::new(service),
+        approvals,
         _models: models,
+        _apps: apps,
     }
 }
 
