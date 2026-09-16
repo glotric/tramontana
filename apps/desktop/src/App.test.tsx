@@ -560,6 +560,86 @@ describe("M2 durable desktop surface", () => {
     expect(within(list).getAllByRole("listitem")).toHaveLength(3);
   });
 
+  it("neither loses nor repeats the answer when the window reloads mid-stream", async () => {
+    // The task goes on in the shell while the window is gone, so a reloaded
+    // window rejoins an answer already under way. Frames are transport, not
+    // record (`CORE_CONTRACTS.md` §5): the ones it missed are not replayed,
+    // and the whole answer arrives durably when the turn ends.
+    const running = { ...task, state: "running" as const, lastSequence: 2 };
+    listTasks.mockResolvedValue([running]);
+    replayTaskEvents.mockResolvedValue([
+      event(1, { kind: "taskCreated", goalSummary: "Existing durable task" }),
+      event(2, { kind: "modelStarted", streamId: "stream-1", modelId: "qwen2.5-7b-instruct" }),
+    ]);
+    let deliver: (update: TaskUpdate) => void = () => undefined;
+    watchTask.mockImplementation(
+      (_taskId: string, _after: number, onUpdate: (update: TaskUpdate) => void) => {
+        deliver = onUpdate;
+        return Promise.resolve();
+      },
+    );
+
+    const first = render(<App />);
+    await screen.findByRole("heading", { name: "M2 Conversation" });
+    await waitFor(() => {
+      expect(watchTask).toHaveBeenCalledWith(task.taskId, 2, expect.any(Function));
+    });
+    act(() => {
+      deliver({ kind: "frame", frame: { streamId: "stream-1", offset: 0, text: "Hello, " } });
+      deliver({ kind: "frame", frame: { streamId: "stream-1", offset: 7, text: "wor" } });
+    });
+    const answer = await screen.findByRole("region", { name: "Live answer" });
+    expect(answer).toHaveTextContent("Hello, wor");
+    expect(answer).not.toHaveTextContent("joined part-way");
+
+    // The reload. The shell keeps answering; this window starts over from the
+    // record, which does not yet hold the message being produced.
+    first.unmount();
+    render(<App />);
+    await screen.findByRole("heading", { name: "M2 Conversation" });
+    await waitFor(() => {
+      expect(watchTask).toHaveBeenCalledTimes(2);
+    });
+    act(() => {
+      deliver({ kind: "frame", frame: { streamId: "stream-1", offset: 10, text: "ld." } });
+    });
+
+    // What it holds is the end of an answer, and it says so instead of
+    // letting three characters read as everything the model said.
+    const rejoined = await screen.findByRole("region", { name: "Live answer" });
+    expect(rejoined).toHaveTextContent("ld.");
+    expect(rejoined).toHaveTextContent("joined part-way");
+
+    // The turn ends. The whole answer is in the record, once, and the frames
+    // it was streamed in are gone rather than sitting above it.
+    act(() => {
+      deliver({
+        kind: "event",
+        event: event(3, {
+          kind: "messageCommitted",
+          message: {
+            schemaVersion: 1,
+            messageId: "message-1",
+            role: "assistant",
+            status: "committed",
+            createdAt: "2026-01-01T00:00:05.000Z",
+            parts: [{ kind: "text", text: "Hello, world." }],
+          },
+        }),
+      });
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("region", { name: "Live answer" })).not.toBeInTheDocument();
+    });
+    expect(screen.getAllByText("Hello, world.")).toHaveLength(1);
+
+    // And the record itself reads once through, with nothing repeated.
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("All events (3)"));
+    const list = screen.getByRole("list", { name: "Task event stream" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(3);
+  });
+
   it("does not follow a task that has already ended", async () => {
     replayTaskEvents.mockResolvedValue([
       event(1, { kind: "taskCreated", goalSummary: "Existing durable task" }),
