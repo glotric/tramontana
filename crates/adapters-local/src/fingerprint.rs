@@ -75,11 +75,28 @@ pub fn fingerprint_file(path: &Path) -> std::io::Result<Fingerprint> {
 ///
 /// Whatever reading it reports.
 pub fn fingerprint_model(path: &Path) -> std::io::Result<Fingerprint> {
-    if std::fs::metadata(path)?.is_file() {
-        return fingerprint_file(path);
-    }
     let mut entries = Vec::new();
-    collect(path, path, &mut entries)?;
+    if std::fs::metadata(path)?.is_file() {
+        match split_parts(path)? {
+            // One file is the model.
+            None => return fingerprint_file(path),
+            // `…-00001-of-00003.gguf` is the first of several parts that
+            // llama.cpp loads together from beside it, so all of them are the
+            // model, and a change to any of them is a change to it.
+            Some(parts) => {
+                for part in parts {
+                    let fingerprint = fingerprint_file(&part)?;
+                    let name = part
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    entries.push((name, "file", fingerprint.sha256, fingerprint.bytes));
+                }
+            }
+        }
+    } else {
+        collect(path, path, &mut entries)?;
+    }
     entries.sort();
     let mut hasher = Sha256::new();
     let mut bytes = 0_u64;
@@ -96,6 +113,51 @@ pub fn fingerprint_model(path: &Path) -> std::io::Result<Fingerprint> {
         sha256: hex(&hasher.finalize()),
         bytes,
     })
+}
+
+/// The parts of a split GGUF model, when `path` names one: the file and its
+/// siblings, `<name>-00001-of-0000N.gguf` through `-0000N-of-0000N`.
+///
+/// # Errors
+///
+/// [`std::io::ErrorKind::NotFound`] when a part the name promises is missing.
+fn split_parts(path: &Path) -> std::io::Result<Option<Vec<std::path::PathBuf>>> {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(None);
+    };
+    let Some(stem) = name.strip_suffix(".gguf") else {
+        return Ok(None);
+    };
+    // `<prefix>-<index>-of-<total>`, each number five digits.
+    let Some((rest, total)) = stem.rsplit_once("-of-") else {
+        return Ok(None);
+    };
+    let Some((prefix, _index)) = rest.rsplit_once('-') else {
+        return Ok(None);
+    };
+    let digits = |text: &str| text.len() == 5 && text.bytes().all(|byte| byte.is_ascii_digit());
+    if !digits(total) || !digits(&rest[prefix.len() + 1..]) {
+        return Ok(None);
+    }
+    let Ok(count) = total.parse::<u32>() else {
+        return Ok(None);
+    };
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut parts = Vec::new();
+    for index in 1..=count {
+        let part = directory.join(format!("{prefix}-{index:05}-of-{total}.gguf"));
+        if !part.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "part {index} of {count} of the model is missing: {}",
+                    part.display()
+                ),
+            ));
+        }
+        parts.push(part);
+    }
+    Ok(Some(parts))
 }
 
 /// Every entry under `directory`: its path relative to `root` with `/`
@@ -201,5 +263,30 @@ mod tests {
         )
         .unwrap();
         assert_ne!(fingerprint_model(&folder).unwrap().sha256, before.sha256);
+    }
+
+    #[test]
+    fn a_split_model_is_all_of_its_parts() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("qwen-00001-of-00002.gguf");
+        let second = directory.path().join("qwen-00002-of-00002.gguf");
+        std::fs::write(&first, b"part one").unwrap();
+        std::fs::write(&second, b"part two").unwrap();
+        let whole = fingerprint_model(&first).unwrap();
+        assert_eq!(whole.bytes, 16, "both parts are counted");
+
+        // A change to a part other than the one named is a change to the model.
+        std::fs::write(&second, b"part 2!!").unwrap();
+        assert_ne!(fingerprint_model(&first).unwrap().sha256, whole.sha256);
+
+        // A part the name promises must be there.
+        std::fs::remove_file(&second).unwrap();
+        let missing = fingerprint_model(&first).unwrap_err();
+        assert!(missing.to_string().contains("part 2 of 2"), "{missing}");
+
+        // A name that only looks like it is one file.
+        let single = directory.path().join("notes-1-of-2.gguf");
+        std::fs::write(&single, b"x").unwrap();
+        assert_eq!(fingerprint_model(&single).unwrap().bytes, 1);
     }
 }
