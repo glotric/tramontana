@@ -17,6 +17,7 @@ import { BundlesPanel } from "./BundlesPanel.js";
 import { buildCards, describeHeader, MODE_LABEL } from "./cards.js";
 import { ChangesPanel } from "./ChangesPanel.js";
 import { GrantsPanel } from "./GrantsPanel.js";
+import { AppsView } from "./AppsView.js";
 import { ModelsView } from "./ModelsView.js";
 import { foldFrame } from "./stream.js";
 import type { LiveStream } from "./stream.js";
@@ -88,10 +89,16 @@ const MODE_TEXT: Record<RoutingMode, string> = {
  * recipe can still reach the network, so choosing both says so (ADR 0028's
  * boundary statement, and the recipe prompt, say the same).
  */
-function describeChoices(mode: RoutingMode, writes: boolean, recipes: boolean): string {
+function describeChoices(
+  mode: RoutingMode,
+  writes: boolean,
+  recipes: boolean,
+  apps: boolean,
+): string {
   const asks = [
     ...(writes ? ["edit files"] : []),
     ...(recipes ? ["run the project's recipes"] : []),
+    ...(apps ? ["use the Apps' reading tools"] : []),
   ];
   const access =
     asks.length === 0
@@ -120,12 +127,13 @@ export function App(): React.JSX.Element {
   const [routingMode, setRoutingMode] = useState<RoutingMode>("automatic");
   const [mayWrite, setMayWrite] = useState(false);
   const [mayRunRecipes, setMayRunRecipes] = useState(false);
+  const [mayUseApps, setMayUseApps] = useState(false);
   const [conversationTitle, setConversationTitle] = useState("");
   const [approvals, setApprovals] = useState<readonly ApprovalRequest[]>([]);
   // Moves on whenever a task ends, so the Changes panel reads the tree again.
   const [revision, setRevision] = useState(0);
   // The work area, or the models and credentials the tasks run against.
-  const [view, setView] = useState<"work" | "models">("work");
+  const [view, setView] = useState<"work" | "models" | "apps">("work");
   const [failure, setFailure] = useState<string | undefined>();
   const [loadingProject, setLoadingProject] = useState(false);
   const [openingProject, setOpeningProject] = useState(false);
@@ -430,6 +438,7 @@ export function App(): React.JSX.Element {
     void startTask(goal, onUpdate, selectedConversationId, {
       writes: mayWrite,
       recipes: mayRunRecipes,
+      apps: mayUseApps,
       routingMode,
     }).then(
       (id) => {
@@ -444,6 +453,7 @@ export function App(): React.JSX.Element {
     goal,
     handleUpdate,
     mayRunRecipes,
+    mayUseApps,
     mayWrite,
     refreshTasks,
     routingMode,
@@ -568,6 +578,16 @@ export function App(): React.JSX.Element {
         >
           Models and credentials
         </button>
+        <button
+          type="button"
+          className="rail-row rail-row--settings"
+          aria-pressed={view === "apps"}
+          onClick={() => {
+            setView((current) => (current === "apps" ? "work" : "apps"));
+          }}
+        >
+          Apps
+        </button>
 
         <footer className="rail-status">
           <span className="status-dot" data-state={status.kind} aria-hidden="true" />
@@ -578,6 +598,12 @@ export function App(): React.JSX.Element {
       <main className="workspace">
         {view === "models" ? (
           <ModelsView
+            onClose={() => {
+              setView("work");
+            }}
+          />
+        ) : view === "apps" ? (
+          <AppsView
             onClose={() => {
               setView("work");
             }}
@@ -787,9 +813,19 @@ export function App(): React.JSX.Element {
                       />
                       May run recipes
                     </label>
+                    <label className="composer-toggle">
+                      <input
+                        type="checkbox"
+                        checked={mayUseApps}
+                        onChange={(changed) => {
+                          setMayUseApps(changed.target.checked);
+                        }}
+                      />
+                      May use Apps
+                    </label>
                   </fieldset>
                   <p className="composer-disclosure">
-                    {describeChoices(routingMode, mayWrite, mayRunRecipes)}
+                    {describeChoices(routingMode, mayWrite, mayRunRecipes, mayUseApps)}
                   </p>
                   <div className="composer-footer">
                     <span>

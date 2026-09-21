@@ -19,12 +19,14 @@
     "typecheck": "pnpm -r run --sequential typecheck",
     "contracts:generate": "node scripts/contracts.mjs generate",
     "contracts:check": "node scripts/contracts.mjs check",
+    "notices:generate": "node scripts/notices.mjs generate",
+    "notices:check": "node scripts/notices.mjs check",
     "test": "pnpm test:rust && pnpm test:ts",
     "test:rust": "cargo test --workspace",
     "test:ts": "pnpm -r run --sequential test",
     "build": "pnpm --filter @tramontana/desktop build:ui && cargo build --release --workspace",
     "package": "pnpm --filter @tramontana/desktop package",
-    "check:fast": "pnpm format:check && pnpm contracts:check && pnpm lint && pnpm typecheck && pnpm test",
+    "check:fast": "pnpm format:check && pnpm contracts:check && pnpm notices:check && pnpm lint && pnpm typecheck && pnpm test",
     "check": "pnpm check:fast && pnpm build"
   },
   "devDependencies": {

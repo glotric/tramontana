@@ -87,7 +87,8 @@ impl AppPlane {
 /// Only a tool its App says reads and changes nothing. That is the App's claim,
 /// and it is not trusted for anything else — the call is still asked about
 /// (ADR 0035) — but a tool that does not even claim it cannot be offered.
-fn offerable(tool: &tramontana_core::contracts::ToolDescriptor) -> bool {
+#[must_use]
+pub fn offerable(tool: &tramontana_core::contracts::ToolDescriptor) -> bool {
     tool.risk_class == tramontana_core::contracts::RiskClass::Read
         && tool.side_effect == tramontana_core::contracts::SideEffect::None
 }

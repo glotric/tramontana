@@ -20,50 +20,120 @@ Phase 1 has no enterprise server dependency. The default architecture is persona
 
 ## Status
 
-Milestone M6's read-only reference worker is implemented. M7 (safe writes and
-commands) is next, followed by validation gate V3. See the
-[M6 evidence and limitations](docs/evidence/M6-reference-worker.md).
+Tramontana is working toward its first beta. Milestones M0–M8 and validation
+gates V1–V3 are closed; each left an evidence note in
+[docs/evidence/](docs/evidence/) that says what it proved and what it did not.
 
-The differentiating capability is built and runs end to end against fakes: a task can be **stopped, understood, continued, handed to a different worker, and carried out of the application** as a record that stands on its own.
+- **Done and demonstrated:** a desktop application and a CLI over one durable
+  record; a built-in worker that reads, edits files and runs the project's
+  declared commands, each edit and each command approved by you as it
+  happens; a local model through `llama-server`, with Local Only routing;
+  checkpoints, resume without repeating a side effect, and export and import
+  of the work. OpenAI-compatible and Anthropic endpoints can be configured
+  and pass the same contract tests, but no request has yet been made to
+  either vendor.
+- **In progress:** gate V4, whether someone other than the author can operate
+  the desktop from this README. Its automated checks pass; its
+  demonstration has not run.
+- **Built:** MCP Apps over stdio (M9). Added from the CLI
+  (`tramontana app add`); seen, turned on and off, and their decisions read
+  in the desktop's **Apps** view; allowed for a task with **May use Apps**.
+- **Deferred from Beta 1:** an external coding worker (M10, ADR 0038), and
+  the rest listed in the [draft release notes](docs/RELEASE_NOTES_BETA_1.md).
 
-- A checkpoint is *derived* from the durable events rather than kept beside them, so the two cannot disagree after an unclean stop — and a checkpoint can be taken for a task the running process never started, which is what makes startup recovery possible at all.
-- Continuing is always explicit. A step is identified by a worker-declared name plus a fingerprint of the tool and its arguments, and the core refuses a step already in the completed watermark — so *resume without repeating a side effect* does not depend on the worker cooperating. An action whose effects are unsafe or unknown leaves the task `interrupted` for a person to reconcile.
-- A second worker with different capabilities can take a task over from canonical state alone. It receives a handoff bundle and nothing else; the one field that could carry the previous worker's private session is recorded as an omission instead of being passed along.
-- Export is a data-release action. Secrets and worker-private state are excluded unconditionally and are not options; absolute paths and raw tool output are excluded by default. Everything dropped is counted in the manifest and named in a README the bundle carries. Import treats its input as hostile and executes nothing.
+**What Tramontana does not do:** it does not sandbox the commands you
+approve. An approved command runs with your permissions. Tramontana checks
+file operations against the folders you granted and stops every process a
+command started, but it does not contain them. The
+[execution boundary](docs/EXECUTION_BOUNDARY.md) says exactly what is
+enforced and what is only checked.
 
-Earlier milestones stand behind it: every tool call passes a fail-closed permission boundary and lands in the record with its origin, capability, scope, and decision, refusals included (M3); projects, conversations, tasks, ordered events, and secret-free configuration manifests persist in SQLite and recover on restart (M2).
+## Getting started
 
-M5 added the model path: configured endpoints, a deterministic router, and a release boundary a provider cannot be reached without.
+Tramontana is built from source; there is no installer yet.
 
-- A model provider takes an **authorized** request, and the only way to obtain one is the release manager. A cloud endpoint cannot be reached without a disclosure and an approval, by construction rather than by discipline — the same technique that makes a tool unreachable without a permission decision.
-- What is disclosed is computed from the payload, not from the assembled context, so the release plan cannot describe something other than what was sent.
-- Credentials live in the operating system's credential store. Only an opaque reference is persisted, and a value reaches a provider as one header on one request.
-- Whether work leaves the device is **derived** — from the endpoint's URL, from the model's location — and never declared, so no settings row can mark a third-party endpoint local and slip past Local Only.
-- Credential-shaped text is redacted where it enters the system, so the durable record never held it.
-
-**A real model streams end to end through the CLI. No request has been made to OpenAI or Anthropic**, no test performs a TLS handshake, and no real `llama-server` has been supervised — those are named in [the M5 evidence note](docs/evidence/M5-models-and-routing.md) rather than implied. The desktop reaches the same models through the same composition but has no settings screen yet. Modifying tools arrive in M7. Validation gates V1 and V2 passed.
-
-M6 adds model-selected filesystem/Git reads with schema validation, fresh
-per-turn disclosure, durable observations and restart-safe budget reservations.
-Its end-to-end test uses synthetic inference with real HTTP, filesystem tools
-and SQLite; live-model validation of this loop is still outstanding. Structured
-answer text is buffered until redaction, while task activity remains live.
-Profiles without enabled endpoints retain the labelled diagnostic fake. An
-enabled endpoint selects the real loop and must explicitly advertise tool-call
-support; broken configuration never silently becomes fake inference.
+**You need** macOS or Linux (Windows builds, but has not been tried by
+hand), Git, the Rust toolchain from [rustup](https://rustup.rs), and
+Node.js 24 — not 25. On Linux, Tauri's
+[system packages](https://v2.tauri.app/start/prerequisites/). For a model on
+your own machine, a [`llama-server`](https://github.com/ggml-org/llama.cpp/releases)
+executable and a GGUF model file; the one tested is Qwen2.5-7B-Instruct
+(Q4_K_M), and a model must make native tool calls to edit files. A cloud
+model can be configured instead — an OpenAI-compatible or Anthropic
+endpoint and its key — though neither vendor has been tried yet.
 
 ```bash
-corepack enable pnpm     # Node 24.x; Node 25 removed Corepack
+corepack enable pnpm     # once, so the pinned pnpm is on your PATH
 pnpm install
-pnpm bootstrap           # validates the toolchain, generates contract artifacts
-pnpm check:fast          # format, contracts, lint, types, tests (~5s)
-pnpm check               # the above plus the release build
-pnpm dev                 # desktop shell
-pnpm dev:cli project open /path/to/project
-pnpm dev:cli task "Say hello"   # the same task from a terminal
+pnpm bootstrap           # checks the toolchain
+pnpm dev                 # builds and opens the desktop; the first run takes a few minutes
 ```
 
-Stopping and continuing work, and carrying it elsewhere (`tramontana` is `pnpm dev:cli` in a development checkout):
+The terminal you start it from is the application's log; keep it open. Your
+work is kept in a profile in the system's application-data folder, or in
+the file `TRAMONTANA_PROFILE` names.
+
+**1. Add a model.** Open **Models and credentials**. For a local model,
+choose **llama-server started by Tramontana**, give it a name and the
+model's name, and **Choose files and add…** to pick the executable and the
+model file. Tick **Tool calls verified** only once you know the model makes
+native tool calls. A new endpoint is used the next time Tramontana starts:
+quit and run `pnpm dev` again.
+
+**2. Open a project.** **+ Open project** and choose a folder, ideally a Git
+repository. To let a task run the project's own commands, such as its
+tests, declare them as recipes in `.tramontana/project.md`:
+
+```yaml
+---
+recipes:
+  test: [sh, check.sh]
+---
+```
+
+Declaring a recipe grants nothing; every run is still put to you. See
+[configuration](docs/CONFIGURATION.md) for the rest of that file.
+
+**3. Start a task.** Add a conversation, then write the goal in the
+composer. By default a task may only read. Tick **May edit files**, **May
+run recipes** or **May use Apps** to let the model ask for more, and choose
+where models may run: **Local only** keeps every model request on this
+device.
+
+**4. Answer what it asks.** Each edit and each command stops the task until
+you answer. The question says what will happen — the file, or the exact
+command — and **Allow once** lets that one through. **Allow in this
+project** lets later ones like it through until Tramontana quits. Watch the
+activity cards: which model ran and where, what was sent to it, each tool
+call and how it was decided.
+
+**5. Review the change.** The **Changes** panel shows Git's status and diff
+for the project, read again whenever a task ends.
+
+**6. Stop and continue.** **Stop** cancels a task. If Tramontana closes or
+crashes while a task runs, the task comes back **Interrupted**, with a panel
+showing what was in flight and whether repeating it is safe. **Resume**
+continues from there without redoing what already happened; **Discard**
+keeps the history and undoes nothing.
+
+**7. Take the work elsewhere.** **Export this task…** or **Export
+project…** writes a bundle to a folder you choose, leaving out absolute
+paths and raw tool output unless you ask. **Import a bundle…** shows what a
+bundle holds before anything is written, and runs none of it.
+
+### From a terminal
+
+The CLI reads and writes the same profile (`tramontana` is `pnpm dev:cli`
+in a checkout):
+
+```bash
+pnpm dev:cli project open /path/to/project
+pnpm dev:cli task "Say hello"   # a read-only task
+pnpm check:fast                 # format, contracts, lint, types, tests
+pnpm check                      # the above plus the release build
+```
+
+Stopping and continuing work, carrying it elsewhere, and configuring models:
 
 ```bash
 tramontana task inspect  <TASK>                          # state, checkpoint, replay safety
@@ -111,7 +181,7 @@ Product and architecture references:
 - [Open-source foundations](docs/OPEN_SOURCE_FOUNDATIONS.md)
 - [Architecture decision records](docs/decisions/README.md)
 
-## Intended repository layout
+## Repository layout
 
 ```text
 apps/desktop/       Tauri application and React user interface
@@ -119,7 +189,8 @@ apps/cli/           Headless development and recovery adapter
 crates/core/        Provider-neutral Rust domain and application services
 crates/persistence/ SQLite implementation of the local operational plane
 crates/platform/    Paths, clock, identifiers, profile lease, bundle files
-crates/adapters-tools/  Read-only filesystem and Git tools
+crates/adapters-tools/  Filesystem, Git and recipe tools, and the command broker
+crates/adapters-mcp/    MCP Apps over stdio, behind the tool port
 crates/adapters-model/  Model provider adapters: chat-completions and Anthropic
 crates/adapters-local/  Supervised local model runtimes (llama.cpp)
 crates/composition/     Configured endpoints turned into live providers

@@ -329,6 +329,11 @@ export interface TaskOptions {
   readonly writes: boolean;
   /** Let the model ask to run the project's configured recipes. */
   readonly recipes: boolean;
+  /**
+   * Let the model be offered the tools of the profile's Apps that say they
+   * only read (ADR 0036). Every call is still put to the person.
+   */
+  readonly apps: boolean;
   /** Where this task's models may run. Kept if the task is resumed. */
   readonly routingMode: RoutingMode;
 }
@@ -351,7 +356,10 @@ export async function startTask(
   return invoke<string>("start_task", {
     goal,
     conversationId: conversationId ?? null,
-    admission: options === undefined ? null : { writes: options.writes, recipes: options.recipes },
+    admission:
+      options === undefined
+        ? null
+        : { writes: options.writes, recipes: options.recipes, apps: options.apps },
     routingMode: options?.routingMode ?? null,
     channel,
   });
@@ -441,6 +449,75 @@ export async function onApprovalRequested(
 /** Discard interrupted work. History is kept and no effect is undone. */
 export async function discardCheckpoint(taskId: string): Promise<void> {
   return invoke("discard_checkpoint", { taskId });
+}
+
+/** Where an App stands in this window (ADR 0040). */
+export type AppStatus =
+  | { readonly kind: "running" }
+  | { readonly kind: "stopped"; readonly reason: string }
+  | { readonly kind: "didNotStart"; readonly reason: string }
+  | { readonly kind: "off" }
+  | { readonly kind: "startsOnRestart" }
+  | { readonly kind: "stopsOnRestart" };
+
+/** One tool an App registered. */
+export interface AppToolView {
+  readonly toolId: string;
+  /** The App's own description. Presentation, never policy. */
+  readonly description: string;
+  /** Whether a task that admits Apps may offer it to a model. */
+  readonly offered: boolean;
+}
+
+/** One configured App, with nothing it is given shown by value. */
+export interface AppView {
+  readonly appId: string;
+  readonly displayName: string;
+  readonly enabled: boolean;
+  readonly status: AppStatus;
+  /** The program's file name only. */
+  readonly program: string;
+  /** Names of the variables and secrets it is given; never their values. */
+  readonly variables: readonly string[];
+  readonly secrets: readonly string[];
+  readonly protocolVersion?: string;
+  readonly tools: readonly AppToolView[];
+  readonly refused: readonly { readonly name: string; readonly reason: string }[];
+  /** The last of what it wrote to its error stream, already redacted. */
+  readonly diagnostics: string;
+}
+
+/** How one call to an App's tool was decided, and how it ended. */
+export interface AppDecision {
+  readonly taskId: string;
+  readonly goal: string;
+  readonly toolId: string;
+  readonly allowed: boolean;
+  readonly reasonCode: string;
+  readonly grantKind?: "implicitSafeDefault" | "once" | "project";
+  readonly outcome?: "completed" | "failed";
+  readonly decidedAt: string;
+}
+
+/** An App's decisions, newest first, and whether the search stopped early. */
+export interface AppHistory {
+  readonly decisions: readonly AppDecision[];
+  readonly partial: boolean;
+}
+
+/** Every configured App, and how each is doing in this window. */
+export async function listApps(): Promise<readonly AppView[]> {
+  return invoke<AppView[]>("list_apps");
+}
+
+/** Turn an App on or off. Takes effect when Tramontana restarts. */
+export async function setAppEnabled(appId: string, enabled: boolean): Promise<void> {
+  return invoke("set_app_enabled", { appId, enabled });
+}
+
+/** What was decided about an App's tools, from the durable record. */
+export async function appPermissionHistory(appId: string): Promise<AppHistory> {
+  return invoke<AppHistory>("app_permission_history", { appId });
 }
 
 /**

@@ -47,7 +47,7 @@ use crate::approval::DesktopApprover;
 use crate::state::AppState;
 
 /// How long any single wait in the scenario may take before it is a failure.
-const PATIENCE: Duration = Duration::from_secs(60);
+const PATIENCE: Duration = Duration::from_secs(20);
 
 /// A committed Git repository whose project declares the test recipe V3 ran,
 /// and the profile the desktop opens beside it.
@@ -320,7 +320,7 @@ async fn finished(
     service: &TaskService,
     task: &TaskId,
 ) -> Vec<tramontana_core::contracts::EventEnvelope> {
-    tokio::time::timeout(PATIENCE, async {
+    let waited = tokio::time::timeout(PATIENCE, async {
         loop {
             let events = service.replay_task_events(task, 0).await.unwrap();
             if events
@@ -332,8 +332,18 @@ async fn finished(
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
-    .await
-    .unwrap_or_else(|_| panic!("the task never ended"))
+    .await;
+    match waited {
+        Ok(events) => events,
+        Err(_) => {
+            let events = service.replay_task_events(task, 0).await.unwrap();
+            let seen: Vec<String> = events
+                .iter()
+                .map(|event| format!("{:?} {:?}", event.kind, event.payload))
+                .collect();
+            panic!("the task never ended:\n{}", seen.join("\n"))
+        }
+    }
 }
 
 fn summaries(events: &[tramontana_core::contracts::EventEnvelope]) -> Vec<String> {
@@ -517,4 +527,161 @@ async fn start(state: &AppState, conversation: &ConversationId) -> TaskId {
     )
     .await
     .unwrap()
+}
+
+/// The stand-in MCP server, built beside this test by a workspace build.
+fn fake_mcp_server() -> PathBuf {
+    let path = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .and_then(Path::parent)
+        .expect("the test binary lives under the target directory")
+        .join("tramontana-fake-mcp-server");
+    assert!(
+        path.exists(),
+        "{} is missing; build the workspace (`cargo test --workspace`) first",
+        path.display()
+    );
+    path
+}
+
+/// The model greets through the App's tool once, then answers.
+fn greet(turn: usize, body: &Value) -> (Value, &'static str) {
+    match turn {
+        0 => call(turn, body, "Says hello", json!({ "name": "Ada" })),
+        _ => (json!({ "content": "The App said hello." }), "stop"),
+    }
+}
+
+/// The Apps screen, from the running window's side (ADR 0040): what an App
+/// offers and whether a model may be offered it, how it is doing, what was
+/// decided about its tools, and turning it off — with no value of anything
+/// it is given, and its program by file name only.
+#[tokio::test]
+async fn the_apps_screen_shows_an_app_its_tools_its_decisions_and_nothing_secret() {
+    let f = fixture();
+    let listener = scripted_model(&f.profile).await;
+    // Configured as the CLI's `app add` does, before the window opens.
+    {
+        let database = Database::open(&f.profile).await.unwrap();
+        let settings = tramontana_persistence::SqliteAppSettingsRepository::new(database);
+        tramontana_core::ports::AppSettingsRepository::save(
+            &settings,
+            &tramontana_core::contracts::AppConfig {
+                schema_version: tramontana_core::contracts::SCHEMA_VERSION,
+                app_id: "fixture".to_owned(),
+                display_name: "Fixture".to_owned(),
+                enabled: true,
+                launch: tramontana_core::contracts::AppLaunch {
+                    program: fake_mcp_server().display().to_string(),
+                    arguments: vec!["ok".to_owned()],
+                    working_directory: None,
+                    environment: vec![tramontana_core::contracts::AppVariable {
+                        name: "GREETING_STYLE".to_owned(),
+                        value: "a-value-that-must-not-appear".to_owned(),
+                    }],
+                    secrets: Vec::new(),
+                },
+                created_at: tramontana_core::contracts::Timestamp::new("2026-01-01T00:00:00.000Z"),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let _seen = serve(listener, greet);
+    let approver = Arc::new(DesktopApprover::waiting());
+    let (person, _asked) = a_person(Arc::clone(&approver));
+    let state = AppState::open_with_chunk_delay(&f.profile, 0, Arc::clone(&approver))
+        .await
+        .unwrap();
+
+    // What it offers, and how it is doing.
+    let apps = crate::apps::list(&state).await.unwrap();
+    assert_eq!(apps.len(), 1, "{apps:?}");
+    let app = &apps[0];
+    assert_eq!(app.status, crate::apps::AppStatus::Running);
+    assert_eq!(app.program, "tramontana-fake-mcp-server");
+    assert_eq!(app.variables, ["GREETING_STYLE"]);
+    assert!(app.protocol_version.is_some());
+    let offered: Vec<(&str, bool)> = app
+        .tools
+        .iter()
+        .map(|tool| (tool.tool_id.as_str(), tool.offered))
+        .collect();
+    assert!(
+        offered.contains(&("mcp.fixture.greeting", true)),
+        "{offered:?}"
+    );
+    assert!(
+        offered.contains(&("mcp.fixture.stamp", false)),
+        "{offered:?}"
+    );
+    // Nothing the App is given, and no folder, reaches the screen.
+    let shown = serde_json::to_string(&apps).unwrap();
+    assert!(!shown.contains("a-value-that-must-not-appear"), "{shown}");
+    assert!(
+        !shown.contains(fake_mcp_server().parent().unwrap().to_str().unwrap()),
+        "{shown}"
+    );
+
+    // A task that admits Apps calls its tool, and the person allows it.
+    let root = canonicalize_root(&f.root).unwrap();
+    let opened = crate::commands::open_root(&state, &root).await.unwrap();
+    let conversation = state
+        .service
+        .create_conversation(Some(opened.project.project_id.clone()), "Greet".to_owned())
+        .await
+        .unwrap();
+    let task = crate::commands::start_task_on(
+        &state,
+        "Ask the App to greet Ada.".to_owned(),
+        Some(conversation.conversation_id.clone()),
+        Some(ToolAdmission::READ_ONLY.with_apps()),
+        None,
+        |_| true,
+    )
+    .await
+    .unwrap();
+    let events = finished(&state.service, &task).await;
+    assert_eq!(
+        events.last().unwrap().kind,
+        TaskEventKind::TaskCompleted,
+        "{events:?}"
+    );
+
+    // What was decided about it: that call, and nothing about built-in tools.
+    let history = crate::apps::history(&state.service, "fixture")
+        .await
+        .unwrap();
+    assert!(!history.partial);
+    assert_eq!(history.decisions.len(), 1, "{:?}", history.decisions);
+    let decision = &history.decisions[0];
+    assert_eq!(decision.tool_id, "mcp.fixture.greeting");
+    assert!(decision.allowed);
+    assert_eq!(decision.outcome.as_deref(), Some("completed"));
+    assert_eq!(decision.task_id, task);
+    // Another App's history is its own.
+    assert!(
+        crate::apps::history(&state.service, "other")
+            .await
+            .unwrap()
+            .decisions
+            .is_empty()
+    );
+
+    // Turned off, it keeps running until the next start, and says so.
+    crate::apps::set_enabled(state.app_settings.as_ref(), "fixture", false)
+        .await
+        .unwrap();
+    let apps = crate::apps::list(&state).await.unwrap();
+    assert_eq!(apps[0].status, crate::apps::AppStatus::StopsOnRestart);
+    assert!(!apps[0].enabled);
+    assert!(
+        crate::apps::set_enabled(state.app_settings.as_ref(), "missing", true)
+            .await
+            .is_err()
+    );
+
+    person.abort();
+    state.shut_down().await;
 }

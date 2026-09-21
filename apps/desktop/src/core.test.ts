@@ -12,6 +12,9 @@ vi.mock("@tauri-apps/api/event", () => ({ listen }));
 
 const {
   addAnthropicEndpoint,
+  appPermissionHistory,
+  listApps,
+  setAppEnabled,
   addLlamaEndpoint,
   addOpenAiEndpoint,
   asErrorEnvelope,
@@ -273,12 +276,13 @@ describe("task options", () => {
     await startTask("hello", () => undefined, "conversation-1", {
       writes: true,
       recipes: false,
+      apps: true,
       routingMode: "localOnly",
     });
     expect(invoke).toHaveBeenLastCalledWith(
       "start_task",
       expect.objectContaining({
-        admission: { writes: true, recipes: false },
+        admission: { writes: true, recipes: false, apps: true },
         routingMode: "localOnly",
       }),
     );
@@ -381,5 +385,28 @@ describe("core IPC client", () => {
     expect(asErrorEnvelope("boom")).toBeUndefined();
     expect(asErrorEnvelope(new Error("boom"))).toBeUndefined();
     expect(asErrorEnvelope(null)).toBeUndefined();
+  });
+});
+
+describe("apps", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(undefined);
+  });
+
+  it("names each App command and sends its arguments by name", async () => {
+    invoke.mockResolvedValueOnce([]);
+    await listApps();
+    expect(invoke).toHaveBeenLastCalledWith("list_apps");
+
+    await setAppEnabled("fixture", false);
+    expect(invoke).toHaveBeenLastCalledWith("set_app_enabled", {
+      appId: "fixture",
+      enabled: false,
+    });
+
+    invoke.mockResolvedValueOnce({ decisions: [], partial: false });
+    await appPermissionHistory("fixture");
+    expect(invoke).toHaveBeenLastCalledWith("app_permission_history", { appId: "fixture" });
   });
 });

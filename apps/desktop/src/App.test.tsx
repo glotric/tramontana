@@ -262,7 +262,7 @@ describe("M2 durable desktop surface", () => {
         "Say hello",
         expect.any(Function),
         conversation.conversationId,
-        { writes: false, recipes: false, routingMode: "automatic" },
+        { writes: false, recipes: false, apps: false, routingMode: "automatic" },
       );
     });
     updates.emit({
@@ -396,7 +396,24 @@ describe("M2 durable desktop surface", () => {
         "Say hello",
         expect.any(Function),
         conversation.conversationId,
-        { writes: true, recipes: true, routingMode: "localOnly" },
+        { writes: true, recipes: true, apps: false, routingMode: "localOnly" },
+      );
+    });
+  });
+
+  it("offers a task the Apps only when the person allows them, and says so", async () => {
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    await user.click(screen.getByRole("checkbox", { name: "May use Apps" }));
+    expect(screen.getByText(/may ask to use the Apps' reading tools/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalledWith(
+        "Say hello",
+        expect.any(Function),
+        conversation.conversationId,
+        { writes: false, recipes: false, apps: true, routingMode: "automatic" },
       );
     });
   });

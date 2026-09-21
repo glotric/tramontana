@@ -24,6 +24,7 @@ tauri-build = { version = "2.6.3", features = [] }
 [dependencies]
 tramontana-core = { workspace = true }
 tramontana-composition = { workspace = true }
+tramontana-adapters-mcp = { workspace = true }
 tramontana-adapters-tools = { workspace = true }
 tramontana-persistence = { workspace = true }
 tramontana-platform = { workspace = true }
@@ -37,6 +38,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Paused time, so a five-minute approval timeout is tested in no time.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
