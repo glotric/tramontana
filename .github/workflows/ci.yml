@@ -116,6 +116,10 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # What the binaries redistribute, from the lockfiles. Run on every
+      # platform so the generated file is shown to be the same on each.
+      - name: Third-party notices
+        run: pnpm notices:check
       # The credential-store adapter is only meaningfully tested against a real
       # store, and a runner has no desktop session to provide one. Each
       # platform gets one here so the contract suite runs against the actual
