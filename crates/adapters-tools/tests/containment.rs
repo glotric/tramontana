@@ -129,6 +129,29 @@ async fn traversal_out_of_the_project_is_refused() {
     }
 }
 
+/// A path that is inside the project by every string test but reaches a
+/// device or a hidden stream. Only Windows gives these names meaning, so only
+/// Windows refuses them; the predicate itself is tested everywhere
+/// (`scope.rs`).
+#[cfg(windows)]
+#[tokio::test]
+async fn a_windows_device_or_stream_is_refused_though_it_looks_inside() {
+    let (_temp, root) = project();
+    for path in ["NUL", "src/con.txt", "COM1", "src/main.rs:hidden"] {
+        let request = authorize(
+            "builtin.fs.read",
+            &[&root],
+            serde_json::json!({ "path": path }),
+        )
+        .await;
+        let error = FilesystemTools::new()
+            .invoke(request, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::PermissionDenied, "{path}");
+    }
+}
+
 #[tokio::test]
 async fn an_absolute_path_outside_the_project_is_refused() {
     let (temp, root) = project();

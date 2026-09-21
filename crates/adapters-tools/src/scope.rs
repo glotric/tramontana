@@ -43,6 +43,17 @@ pub(crate) fn resolve_within_grant(
     // through the same containment check as a relative one.
     let candidate = Path::new(relative);
 
+    // On Windows a path can be inside the root by every string test and
+    // still not name a file there: `CON` or `nul.txt` opens a device, and
+    // `notes.txt:hidden` a stream no listing shows. Containment is about
+    // what a path reaches, so those are refused before it is judged.
+    if cfg!(windows) && reaches_past_the_file_system(candidate) {
+        return Err(deny(format!(
+            "path names a Windows device or alternate stream: {}",
+            display_safely(relative)
+        )));
+    }
+
     for granted in &request.granted_scope().roots {
         let Ok(root) = canonicalize_root(Path::new(granted)) else {
             // A root that no longer resolves grants nothing. Failing closed
@@ -66,6 +77,64 @@ pub(crate) fn resolve_within_grant(
         "path is outside every approved root: {}",
         display_safely(relative)
     )))
+}
+
+/// Whether a path names something other than a file or folder on Windows.
+///
+/// Any component that is a reserved device name — `CON`, `PRN`, `AUX`, `NUL`,
+/// `COM0`–`COM9`, `LPT0`–`LPT9`, and their superscript-digit forms — whatever
+/// its case, extension, or trailing dots and spaces; or that carries a colon,
+/// which outside the drive prefix selects an alternate data stream.
+///
+/// Pure and platform-independent, so it can be tested everywhere; it is only
+/// enforced on Windows, where these names mean something.
+fn reaches_past_the_file_system(path: &Path) -> bool {
+    path.components().any(|component| {
+        let std::path::Component::Normal(name) = component else {
+            return false;
+        };
+        let name = name.to_string_lossy();
+        name.contains(':') || is_reserved_device_name(&name)
+    })
+}
+
+fn is_reserved_device_name(name: &str) -> bool {
+    // Windows ignores everything from the first dot, and trailing spaces.
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ');
+    let upper = stem.to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) {
+        return true;
+    }
+    let mut chars = stem.chars();
+    let prefix: String = chars
+        .by_ref()
+        .take(3)
+        .collect::<String>()
+        .to_ascii_uppercase();
+    let rest: String = chars.collect();
+    (prefix == "COM" || prefix == "LPT")
+        && matches!(
+            rest.as_str(),
+            "0" | "1"
+                | "2"
+                | "3"
+                | "4"
+                | "5"
+                | "6"
+                | "7"
+                | "8"
+                | "9"
+                | "\u{b9}"
+                | "\u{b2}"
+                | "\u{b3}"
+        )
 }
 
 /// Whether one granted root contains both paths.
@@ -152,4 +221,56 @@ pub(crate) fn primary_root(
                 CorrelationId::new(request.invocation_id().as_str()),
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::reaches_past_the_file_system;
+
+    #[test]
+    fn a_windows_device_name_is_recognised_however_it_is_spelled() {
+        for path in [
+            "CON",
+            "con",
+            "nul.txt",
+            "src/aux.c",
+            "Prn.tar.gz",
+            "COM1",
+            "lpt9.log",
+            "com\u{b9}",
+            "NUL ",
+            "NUL.",
+            "CONIN$",
+            "deep/nested/conout$.txt",
+        ] {
+            assert!(reaches_past_the_file_system(Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn an_alternate_data_stream_is_recognised() {
+        assert!(reaches_past_the_file_system(Path::new("notes.txt:hidden")));
+        assert!(reaches_past_the_file_system(Path::new(
+            "src/main.rs::$DATA"
+        )));
+    }
+
+    #[test]
+    fn ordinary_names_that_only_resemble_a_device_are_left_alone() {
+        for path in [
+            "console.log",
+            "icon.png",
+            "nullable.rs",
+            "auxiliary/notes.md",
+            "COM10",
+            "LPT",
+            "COMA",
+            "src/com1x.rs",
+            "greeting.txt",
+        ] {
+            assert!(!reaches_past_the_file_system(Path::new(path)), "{path}");
+        }
+    }
 }
