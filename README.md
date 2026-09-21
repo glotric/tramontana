@@ -35,8 +35,9 @@ gates V1–V3 are closed; each left an evidence note in
 - **In progress:** gate V4, whether someone other than the author can operate
   the desktop from this README. Its automated checks pass; its
   demonstration has not run.
-- **Built, not finished:** MCP Apps over stdio (M9). Configured from the CLI;
-  the desktop's Apps screen waits for V4's demonstration.
+- **Built:** MCP Apps over stdio (M9). Added from the CLI
+  (`tramontana app add`); seen, turned on and off, and their decisions read
+  in the desktop's **Apps** view; allowed for a task with **May use Apps**.
 - **Deferred from Beta 1:** an external coding worker (M10, ADR 0038), and
   the rest listed in the [draft release notes](docs/RELEASE_NOTES_BETA_1.md).
 
@@ -94,9 +95,10 @@ Declaring a recipe grants nothing; every run is still put to you. See
 [configuration](docs/CONFIGURATION.md) for the rest of that file.
 
 **3. Start a task.** Add a conversation, then write the goal in the
-composer. By default a task may only read. Tick **May edit files** or **May
-run recipes** to let the model ask for more, and choose where models may
-run: **Local only** keeps every model request on this device.
+composer. By default a task may only read. Tick **May edit files**, **May
+run recipes** or **May use Apps** to let the model ask for more, and choose
+where models may run: **Local only** keeps every model request on this
+device.
 
 **4. Answer what it asks.** Each edit and each command stops the task until
 you answer. The question says what will happen — the file, or the exact
