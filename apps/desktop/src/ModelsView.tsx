@@ -32,6 +32,7 @@ const KIND_TEXT: Record<ConfiguredEndpoint["kind"], string> = {
   openAiCompatible: "OpenAI-compatible",
   anthropic: "Anthropic",
   llamaServer: "llama-server started by Tramontana",
+  mlxServer: "mlx_lm.server started by Tramontana",
 };
 
 /** Whether an endpoint is in use now, in words. */

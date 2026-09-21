@@ -665,6 +665,43 @@ pub(crate) async fn add_llama_endpoint(
     .map(Some)
 }
 
+/// Configure an `mlx_lm.server` this application starts and stops, from an
+/// executable and a model folder the person picks. `None` when they cancel
+/// either picker. Apple Silicon only: elsewhere it is saved but unavailable.
+/// Takes effect the next time Tramontana opens.
+///
+/// # Errors
+///
+/// See [`settings::add`].
+#[tauri::command]
+pub(crate) async fn add_mlx_endpoint(
+    endpoint_id: String,
+    display_name: Option<String>,
+    model_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<bool>, ErrorEnvelope> {
+    let Some(binary_path) = pick_file(&app, "Choose the mlx_lm.server executable").await? else {
+        return Ok(None);
+    };
+    let Some(model_path) = pick_folder(&app, "Choose the MLX model folder").await? else {
+        return Ok(None);
+    };
+    settings::add(
+        state.settings.as_ref(),
+        &endpoint_id,
+        display_name,
+        settings::NewEndpoint::MlxServer {
+            binary_path,
+            model_path,
+            model_id,
+        },
+        SystemClock::new().now(),
+    )
+    .await
+    .map(Some)
+}
+
 /// Turn an endpoint on or off, keeping its configuration.
 ///
 /// # Errors

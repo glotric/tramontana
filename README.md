@@ -76,7 +76,10 @@ the file `TRAMONTANA_PROFILE` names.
 **1. Add a model.** Open **Models and credentials**. For a local model,
 choose **llama-server started by Tramontana**, give it a name and the
 model's name, and **Choose files and add…** to pick the executable and the
-model file. Tick **Tool calls verified** only once you know the model makes
+model file. On a Mac with Apple Silicon, **mlx_lm.server started by
+Tramontana** works the same way with an `mlx_lm.server` you installed
+(`pip install mlx-lm`) and an MLX model folder. Tick **Tool calls verified**
+only once you know the model makes
 native tool calls. A new endpoint is used the next time Tramontana starts:
 quit and run `pnpm dev` again.
 

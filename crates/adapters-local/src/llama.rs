@@ -61,12 +61,46 @@ const LOG_LINES: usize = 200;
 /// Longest single log line retained.
 const LOG_LINE_BYTES: usize = 2000;
 
+/// Which kind of local runtime to supervise.
+///
+/// Both speak the OpenAI chat-completions format on loopback, take `--model`,
+/// `--host` and `--port`, and report readiness on `/health` with 200, or 503
+/// while loading; that is why one supervisor serves both (ADR 0010).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeKind {
+    /// `llama-server` from llama.cpp, serving one GGUF model file.
+    LlamaServer,
+    /// `mlx_lm.server` from MLX LM, serving one MLX model folder. Apple
+    /// Silicon only; it reports no build to check.
+    MlxLm,
+}
+
+impl RuntimeKind {
+    /// What the runtime is called, in messages.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::LlamaServer => "llama-server",
+            Self::MlxLm => "mlx_lm.server",
+        }
+    }
+}
+
+/// Whether MLX can run on this machine: macOS on Apple Silicon.
+#[must_use]
+pub const fn mlx_supported() -> bool {
+    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+}
+
 /// What to start, and where.
 #[derive(Debug, Clone)]
 pub struct LlamaServerSpec {
-    /// The `llama-server` executable the user chose. Never discovered.
+    /// Which runtime this is.
+    pub kind: RuntimeKind,
+    /// The executable the user chose. Never discovered.
     pub binary: PathBuf,
-    /// The GGUF model file the user chose.
+    /// The model the user chose: a GGUF file for `llama-server`, a model
+    /// folder for `mlx_lm.server`.
     pub model: PathBuf,
     /// Port to bind, or `None` to have one allocated.
     pub port: Option<u16>,
@@ -87,6 +121,7 @@ impl LlamaServerSpec {
     #[must_use]
     pub fn new(binary: impl Into<PathBuf>, model: impl Into<PathBuf>) -> Self {
         Self {
+            kind: RuntimeKind::LlamaServer,
             binary: binary.into(),
             model: model.into(),
             port: None,
@@ -96,6 +131,16 @@ impl LlamaServerSpec {
             // child that exits fails immediately whatever this says.
             readiness_timeout: Duration::from_secs(120),
             records: None,
+        }
+    }
+
+    /// An `mlx_lm.server` serving the MLX model folder `model`, with the
+    /// same bounds.
+    #[must_use]
+    pub fn mlx(binary: impl Into<PathBuf>, model: impl Into<PathBuf>) -> Self {
+        Self {
+            kind: RuntimeKind::MlxLm,
+            ..Self::new(binary, model)
         }
     }
 }
@@ -114,11 +159,14 @@ pub struct ProbedVersion {
 #[non_exhaustive]
 pub enum StartError {
     /// The binary is missing, not executable, or not a file.
-    #[error("the llama-server binary is not usable: {0}")]
+    #[error("the runtime's executable is not usable: {0}")]
     Binary(String),
-    /// The model file is missing.
-    #[error("the model file is not usable: {0}")]
+    /// The model is missing, or is not the kind of path the runtime needs.
+    #[error("the model is not usable: {0}")]
     Model(String),
+    /// This runtime cannot run on this machine.
+    #[error("{0}")]
+    Unsupported(String),
     /// The binary is older than this adapter supports.
     #[error("llama-server build {found} is older than the supported minimum {minimum}")]
     TooOld {
@@ -131,10 +179,10 @@ pub enum StartError {
     #[error("could not reserve a local port: {0}")]
     Port(String),
     /// The process would not start at all.
-    #[error("could not start llama-server: {0}")]
+    #[error("could not start the runtime: {0}")]
     Spawn(String),
     /// The process exited before it became ready.
-    #[error("llama-server exited before it was ready ({status}); last output: {tail}")]
+    #[error("the runtime exited before it was ready ({status}); last output: {tail}")]
     ExitedEarly {
         /// How it exited.
         status: String,
@@ -142,7 +190,7 @@ pub enum StartError {
         tail: String,
     },
     /// The process stayed alive but never reported itself healthy.
-    #[error("llama-server did not become ready within {seconds}s; last output: {tail}")]
+    #[error("the runtime did not become ready within {seconds}s; last output: {tail}")]
     NotReady {
         /// The bound that elapsed.
         seconds: u64,
@@ -157,6 +205,7 @@ impl From<StartError> for ErrorEnvelope {
             StartError::Binary(_) | StartError::Model(_) | StartError::TooOld { .. } => {
                 ErrorCode::InvalidRequest
             }
+            StartError::Unsupported(_) => ErrorCode::CapabilityUnsupported,
             StartError::Port(_) | StartError::Spawn(_) => ErrorCode::Internal,
             StartError::ExitedEarly { .. } | StartError::NotReady { .. } => {
                 ErrorCode::ProviderUnavailable
@@ -264,22 +313,54 @@ impl SupervisedLlamaServer {
     /// to act on: a version, an exit status and the runtime's own output, or
     /// the bound that elapsed.
     pub async fn start(spec: &LlamaServerSpec) -> Result<Self, StartError> {
-        if !spec.model.is_file() {
-            return Err(StartError::Model(format!(
-                "{} is not a file",
-                spec.model.display()
-            )));
-        }
-
-        let version = probe_version(&spec.binary).await?;
-        if let Some(build) = version.build
-            && build < MINIMUM_BUILD
-        {
-            return Err(StartError::TooOld {
-                found: build,
-                minimum: MINIMUM_BUILD,
-            });
-        }
+        let version = match spec.kind {
+            RuntimeKind::LlamaServer => {
+                if !spec.model.is_file() {
+                    return Err(StartError::Model(format!(
+                        "{} is not a file",
+                        spec.model.display()
+                    )));
+                }
+                let version = probe_version(&spec.binary).await?;
+                if let Some(build) = version.build
+                    && build < MINIMUM_BUILD
+                {
+                    return Err(StartError::TooOld {
+                        found: build,
+                        minimum: MINIMUM_BUILD,
+                    });
+                }
+                version
+            }
+            RuntimeKind::MlxLm => {
+                // Refused before anything is started: MLX needs Apple
+                // Silicon, and elsewhere the endpoint is simply unavailable,
+                // not a reason the application cannot open.
+                if !mlx_supported() {
+                    return Err(StartError::Unsupported(
+                        "MLX runs only on a Mac with Apple Silicon".to_owned(),
+                    ));
+                }
+                if !spec.model.is_dir() {
+                    return Err(StartError::Model(format!(
+                        "{} is not a folder; an MLX model is a folder of weights, tokenizer and config",
+                        spec.model.display()
+                    )));
+                }
+                if !spec.binary.is_file() {
+                    return Err(StartError::Binary(format!(
+                        "{} is not a file",
+                        spec.binary.display()
+                    )));
+                }
+                // `mlx_lm.server` has no `--version`, so there is no build
+                // to check; its answering `/health` is what is trusted.
+                ProbedVersion {
+                    build: None,
+                    reported: RuntimeKind::MlxLm.name().to_owned(),
+                }
+            }
+        };
 
         let port = match spec.port {
             Some(port) => port,

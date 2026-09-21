@@ -77,6 +77,7 @@ pub fn run() {
             commands::add_openai_endpoint,
             commands::add_anthropic_endpoint,
             commands::add_llama_endpoint,
+            commands::add_mlx_endpoint,
             commands::set_endpoint_enabled,
             commands::set_endpoint_tool_calls,
             commands::remove_endpoint,

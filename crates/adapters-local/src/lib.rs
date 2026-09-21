@@ -15,5 +15,6 @@ mod llama;
 pub mod runtime_records;
 
 pub use llama::{
-    LlamaServerSpec, MINIMUM_BUILD, ProbedVersion, StartError, SupervisedLlamaServer, probe_version,
+    LlamaServerSpec, MINIMUM_BUILD, ProbedVersion, RuntimeKind, StartError, SupervisedLlamaServer,
+    mlx_supported, probe_version,
 };

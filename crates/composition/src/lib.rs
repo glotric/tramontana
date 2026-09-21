@@ -271,7 +271,10 @@ pub async fn assemble_models_recording(
             continue;
         }
         if supervision == Supervision::Skip
-            && matches!(endpoint.config, ProviderConfig::LlamaServer { .. })
+            && matches!(
+                endpoint.config,
+                ProviderConfig::LlamaServer { .. } | ProviderConfig::MlxServer { .. }
+            )
         {
             plane.skipped.push(endpoint.endpoint_id.clone());
             continue;
@@ -349,8 +352,22 @@ async fn bring_up(
             model_path,
             model_id,
             extra_args,
+        }
+        | ProviderConfig::MlxServer {
+            binary_path,
+            model_path,
+            model_id,
+            extra_args,
         } => {
-            let mut spec = LlamaServerSpec::new(binary_path, model_path);
+            // One supervisor for both runtimes (ADR 0010); only what it
+            // checks before starting differs, including MLX's refusal off
+            // Apple Silicon, which leaves the endpoint unavailable rather
+            // than the application unable to open.
+            let mut spec = if matches!(endpoint.config, ProviderConfig::MlxServer { .. }) {
+                LlamaServerSpec::mlx(binary_path, model_path)
+            } else {
+                LlamaServerSpec::new(binary_path, model_path)
+            };
             spec.extra_args = extra_args.clone();
             spec.records = records.map(std::path::Path::to_path_buf);
             let runtime = SupervisedLlamaServer::start(&spec).await?;

@@ -123,7 +123,7 @@ export interface CredentialStatus {
 export interface ConfiguredEndpoint {
   readonly endpointId: string;
   readonly displayName: string;
-  readonly kind: "openAiCompatible" | "anthropic" | "llamaServer";
+  readonly kind: "openAiCompatible" | "anthropic" | "llamaServer" | "mlxServer";
   readonly modelId: string;
   /** Whether work sent here leaves the device. Derived, never declared. */
   readonly leavesTheDevice: boolean;
@@ -200,6 +200,22 @@ export async function addAnthropicEndpoint(
 export async function addLlamaEndpoint(endpoint: NewEndpoint): Promise<boolean | undefined> {
   return (
     (await invoke<boolean | null>("add_llama_endpoint", {
+      endpointId: endpoint.endpointId,
+      displayName: endpoint.displayName ?? null,
+      modelId: endpoint.modelId,
+    })) ?? undefined
+  );
+}
+
+/**
+ * Configure an `mlx_lm.server` Tramontana starts (ADR 0010). The shell asks
+ * the native picker for the executable and the model folder; resolves
+ * `undefined` when either is cancelled, and nothing is saved. Runs only on
+ * Apple Silicon; elsewhere it is saved and shown as unavailable.
+ */
+export async function addMlxEndpoint(endpoint: NewEndpoint): Promise<boolean | undefined> {
+  return (
+    (await invoke<boolean | null>("add_mlx_endpoint", {
       endpointId: endpoint.endpointId,
       displayName: endpoint.displayName ?? null,
       modelId: endpoint.modelId,

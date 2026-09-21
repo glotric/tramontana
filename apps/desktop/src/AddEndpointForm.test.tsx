@@ -9,20 +9,27 @@ type CoreModule = typeof CoreModuleShape;
 const addOpenAiEndpoint = vi.hoisted(() => vi.fn());
 const addAnthropicEndpoint = vi.hoisted(() => vi.fn());
 const addLlamaEndpoint = vi.hoisted(() => vi.fn());
+const addMlxEndpoint = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
-  return { ...actual, addOpenAiEndpoint, addAnthropicEndpoint, addLlamaEndpoint };
+  return { ...actual, addOpenAiEndpoint, addAnthropicEndpoint, addLlamaEndpoint, addMlxEndpoint };
 });
 
 const { AddEndpointForm } = await import("./AddEndpointForm.js");
 
 describe("adding an endpoint", () => {
   beforeEach(() => {
-    for (const mock of [addOpenAiEndpoint, addAnthropicEndpoint, addLlamaEndpoint]) {
+    for (const mock of [
+      addOpenAiEndpoint,
+      addAnthropicEndpoint,
+      addLlamaEndpoint,
+      addMlxEndpoint,
+    ]) {
       mock.mockReset();
     }
     addLlamaEndpoint.mockResolvedValue(false);
+    addMlxEndpoint.mockResolvedValue(false);
     addOpenAiEndpoint.mockResolvedValue(true);
     addAnthropicEndpoint.mockResolvedValue(true);
   });
@@ -49,6 +56,29 @@ describe("adding an endpoint", () => {
     });
     expect(onAdded).toHaveBeenCalledWith("Added llama. Work sent to it runs on this device.");
     expect(screen.getByLabelText("Name")).toHaveValue("");
+  });
+
+  it("adds an mlx_lm.server from picked files, says it needs Apple Silicon, and runs here", async () => {
+    const onAdded = vi.fn();
+    const user = userEvent.setup();
+    render(<AddEndpointForm onAdded={onAdded} />);
+
+    await user.click(
+      screen.getByRole("radio", { name: "mlx_lm.server started by Tramontana (Apple Silicon)" }),
+    );
+    expect(screen.queryByLabelText("Address")).not.toBeInTheDocument();
+    expect(screen.getByText(/MLX model folder/)).toBeInTheDocument();
+    expect(screen.getByText(/only on a Mac with Apple Silicon/)).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Name"), "mlx");
+    await user.type(screen.getByLabelText("Model"), "qwen-mlx");
+    await user.click(screen.getByRole("button", { name: "Choose files and add…" }));
+
+    await waitFor(() => {
+      expect(addMlxEndpoint).toHaveBeenCalledWith({ endpointId: "mlx", modelId: "qwen-mlx" });
+    });
+    expect(addLlamaEndpoint).not.toHaveBeenCalled();
+    expect(onAdded).toHaveBeenCalledWith("Added mlx. Work sent to it runs on this device.");
   });
 
   it("adds nothing, and says so, when no file is chosen", async () => {

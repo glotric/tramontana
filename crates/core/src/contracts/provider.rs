@@ -72,6 +72,24 @@ pub enum ProviderConfig {
         #[serde(skip_serializing_if = "Vec::is_empty", default)]
         extra_args: Vec<String>,
     },
+    /// An `mlx_lm.server` this application starts and stops (ADR 0010).
+    ///
+    /// Apple Silicon only; elsewhere it is configured but unavailable. The
+    /// executable and the model folder are paths the user chose: nothing is
+    /// downloaded, no Python is bundled, and `PATH` is not searched.
+    #[serde(rename_all = "camelCase")]
+    MlxServer {
+        /// The `mlx_lm.server` executable, usually inside a virtual
+        /// environment the user made.
+        binary_path: String,
+        /// The MLX model folder: weights, tokenizer and config.
+        model_path: String,
+        /// The name the model is reported under.
+        model_id: String,
+        /// Extra arguments, passed through verbatim. Never a credential.
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        extra_args: Vec<String>,
+    },
 }
 
 impl ProviderConfig {
@@ -82,6 +100,7 @@ impl ProviderConfig {
             Self::OpenAiCompatible { .. } => "openAiCompatible",
             Self::Anthropic { .. } => "anthropic",
             Self::LlamaServer { .. } => "llamaServer",
+            Self::MlxServer { .. } => "mlxServer",
         }
     }
 
@@ -91,7 +110,8 @@ impl ProviderConfig {
         match self {
             Self::OpenAiCompatible { model_id, .. }
             | Self::Anthropic { model_id, .. }
-            | Self::LlamaServer { model_id, .. } => model_id,
+            | Self::LlamaServer { model_id, .. }
+            | Self::MlxServer { model_id, .. } => model_id,
         }
     }
 
@@ -101,7 +121,7 @@ impl ProviderConfig {
         match self {
             Self::OpenAiCompatible { credential, .. } => credential.as_ref(),
             Self::Anthropic { credential, .. } => Some(credential),
-            Self::LlamaServer { .. } => None,
+            Self::LlamaServer { .. } | Self::MlxServer { .. } => None,
         }
     }
 
@@ -115,7 +135,8 @@ impl ProviderConfig {
     #[must_use]
     pub fn location(&self) -> ModelLocation {
         match self {
-            Self::LlamaServer { .. } => ModelLocation::Local,
+            // A supervised process is on this device by construction.
+            Self::LlamaServer { .. } | Self::MlxServer { .. } => ModelLocation::Local,
             // Anthropic is a third party wherever its URL points. A loopback
             // proxy in front of it is still a route off this device.
             Self::Anthropic { .. } => ModelLocation::Cloud,

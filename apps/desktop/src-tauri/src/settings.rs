@@ -82,6 +82,13 @@ pub(crate) enum NewEndpoint {
         model_path: std::path::PathBuf,
         model_id: String,
     },
+    /// An `mlx_lm.server` this application starts and stops (ADR 0010). The
+    /// executable and the model folder come from the native picker.
+    MlxServer {
+        binary_path: std::path::PathBuf,
+        model_path: std::path::PathBuf,
+        model_id: String,
+    },
 }
 
 /// Every configured endpoint, with whether its credential is stored.
@@ -181,6 +188,19 @@ pub(crate) async fn add(
             ProviderConfig::LlamaServer {
                 binary_path: check_file("the llama-server executable", &binary_path)?,
                 model_path: check_file("the model file", &model_path)?,
+                model_id,
+                extra_args: Vec::new(),
+            }
+        }
+        NewEndpoint::MlxServer {
+            binary_path,
+            model_path,
+            model_id,
+        } => {
+            check_model(&model_id)?;
+            ProviderConfig::MlxServer {
+                binary_path: check_file("the mlx_lm.server executable", &binary_path)?,
+                model_path: check_folder("the MLX model", &model_path)?,
                 model_id,
                 extra_args: Vec::new(),
             }
@@ -397,6 +417,16 @@ fn check_file(what: &str, path: &Path) -> Result<String, ErrorEnvelope> {
     Ok(path.display().to_string())
 }
 
+/// An MLX model is a folder of weights, tokenizer and config, not one file.
+fn check_folder(what: &str, path: &Path) -> Result<String, ErrorEnvelope> {
+    if !path.is_dir() {
+        return Err(invalid(format!(
+            "{what} is not a folder; choose the folder holding its weights and config"
+        )));
+    }
+    Ok(path.display().to_string())
+}
+
 fn invalid(message: impl Into<String>) -> ErrorEnvelope {
     failure(ErrorCode::InvalidRequest, message)
 }
@@ -541,6 +571,52 @@ mod tests {
         let listed = list(&settings, &InMemorySecretVault::new()).await.unwrap();
         assert_eq!(listed[0].kind, "llamaServer");
         assert_eq!(listed[0].display_name, "Local Qwen");
+    }
+
+    #[tokio::test]
+    async fn an_mlx_runtime_needs_a_model_folder_and_runs_here() {
+        let directory = tempfile::tempdir().unwrap();
+        let settings = settings(&directory).await;
+        let binary = directory.path().join("mlx_lm.server");
+        let folder = directory.path().join("Qwen-MLX");
+        let file = directory.path().join("model.safetensors");
+        std::fs::write(&binary, b"").unwrap();
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(&file, b"").unwrap();
+
+        // One weights file is not a model: MLX needs the folder around it.
+        let refused = add(
+            &settings,
+            "mlx",
+            None,
+            NewEndpoint::MlxServer {
+                binary_path: binary.clone(),
+                model_path: file,
+                model_id: "qwen".to_owned(),
+            },
+            now(),
+        )
+        .await
+        .unwrap_err();
+        assert!(refused.message.contains("is not a folder"), "{refused:?}");
+
+        let leaves = add(
+            &settings,
+            "mlx",
+            Some("Local Qwen (MLX)".to_owned()),
+            NewEndpoint::MlxServer {
+                binary_path: binary,
+                model_path: folder,
+                model_id: "qwen".to_owned(),
+            },
+            now(),
+        )
+        .await
+        .unwrap();
+        assert!(!leaves, "a runtime Tramontana starts is on this device");
+        let listed = list(&settings, &InMemorySecretVault::new()).await.unwrap();
+        assert_eq!(listed[0].kind, "mlxServer");
+        assert!(!listed[0].leaves_the_device);
     }
 
     #[tokio::test]

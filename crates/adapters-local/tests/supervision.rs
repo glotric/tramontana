@@ -381,3 +381,80 @@ async fn a_build_older_than_the_minimum_is_refused_with_both_numbers() {
     assert!(rendered.contains('1'), "{rendered}");
     assert!(rendered.contains(&MINIMUM_BUILD.to_string()), "{rendered}");
 }
+
+/// A folder that stands in for an MLX model: weights, tokenizer and config.
+fn model_folder(directory: &tempfile::TempDir) -> PathBuf {
+    let path = directory.path().join("mlx-model");
+    std::fs::create_dir_all(&path).unwrap();
+    std::fs::write(path.join("config.json"), b"{}").unwrap();
+    path
+}
+
+/// The stand-in answers the same `/health` and chat-completions requests
+/// `mlx_lm.server` does, so it serves for both kinds; what differs is what
+/// the supervisor checks before starting it.
+fn mlx_spec(directory: &tempfile::TempDir) -> LlamaServerSpec {
+    let mut spec = LlamaServerSpec::mlx(fake_binary(), model_folder(directory));
+    spec.readiness_timeout = Duration::from_secs(10);
+    spec
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[tokio::test]
+async fn an_mlx_runtime_serves_its_model_folder_and_reports_healthy() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut server = start_in_mode(&mlx_spec(&directory), "ready", 0)
+        .await
+        .unwrap();
+    assert!(server.base_url().starts_with("http://127.0.0.1:"));
+    assert_eq!(server.health().await, Health::Available);
+    // `mlx_lm.server` reports no build, so none is claimed for it.
+    assert_eq!(server.version().build, None);
+    server.shutdown().await;
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[tokio::test]
+async fn an_mlx_model_must_be_a_folder_and_nothing_runs_otherwise() {
+    let directory = tempfile::tempdir().unwrap();
+    // A GGUF file where a model folder belongs: a person who picked the
+    // wrong kind of model is told so, and no process starts.
+    let spec = LlamaServerSpec::mlx(fake_binary(), model_file(&directory));
+    let error = SupervisedLlamaServer::start(&spec).await.unwrap_err();
+    assert!(
+        matches!(&error, StartError::Model(why) if why.contains("is not a folder")),
+        "{error:?}"
+    );
+
+    let missing = LlamaServerSpec::mlx(directory.path().join("absent"), model_folder(&directory));
+    assert!(matches!(
+        SupervisedLlamaServer::start(&missing).await.unwrap_err(),
+        StartError::Binary(_)
+    ));
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[tokio::test]
+async fn mlx_is_unavailable_off_apple_silicon_and_starts_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let error = SupervisedLlamaServer::start(&mlx_spec(&directory))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, StartError::Unsupported(why) if why.contains("Apple Silicon")),
+        "{error:?}"
+    );
+    let envelope: tramontana_core::contracts::ErrorEnvelope = error.into();
+    assert_eq!(
+        envelope.code,
+        tramontana_core::contracts::ErrorCode::CapabilityUnsupported
+    );
+}
+
+#[test]
+fn only_apple_silicon_macs_can_run_mlx() {
+    assert_eq!(
+        tramontana_adapters_local::mlx_supported(),
+        cfg!(all(target_os = "macos", target_arch = "aarch64"))
+    );
+}

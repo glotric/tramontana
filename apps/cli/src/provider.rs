@@ -33,13 +33,17 @@ pub(crate) struct ProviderArgs {
 enum ProviderCommand {
     /// Configure an endpoint speaking the OpenAI chat-completions format.
     ///
-    /// Covers `llama-server`, Ollama, LM Studio, vLLM, OpenAI itself, and
-    /// `mlx_lm.server` (ADR 0010).
+    /// Covers a `llama-server`, Ollama, LM Studio, vLLM, OpenAI itself, or an
+    /// `mlx_lm.server` already running elsewhere.
     AddOpenai(AddOpenAiArgs),
     /// Configure Anthropic's Messages API.
     AddAnthropic(AddAnthropicArgs),
     /// Configure a `llama-server` this application starts and stops.
     AddLlama(AddLlamaArgs),
+    /// Configure an `mlx_lm.server` this application starts and stops.
+    ///
+    /// Apple Silicon only. Elsewhere it is saved and listed, but unavailable.
+    AddMlx(AddMlxArgs),
     /// List configured endpoints.
     List(ProfileArgs),
     /// Turn an endpoint on or off without losing its configuration.
@@ -125,6 +129,28 @@ struct AddLlamaArgs {
 }
 
 #[derive(Debug, Args)]
+struct AddMlxArgs {
+    /// Identifier for this endpoint.
+    #[arg(value_name = "ID")]
+    id: String,
+    /// The `mlx_lm.server` executable, usually in a virtual environment you
+    /// made with `pip install mlx-lm`. Never discovered from `PATH`.
+    #[arg(long, value_name = "PATH")]
+    binary: std::path::PathBuf,
+    /// The MLX model folder: weights, tokenizer and config.
+    #[arg(long, value_name = "PATH")]
+    model_path: std::path::PathBuf,
+    /// The name the model is reported under.
+    #[arg(long, value_name = "MODEL")]
+    model: String,
+    /// Display name. Defaults to the identifier.
+    #[arg(long, value_name = "NAME")]
+    name: Option<String>,
+    #[command(flatten)]
+    profile: ProfileArgs,
+}
+
+#[derive(Debug, Args)]
 struct ToggleArgs {
     /// Which endpoint.
     #[arg(value_name = "ID")]
@@ -181,6 +207,20 @@ pub(crate) async fn execute(args: ProviderArgs) -> ExitCode {
                 &args.id,
                 args.name.clone(),
                 ProviderConfig::LlamaServer {
+                    binary_path: args.binary.display().to_string(),
+                    model_path: args.model_path.display().to_string(),
+                    model_id: args.model.clone(),
+                    extra_args: Vec::new(),
+                },
+            )
+            .await
+        }
+        ProviderCommand::AddMlx(args) => {
+            add(
+                args.profile,
+                &args.id,
+                args.name.clone(),
+                ProviderConfig::MlxServer {
                     binary_path: args.binary.display().to_string(),
                     model_path: args.model_path.display().to_string(),
                     model_id: args.model.clone(),

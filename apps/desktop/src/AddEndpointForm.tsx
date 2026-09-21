@@ -3,6 +3,7 @@ import { useState } from "react";
 import {
   addAnthropicEndpoint,
   addLlamaEndpoint,
+  addMlxEndpoint,
   addOpenAiEndpoint,
   asErrorEnvelope,
 } from "./core.js";
@@ -21,10 +22,14 @@ import {
  * so, because that is what decides where a person's data goes.
  */
 
-type Kind = "llamaServer" | "openAiCompatible" | "anthropic";
+type Kind = "llamaServer" | "mlxServer" | "openAiCompatible" | "anthropic";
+
+/** The kinds Tramontana starts itself, from files the person picks. */
+const STARTED: ReadonlySet<Kind> = new Set<Kind>(["llamaServer", "mlxServer"]);
 
 const KINDS: readonly (readonly [Kind, string])[] = [
   ["llamaServer", "llama-server started by Tramontana"],
+  ["mlxServer", "mlx_lm.server started by Tramontana (Apple Silicon)"],
   ["openAiCompatible", "OpenAI-compatible server"],
   ["anthropic", "Anthropic"],
 ];
@@ -51,7 +56,7 @@ export function AddEndpointForm({ onAdded }: AddEndpointFormProps): React.JSX.El
   const ready =
     endpointId.trim() !== "" &&
     modelId.trim() !== "" &&
-    (kind === "llamaServer" || address.trim() !== "") &&
+    (STARTED.has(kind) || address.trim() !== "") &&
     (kind !== "anthropic" || credentialKey.trim() !== "");
 
   const submit = async (): Promise<void> => {
@@ -67,6 +72,8 @@ export function AddEndpointForm({ onAdded }: AddEndpointFormProps): React.JSX.El
       let leaves: boolean | undefined;
       if (kind === "llamaServer") {
         leaves = await addLlamaEndpoint(common);
+      } else if (kind === "mlxServer") {
+        leaves = await addMlxEndpoint(common);
       } else if (kind === "anthropic") {
         leaves = await addAnthropicEndpoint({
           ...common,
@@ -81,7 +88,7 @@ export function AddEndpointForm({ onAdded }: AddEndpointFormProps): React.JSX.El
         });
       }
       if (leaves === undefined) {
-        setNote("Nothing was added: no file was chosen.");
+        setNote("Nothing was added: nothing was chosen.");
         return;
       }
       onAdded(
@@ -166,6 +173,12 @@ export function AddEndpointForm({ onAdded }: AddEndpointFormProps): React.JSX.El
           The llama-server executable and the GGUF model file are chosen in the next two dialogs.
           Nothing is downloaded, and your PATH is not searched.
         </p>
+      ) : kind === "mlxServer" ? (
+        <p className="add-endpoint-hint">
+          The mlx_lm.server executable, usually in a virtual environment where you installed mlx-lm,
+          and the MLX model folder are chosen in the next two dialogs. It runs only on a Mac with
+          Apple Silicon. Nothing is downloaded, and your PATH is not searched.
+        </p>
       ) : (
         <>
           <label>
@@ -208,7 +221,7 @@ export function AddEndpointForm({ onAdded }: AddEndpointFormProps): React.JSX.El
       )}
 
       <button type="submit" className="button button--primary" disabled={busy || !ready}>
-        {kind === "llamaServer" ? "Choose files and add…" : "Add endpoint"}
+        {STARTED.has(kind) ? "Choose files and add…" : "Add endpoint"}
       </button>
     </form>
   );

@@ -190,3 +190,97 @@ async fn a_supervised_runtime_whose_binary_is_missing_fails_without_stopping_the
     assert_eq!(plane.failures[0].endpoint_id, "llama");
     plane.shutdown().await;
 }
+
+/// An MLX endpoint whose runtime is the stand-in `llama-server`, which
+/// answers the same `/health` and chat-completions requests.
+fn mlx(directory: &std::path::Path, binary: &std::path::Path) -> ProviderEndpoint {
+    let folder = directory.join("mlx-model");
+    std::fs::create_dir_all(&folder).unwrap();
+    ProviderEndpoint::new(
+        "mlx",
+        "Local MLX",
+        ProviderConfig::MlxServer {
+            binary_path: binary.display().to_string(),
+            model_path: folder.display().to_string(),
+            model_id: "qwen-mlx".to_owned(),
+            extra_args: Vec::new(),
+        },
+        at(),
+    )
+}
+
+/// The stand-in runtime, built beside this test by a workspace build.
+fn fake_llama_server() -> std::path::PathBuf {
+    let path = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("the test binary lives under the target directory")
+        .join(format!(
+            "tramontana-fake-llama-server{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+    assert!(
+        path.exists(),
+        "{} is missing; build the workspace (`cargo test --workspace`) first",
+        path.display()
+    );
+    path
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[tokio::test]
+async fn an_mlx_endpoint_becomes_a_local_provider_on_apple_silicon() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut plane = assemble_models(
+        &[mlx(directory.path(), &fake_llama_server())],
+        &resolver(),
+        Supervision::Start,
+    )
+    .await;
+
+    assert!(plane.failures.is_empty(), "{:?}", plane.failures);
+    assert_eq!(plane.providers.len(), 1);
+    let models = plane.providers[0].list_models().await;
+    assert_eq!(models[0].model_id, "qwen-mlx");
+    assert_eq!(models[0].location, ModelLocation::Local);
+    plane.shutdown().await;
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[tokio::test]
+async fn an_mlx_endpoint_is_unavailable_elsewhere_and_the_rest_still_start() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut plane = assemble_models(
+        &[
+            mlx(directory.path(), &fake_llama_server()),
+            openai("good", "http://localhost:8080"),
+        ],
+        &resolver(),
+        Supervision::Start,
+    )
+    .await;
+
+    assert_eq!(plane.providers.len(), 1);
+    assert_eq!(plane.failures.len(), 1);
+    assert_eq!(plane.failures[0].endpoint_id, "mlx");
+    assert!(
+        plane.failures[0].error.message.contains("Apple Silicon"),
+        "{:?}",
+        plane.failures[0]
+    );
+    plane.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_mlx_endpoint_is_skipped_like_any_supervised_runtime_when_asked() {
+    let directory = tempfile::tempdir().unwrap();
+    let plane = assemble_models(
+        &[mlx(directory.path(), &fake_llama_server())],
+        &resolver(),
+        Supervision::Skip,
+    )
+    .await;
+    assert!(plane.providers.is_empty());
+    assert_eq!(plane.skipped, ["mlx"]);
+}
