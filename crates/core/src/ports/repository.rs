@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 
 use crate::contracts::{
-    CheckpointId, ConversationId, ConversationRecord, EffectiveConfiguration, EventEnvelope,
-    ProjectId, ProjectRecord, ProviderEndpoint, TaskCheckpoint, TaskId, TaskRecord, TaskState,
-    Timestamp,
+    AppConfig, CheckpointId, ConversationId, ConversationRecord, EffectiveConfiguration,
+    EventEnvelope, ProjectId, ProjectRecord, ProviderEndpoint, TaskCheckpoint, TaskId, TaskRecord,
+    TaskState, Timestamp,
 };
 
 /// Why a repository call failed.
@@ -219,6 +219,40 @@ pub trait ProviderSettingsRepository: Send + Sync {
     ///
     /// [`RepositoryError::Unavailable`] when storage failed.
     async fn delete(&self, endpoint_id: &str) -> Result<bool, RepositoryError>;
+}
+
+/// The Apps a profile has configured (ADR 0036).
+///
+/// Separate from [`ProviderSettingsRepository`] because the two answer
+/// different questions — where models can be reached, and which servers
+/// Tramontana starts — and because an App is started and stopped, which no
+/// model endpoint is.
+#[async_trait]
+pub trait AppSettingsRepository: Send + Sync {
+    /// Every configured App, in a stable order.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn list(&self) -> Result<Vec<AppConfig>, RepositoryError>;
+
+    /// Store an App, replacing any with the same identifier.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn save(&self, app: &AppConfig) -> Result<(), RepositoryError>;
+
+    /// Remove an App. Returns whether one was there.
+    ///
+    /// A secret the App named is left in the operating system's store, as a
+    /// model endpoint's is: it is the person's, and other software may use
+    /// it (ADR 0008).
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn delete(&self, app_id: &str) -> Result<bool, RepositoryError>;
 }
 
 #[async_trait]

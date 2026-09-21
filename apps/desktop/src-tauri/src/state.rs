@@ -8,8 +8,8 @@ use tauri::AppHandle;
 use tramontana_adapters_tools::{FilesystemTools, GitTools, RecipeTools};
 use tramontana_core::ports::EventStore;
 use tramontana_core::ports::{
-    ApprovalStore, Approver, ModelProvider, ProviderSettingsRepository, SecretResolver,
-    ToolProvider,
+    AppSettingsRepository, ApprovalStore, Approver, ModelProvider, ProviderSettingsRepository,
+    SecretResolver, ToolProvider,
 };
 use tramontana_core::services::{Providers, Repositories, TaskService};
 use tramontana_core::testing::{FakeModelProvider, InMemoryApprovalStore, assemble_tool_plane};
@@ -17,8 +17,9 @@ use tramontana_core::testing::{FakeModelProvider, InMemoryApprovalStore, assembl
 use crate::approval::DesktopApprover;
 use tramontana_composition::{ModelPlane, Supervision, assemble_models_recording};
 use tramontana_persistence::{
-    Database, SqliteConfigurationRepository, SqliteConversationRepository, SqliteEventStore,
-    SqliteProjectRepository, SqliteProviderSettingsRepository, SqliteTaskRepository,
+    Database, SqliteAppSettingsRepository, SqliteConfigurationRepository,
+    SqliteConversationRepository, SqliteEventStore, SqliteProjectRepository,
+    SqliteProviderSettingsRepository, SqliteTaskRepository,
 };
 use tramontana_platform::{PlatformSecretVault, SystemClock, UuidIdSource};
 
@@ -42,6 +43,8 @@ pub(crate) struct AppState {
     /// that outlived the application would hold gigabytes until something
     /// next opened the profile.
     pub(crate) models: Arc<tokio::sync::Mutex<ModelPlane>>,
+    /// The Apps this process started, stopped with it (ADR 0036).
+    pub(crate) apps: tramontana_composition::AppPlane,
     /// The bundle folder the person last inspected, waiting for them to
     /// confirm the import.
     pub(crate) staged_bundle: Arc<crate::bundles::StagedSlot>,
@@ -83,17 +86,38 @@ impl AppState {
         // recovery store beside the profile, so the two adapters cannot drift
         // into offering different tools under different policy.
         let approvals = Arc::new(InMemoryApprovalStore::new());
+        // The profile's Apps, started before the registry is built so their
+        // tools are registered beside the built-in ones and under the same
+        // permission boundary (ADR 0036). A broken App is a warning, never a
+        // reason the window cannot open.
+        let vault = Arc::new(PlatformSecretVault::new());
+        let resolver = Arc::clone(&vault) as Arc<dyn SecretResolver>;
+        let configured_apps = SqliteAppSettingsRepository::new(database.clone())
+            .list()
+            .await
+            .map_err(|error| format!("could not read App settings: {error}"))?;
+        let apps = tramontana_composition::start_apps(&configured_apps, &resolver, path).await;
+        for failure in &apps.failures {
+            tracing::warn!(
+                app = failure.app_id,
+                "an App did not start: {}",
+                failure.reason
+            );
+        }
+        let app_tools = apps.tool_ids();
+        let mut providers: Vec<Arc<dyn ToolProvider>> = vec![
+            Arc::new(
+                FilesystemTools::new()
+                    .with_recovery_store(tramontana_composition::recovery_store(path)),
+            ) as Arc<dyn ToolProvider>,
+            Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
+            // Registered so both adapters hold the same set; offered to a
+            // model only in a task whose person chose to allow recipes.
+            Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
+        ];
+        providers.extend(apps.providers());
         let (registry, permissions, releases) = assemble_tool_plane(
-            vec![
-                Arc::new(
-                    FilesystemTools::new()
-                        .with_recovery_store(tramontana_composition::recovery_store(path)),
-                ) as Arc<dyn ToolProvider>,
-                Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
-                // Registered so both adapters hold the same set; offered to a
-                // model only in a task whose person chose to allow recipes.
-                Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
-            ],
+            providers,
             Arc::clone(&approvals) as Arc<dyn ApprovalStore>,
             Arc::clone(&approver) as Arc<dyn Approver>,
             Arc::new(UuidIdSource::new()),
@@ -124,8 +148,6 @@ impl AppState {
             .list()
             .await
             .map_err(|error| format!("could not read provider settings: {error}"))?;
-        let vault = Arc::new(PlatformSecretVault::new());
-        let resolver = Arc::clone(&vault) as Arc<dyn SecretResolver>;
         let plane = assemble_models_recording(
             &configured,
             &resolver,
@@ -175,13 +197,17 @@ impl AppState {
                 worker: tramontana_composition::assemble_worker(
                     has_configured,
                     tramontana_core::ports::ToolAdmission::READ_ONLY,
+                    &[],
                 ),
             },
             Arc::new(SystemClock::new()),
             Arc::new(UuidIdSource::new()),
         );
         let service = service
-            .with_worker_choice(tramontana_composition::worker_choice(has_configured))
+            .with_worker_choice(tramontana_composition::worker_choice(
+                has_configured,
+                app_tools,
+            ))
             .with_execution_guard(lease);
         service
             .recover()
@@ -192,6 +218,7 @@ impl AppState {
             approver,
             approvals,
             models: Arc::new(tokio::sync::Mutex::new(plane)),
+            apps,
             staged_bundle: Arc::new(std::sync::Mutex::new(None)),
             settings,
             vault,
@@ -204,6 +231,7 @@ impl AppState {
     /// now". Waits for each runtime to stop, up to its grace period.
     pub(crate) async fn shut_down(&self) {
         self.models.lock().await.shutdown().await;
+        self.apps.shutdown().await;
     }
 }
 

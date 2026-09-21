@@ -545,3 +545,138 @@ fn manager_with_existing_grant(
     );
     (Arc::new(manager), Arc::clone(store))
 }
+
+// --- An App's tools (ADR 0035) ---------------------------------------------
+
+/// A read an App says its tool does: the App's claim, not a fact.
+fn app_read(tool_id: &str) -> PermissionQuery {
+    PermissionQuery {
+        tool_id: tool_id.to_owned(),
+        capability: Capability::new("mcp.notes"),
+        ..read_query()
+    }
+}
+
+#[tokio::test]
+async fn an_app_read_is_asked_about_where_a_built_in_read_is_not() {
+    let (manager, _) = manager(ScriptedApprover::unavailable());
+    let built_in = manager
+        .evaluate(&read_query(), &task(), &invocation(), &now())
+        .await
+        .unwrap();
+    assert_eq!(built_in.reason_code(), reason::SAFE_DEFAULT);
+
+    let app = manager
+        .evaluate(
+            &app_read("mcp.notes.search"),
+            &task(),
+            &invocation(),
+            &now(),
+        )
+        .await
+        .unwrap();
+    assert!(!app.is_allowed(), "an App's read ran unasked");
+    assert_eq!(app.reason_code(), reason::NO_APPROVER);
+}
+
+#[tokio::test]
+async fn a_grant_for_an_app_tool_covers_that_tool_alone_until_it_is_revoked() {
+    let (granting, store) = manager(ScriptedApprover::always(ApprovalDecisionKind::AllowProject));
+    let first = granting
+        .evaluate(
+            &app_read("mcp.notes.search"),
+            &task(),
+            &invocation(),
+            &now(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.reason_code(), reason::APPROVED_PROJECT);
+
+    // From here on every question is refused: only the grant can allow.
+    let (later, _) = manager_with_existing_grant(&store, ApprovalDecisionKind::Deny);
+    let covered = later
+        .evaluate(
+            &app_read("mcp.notes.search"),
+            &task(),
+            &invocation(),
+            &now(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(covered.reason_code(), reason::PROJECT_GRANT);
+    for other in ["mcp.notes.delete_all", "mcp.other.search"] {
+        let outcome = later
+            .evaluate(&app_read(other), &task(), &invocation(), &now())
+            .await
+            .unwrap();
+        assert!(!outcome.is_allowed(), "the grant reached {other}");
+    }
+
+    let grants = store
+        .list_grants(&ProjectId::new("project-1"))
+        .await
+        .unwrap();
+    assert_eq!(grants.len(), 1);
+    assert!(store.revoke_grant(&grants[0].grant_id).await.unwrap());
+    let revoked = later
+        .evaluate(
+            &app_read("mcp.notes.search"),
+            &task(),
+            &invocation(),
+            &now(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !revoked.is_allowed(),
+        "a revoked grant still allowed the App's tool"
+    );
+}
+
+#[tokio::test]
+async fn the_question_names_the_app_and_does_not_vouch_for_its_claim() {
+    let approver = Arc::new(ScriptedApprover::always(ApprovalDecisionKind::Deny));
+    let manager = PermissionManager::new(
+        Arc::new(InMemoryApprovalStore::new()) as Arc<dyn ApprovalStore>,
+        Arc::clone(&approver) as Arc<dyn tramontana_core::ports::Approver>,
+        Arc::new(SequentialIdSource::new()),
+    );
+    let mut silent = app_read("mcp.notes.stamp");
+    silent.risk_class = RiskClass::Dangerous;
+    silent.persistable = false;
+    for query in [app_read("mcp.notes.search"), silent, read_query_asked()] {
+        manager
+            .evaluate(&query, &task(), &invocation(), &now())
+            .await
+            .unwrap();
+    }
+
+    let asked = approver.asked();
+    let detail = |at: usize, label: &str| {
+        asked[at]
+            .details
+            .iter()
+            .find(|detail| detail.label == label)
+            .map(|detail| detail.value.clone())
+    };
+    assert_eq!(detail(0, "App").as_deref(), Some("notes"));
+    assert_eq!(
+        detail(0, "The App says").as_deref(),
+        Some("it only reads (not verified)")
+    );
+    assert_eq!(
+        detail(1, "The App says").as_deref(),
+        Some("nothing about what it does")
+    );
+    // A built-in tool's question says neither.
+    assert_eq!(detail(2, "App"), None);
+    assert_eq!(detail(2, "The App says"), None);
+}
+
+/// A built-in read that is asked about, because it leaves the device.
+fn read_query_asked() -> PermissionQuery {
+    let mut query = read_query();
+    query.scope.releases_data = true;
+    query
+}

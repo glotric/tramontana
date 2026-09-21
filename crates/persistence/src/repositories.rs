@@ -14,7 +14,7 @@ use tramontana_core::ports::{
 use crate::Database;
 
 /// Map a database failure to the port's error type.
-fn unavailable(error: &sqlx::Error) -> RepositoryError {
+pub(crate) fn unavailable(error: &sqlx::Error) -> RepositoryError {
     RepositoryError::Unavailable(error.to_string())
 }
 
@@ -573,13 +573,16 @@ impl ConfigurationRepository for SqliteConfigurationRepository {
     }
 }
 
-fn to_json<T: serde::Serialize>(value: &T, label: &str) -> Result<String, RepositoryError> {
+pub(crate) fn to_json<T: serde::Serialize>(
+    value: &T,
+    label: &str,
+) -> Result<String, RepositoryError> {
     serde_json::to_string(value).map_err(|error| {
         RepositoryError::Unavailable(format!("could not serialize {label}: {error}"))
     })
 }
 
-fn parse_json<T: serde::de::DeserializeOwned>(
+pub(crate) fn parse_json<T: serde::de::DeserializeOwned>(
     value: &str,
     label: &str,
 ) -> Result<T, RepositoryError> {

@@ -16,8 +16,11 @@
 //! assembly returns the endpoints that worked and a diagnostic for each that
 //! did not, rather than refusing to start.
 
+mod apps;
+
 use std::sync::Arc;
 
+pub use apps::{AppFailure, AppPlane, app_folder, start_app, start_apps};
 use tramontana_adapters_local::{LlamaServerSpec, SupervisedLlamaServer};
 use tramontana_adapters_model::{AnthropicProvider, OpenAiCompatibleProvider, ProviderAuth};
 use tramontana_core::contracts::{
@@ -37,30 +40,12 @@ use tramontana_core::ports::{ModelProvider, SecretResolver, ToolAdmission};
 pub fn assemble_worker(
     configured: bool,
     admission: ToolAdmission,
+    app_tools: &[String],
 ) -> Arc<dyn tramontana_core::ports::AgentProvider> {
     if configured {
-        let mut tools = vec![
-            "builtin.fs.list",
-            "builtin.fs.read",
-            "builtin.fs.search",
-            "builtin.git.status",
-            "builtin.git.diff",
-            "builtin.git.log",
-        ];
-        if admission.writes {
-            tools.extend([
-                "builtin.fs.create",
-                "builtin.fs.patch",
-                "builtin.fs.move",
-                "builtin.fs.delete",
-            ]);
-        }
-        if admission.recipes {
-            tools.push(tramontana_core::services::RECIPE_TOOL_ID);
-        }
         Arc::new(
             tramontana_core::services::ReferenceWorker::new(
-                tools.into_iter().map(str::to_owned).collect(),
+                offered_tools(admission, app_tools),
                 tramontana_core::ports::ReadOnlyLimits::default(),
             )
             .admitting(admission),
@@ -73,12 +58,67 @@ pub fn assemble_worker(
     }
 }
 
+/// The tools one task's model is offered, given what the person admitted.
+///
+/// Separate from [`assemble_worker`] because the worker keeps its list to
+/// itself, and what it holds is the rule: reads always, writes and the recipe
+/// tool only when admitted, App tools only when Apps are admitted and only in
+/// the room Tramontana's own tools leave.
+#[must_use]
+pub fn offered_tools(admission: ToolAdmission, app_tools: &[String]) -> Vec<String> {
+    let mut tools: Vec<String> = [
+        "builtin.fs.list",
+        "builtin.fs.read",
+        "builtin.fs.search",
+        "builtin.git.status",
+        "builtin.git.diff",
+        "builtin.git.log",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    if admission.writes {
+        tools.extend(
+            [
+                "builtin.fs.create",
+                "builtin.fs.patch",
+                "builtin.fs.move",
+                "builtin.fs.delete",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+    }
+    if admission.recipes {
+        tools.push(tramontana_core::services::RECIPE_TOOL_ID.to_owned());
+    }
+    if admission.apps {
+        // Tramontana's own tools first: the catalogue refuses a whole
+        // selection of more than `MAX_OFFERED_TOOLS`, so an App with a
+        // great many tools must not be able to crowd out the built-in
+        // ones or fail the task (ADR 0036).
+        let room = MAX_OFFERED_TOOLS.saturating_sub(tools.len());
+        tools.extend(app_tools.iter().take(room).cloned());
+    }
+    tools
+}
+
 /// Every worker [`assemble_worker`] can build, for a service that lets each
 /// task choose what its model may be offered (ADR 0031).
 #[must_use]
-pub fn worker_choice(configured: bool) -> tramontana_core::services::WorkerChoice {
-    Arc::new(move |admission| assemble_worker(configured, admission))
+pub fn worker_choice(
+    configured: bool,
+    app_tools: Vec<String>,
+) -> tramontana_core::services::WorkerChoice {
+    Arc::new(move |admission| assemble_worker(configured, admission, &app_tools))
 }
+
+/// The most tools one task's model may be offered.
+///
+/// The catalogue's own limit: a selection naming more is refused whole
+/// (`ModelToolCatalogue::select`), so composition stops at it rather than
+/// building a selection that would fail the task.
+pub const MAX_OFFERED_TOOLS: usize = 64;
 
 /// Where a profile keeps the files its tasks deleted, so a delete can be undone.
 ///
@@ -384,6 +424,53 @@ fn descriptor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app_tools(count: usize) -> Vec<String> {
+        (0..count)
+            .map(|index| format!("mcp.many.tool_{index}"))
+            .collect()
+    }
+
+    #[test]
+    fn an_app_with_too_many_tools_cannot_crowd_out_tramontanas_own() {
+        // The catalogue refuses a selection past its limit whole, so the
+        // App's tools stop where the room does, and the built-in ones are
+        // all still there (ADR 0036).
+        let admission = ToolAdmission::READ_WRITE.with_recipes().with_apps();
+        let without_apps = offered_tools(ToolAdmission::READ_WRITE.with_recipes(), &[]);
+        let offered = offered_tools(admission, &app_tools(200));
+
+        assert_eq!(offered.len(), MAX_OFFERED_TOOLS);
+        assert_eq!(offered[..without_apps.len()], without_apps[..]);
+        // The App's own order is kept: its first tools are the ones offered.
+        assert_eq!(offered[without_apps.len()], "mcp.many.tool_0");
+        assert_eq!(
+            offered.last().map(String::as_str),
+            Some(
+                format!(
+                    "mcp.many.tool_{}",
+                    MAX_OFFERED_TOOLS - without_apps.len() - 1
+                )
+                .as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn an_apps_tools_are_offered_only_to_a_task_that_admits_apps() {
+        let tools = app_tools(3);
+        let read_only = offered_tools(ToolAdmission::READ_ONLY, &tools);
+        assert!(
+            read_only.iter().all(|tool| !tool.starts_with("mcp.")),
+            "{read_only:?}"
+        );
+        assert!(!read_only.iter().any(|tool| tool == "builtin.fs.patch"));
+
+        let with_apps = offered_tools(ToolAdmission::READ_ONLY.with_apps(), &tools);
+        assert_eq!(with_apps.len(), read_only.len() + tools.len());
+        // Admitting Apps admits nothing else.
+        assert!(!with_apps.iter().any(|tool| tool == "builtin.fs.patch"));
+    }
 
     #[test]
     fn tool_capability_requires_an_explicit_endpoint_fact() {

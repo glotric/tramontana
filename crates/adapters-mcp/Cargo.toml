@@ -1,0 +1,36 @@
+[package]
+name = "tramontana-adapters-mcp"
+description = "MCP Apps over stdio. Owns a server process and speaks its protocol; decides nothing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+tramontana-core = { workspace = true }
+async-trait = { workspace = true }
+# Owning the server's whole process tree, as the command broker does
+# (ADR 0024).
+process-wrap = { workspace = true }
+# The official MCP SDK, client side over plain streams only (ADR 0034).
+rmcp = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["process", "io-util", "time", "rt", "sync", "macros"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+# A hostile stand-in for an MCP server, used by this crate's tests. It speaks
+# the protocol by hand so it can misbehave in ways a real SDK would not let
+# it. A test fixture, not a shipped tool.
+[[bin]]
+name = "tramontana-fake-mcp-server"
+path = "src/bin/fake_mcp_server.rs"
+
+[lints]
+workspace = true

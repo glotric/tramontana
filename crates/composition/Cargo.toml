@@ -12,6 +12,7 @@ repository.workspace = true
 tramontana-core = { workspace = true }
 tramontana-adapters-model = { workspace = true }
 tramontana-adapters-local = { workspace = true }
+tramontana-adapters-mcp = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }
 tracing = { workspace = true }
 serde_json = { workspace = true }

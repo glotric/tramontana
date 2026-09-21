@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tramontana_adapters_tools::{FilesystemTools, GitTools, RecipeTools};
-use tramontana_composition::{ModelPlane, Supervision, assemble_models_recording};
+use tramontana_composition::{AppPlane, ModelPlane, Supervision, assemble_models_recording};
 use tramontana_core::ports::AgentProvider;
 use tramontana_core::ports::EventStore;
 use tramontana_core::ports::{
-    ApprovalStore, Approver, ModelProvider, ProviderSettingsRepository, SecretResolver,
-    ToolProvider,
+    AppSettingsRepository, ApprovalStore, Approver, ModelProvider, ProviderSettingsRepository,
+    SecretResolver, ToolProvider,
 };
 use tramontana_core::services::{Providers, Repositories, TaskService};
 use tramontana_core::testing::{
@@ -22,8 +22,9 @@ use tramontana_core::testing::{
 
 use crate::approval::TerminalApprover;
 use tramontana_persistence::{
-    Database, SqliteConfigurationRepository, SqliteConversationRepository, SqliteEventStore,
-    SqliteProjectRepository, SqliteProviderSettingsRepository, SqliteTaskRepository,
+    Database, SqliteAppSettingsRepository, SqliteConfigurationRepository,
+    SqliteConversationRepository, SqliteEventStore, SqliteProjectRepository,
+    SqliteProviderSettingsRepository, SqliteTaskRepository,
 };
 use tramontana_platform::{PlatformSecretVault, SystemClock, UuidIdSource};
 
@@ -71,7 +72,7 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
         tramontana_core::ports::ToolAdmission::READ_ONLY,
     )
     .await
-    .map(|(service, _plane)| service)
+    .map(|(service, _plane, _apps)| service)
 }
 
 /// Open a profile for a command that will actually run a model.
@@ -86,7 +87,7 @@ pub(crate) async fn open_running(
     path: &Path,
     chunk_delay_ms: u64,
     admission: tramontana_core::ports::ToolAdmission,
-) -> Result<(Arc<TaskService>, ModelPlane), String> {
+) -> Result<(Arc<TaskService>, ModelPlane, AppPlane), String> {
     open_with(path, chunk_delay_ms, Supervision::Start, admission).await
 }
 
@@ -95,7 +96,7 @@ async fn open_with(
     chunk_delay_ms: u64,
     supervision: Supervision,
     admission: tramontana_core::ports::ToolAdmission,
-) -> Result<(Arc<TaskService>, ModelPlane), String> {
+) -> Result<(Arc<TaskService>, ModelPlane, AppPlane), String> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -107,19 +108,39 @@ async fn open_with(
         .await
         .map_err(|error| format!("could not open {}: {error}", path.display()))?;
 
+    // The profile's Apps, started before the registry is built so their tools
+    // are registered beside the built-in ones and under the same permission
+    // boundary (ADR 0036). A broken App is a note, never a reason the command
+    // cannot run.
+    let resolver = Arc::new(PlatformSecretVault::new()) as Arc<dyn SecretResolver>;
+    let configured_apps = SqliteAppSettingsRepository::new(database.clone())
+        .list()
+        .await
+        .map_err(|error| format!("could not read App settings: {error}"))?;
+    let apps = tramontana_composition::start_apps(&configured_apps, &resolver, path).await;
+    for failure in &apps.failures {
+        eprintln!(
+            "warning: App {:?} ({}) did not start: {}",
+            failure.display_name, failure.app_id, failure.reason
+        );
+    }
+    let app_tools = apps.tool_ids();
+
     // Filesystem and Git tools, behind the permission boundary. The registry
     // says a tool exists; only the permission manager says it may run.
+    let mut providers: Vec<Arc<dyn ToolProvider>> = vec![
+        // Deleted files are kept beside the profile, so a delete can be undone.
+        Arc::new(
+            FilesystemTools::new()
+                .with_recovery_store(tramontana_composition::recovery_store(path)),
+        ) as Arc<dyn ToolProvider>,
+        Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
+        // The project's own commands, run only as the core resolved them.
+        Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
+    ];
+    providers.extend(apps.providers());
     let (registry, permissions, releases) = assemble_tool_plane(
-        vec![
-            // Deleted files are kept beside the profile, so a delete can be undone.
-            Arc::new(
-                FilesystemTools::new()
-                    .with_recovery_store(tramontana_composition::recovery_store(path)),
-            ) as Arc<dyn ToolProvider>,
-            Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
-            // The project's own commands, run only as the core resolved them.
-            Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
-        ],
+        providers,
         Arc::new(InMemoryApprovalStore::new()) as Arc<dyn ApprovalStore>,
         // Prompts on a terminal, and refuses when there is no terminal to
         // prompt on. A read inside an approved project is permitted without
@@ -156,7 +177,6 @@ async fn open_with(
         .list()
         .await
         .map_err(|error| format!("could not read provider settings: {error}"))?;
-    let resolver = Arc::new(PlatformSecretVault::new()) as Arc<dyn SecretResolver>;
     let plane =
         assemble_models_recording(&configured, &resolver, supervision, records.as_deref()).await;
 
@@ -209,7 +229,7 @@ async fn open_with(
             releases: Arc::clone(&releases),
             // Shared strategy selection; both real and diagnostic work use
             // the same permission-governed built-in tools.
-            worker: tramontana_composition::assemble_worker(has_configured, admission),
+            worker: tramontana_composition::assemble_worker(has_configured, admission, &app_tools),
         },
         Arc::new(SystemClock::new()),
         Arc::new(UuidIdSource::new()),
@@ -228,7 +248,7 @@ async fn open_with(
         eprintln!("recovered {repaired} task projection(s) from the event stream");
     }
 
-    Ok((Arc::new(service), plane))
+    Ok((Arc::new(service), plane, apps))
 }
 
 /// Workers a task can be handed to by name.
@@ -243,6 +263,7 @@ pub(crate) fn worker_named(agent_id: &str) -> Option<Arc<dyn AgentProvider>> {
             Some(tramontana_composition::assemble_worker(
                 true,
                 tramontana_core::ports::ToolAdmission::READ_ONLY,
+                &[],
             ))
         }
         tramontana_core::testing::RECEIVING_AGENT_ID => {

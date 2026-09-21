@@ -18,6 +18,11 @@ pub struct ToolAdmission {
     /// be offered, named by id and approved on every run (ADR 0025).
     #[serde(default)]
     pub recipes: bool,
+    /// The tools of the profile's Apps, and only those an App says only read
+    /// (ADR 0036). Every call is still asked about: what an App says about
+    /// its own tool is not a permission (ADR 0035).
+    #[serde(default)]
+    pub apps: bool,
 }
 
 impl ToolAdmission {
@@ -25,13 +30,21 @@ impl ToolAdmission {
     pub const READ_ONLY: Self = Self {
         writes: false,
         recipes: false,
+        apps: false,
     };
 
     /// Reads, plus writes whose effect is local and reversible.
     pub const READ_WRITE: Self = Self {
         writes: true,
         recipes: false,
+        apps: false,
     };
+
+    /// This level, with the profile's Apps admitted as well.
+    #[must_use]
+    pub const fn with_apps(self) -> Self {
+        Self { apps: true, ..self }
+    }
 
     /// This level, with the project's recipes admitted as well.
     #[must_use]

@@ -221,6 +221,28 @@ async fn anything_more_than_a_no_argument_read_is_refused_before_it_runs() {
 }
 
 #[test]
+fn a_person_is_never_given_an_apps_read_quietly() {
+    // An App's claim to only read is its own (ADR 0035): what a person runs
+    // unasked must be one of Tramontana's reads.
+    let fixture = fixture();
+    let query = PermissionQuery {
+        tool_id: "mcp.notes.search".to_owned(),
+        capability: Capability::new("mcp.notes"),
+        risk_class: RiskClass::Read,
+        scope: CapabilityScope::project(ProjectId::new("project-1"), vec!["/synthetic".into()]),
+        persistable: false,
+        details: Vec::new(),
+    };
+    let (outcome, authorized) = fixture.permissions.authorize_person_read(
+        &query,
+        &InvocationId::new("invocation-1"),
+        serde_json::json!({}),
+    );
+    assert!(authorized.is_none(), "an App's read was run for a person");
+    assert_eq!(outcome.reason_code(), reason::PERSON_READ_ONLY);
+}
+
+#[test]
 fn the_permission_manager_gives_a_person_only_a_quiet_read() {
     let fixture = fixture();
     let invocation = InvocationId::new("invocation-1");
