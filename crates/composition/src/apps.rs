@@ -69,10 +69,7 @@ impl AppPlane {
         self.apps
             .iter()
             .flat_map(|app| app.list_tools())
-            .filter(|tool| {
-                tool.risk_class == tramontana_core::contracts::RiskClass::Read
-                    && tool.side_effect == tramontana_core::contracts::SideEffect::None
-            })
+            .filter(offerable)
             .map(|tool| tool.tool_id)
             .collect()
     }
@@ -83,6 +80,16 @@ impl AppPlane {
             app.shutdown().await;
         }
     }
+}
+
+/// Whether a task that admits Apps may offer this App tool to its model.
+///
+/// Only a tool its App says reads and changes nothing. That is the App's claim,
+/// and it is not trusted for anything else — the call is still asked about
+/// (ADR 0035) — but a tool that does not even claim it cannot be offered.
+fn offerable(tool: &tramontana_core::contracts::ToolDescriptor) -> bool {
+    tool.risk_class == tramontana_core::contracts::RiskClass::Read
+        && tool.side_effect == tramontana_core::contracts::SideEffect::None
 }
 
 /// Start each enabled App in `configured`.
@@ -158,4 +165,43 @@ pub async fn start_app(
     })
     .await
     .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use tramontana_core::contracts::{ReplaySafety, RiskClass, SideEffect, ToolDescriptor};
+
+    use super::offerable;
+
+    fn tool(risk_class: RiskClass, side_effect: SideEffect) -> ToolDescriptor {
+        ToolDescriptor {
+            tool_id: "mcp.fixture.tool".to_owned(),
+            provider_id: "mcp.fixture".to_owned(),
+            display_name: "tool".to_owned(),
+            description: "A tool.".to_owned(),
+            input_schema: serde_json::json!({ "type": "object" }),
+            risk_class,
+            side_effect,
+            capability: "app.fixture".to_owned(),
+            supports_cancellation: true,
+            replay_safety: ReplaySafety::Unknown,
+        }
+    }
+
+    #[test]
+    fn only_a_tool_its_app_says_only_reads_is_offered() {
+        assert!(offerable(&tool(RiskClass::Read, SideEffect::None)));
+        // Everything else an App tool can be described as is registered and
+        // asked about if called, but never put in front of a model.
+        for (risk, effect) in [
+            (RiskClass::Read, SideEffect::LocalReversible),
+            (RiskClass::Read, SideEffect::External),
+            (RiskClass::Modify, SideEffect::None),
+            (RiskClass::Modify, SideEffect::LocalReversible),
+            (RiskClass::Dangerous, SideEffect::None),
+            (RiskClass::Dangerous, SideEffect::LocalIrreversible),
+        ] {
+            assert!(!offerable(&tool(risk, effect)), "{risk:?} {effect:?}");
+        }
+    }
 }
