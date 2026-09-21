@@ -702,6 +702,40 @@ pub(crate) async fn add_mlx_endpoint(
     .map(Some)
 }
 
+/// Confirm a runtime's executable and model as they are now (ADR 0043). A
+/// changed executable is held until this is done. Takes effect the next time
+/// Tramontana opens.
+///
+/// # Errors
+///
+/// See [`settings::trust`].
+#[tauri::command]
+pub(crate) async fn trust_endpoint(
+    endpoint_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    settings::trust(
+        state.settings.as_ref(),
+        &endpoint_id,
+        SystemClock::new().now(),
+    )
+    .await
+}
+
+/// Whether a runtime's model is still what was recorded: `confirmed`,
+/// `held` (changed), `unreadable` or `notRecorded`. Reads the whole model.
+///
+/// # Errors
+///
+/// See [`settings::check_runtime_model`].
+#[tauri::command]
+pub(crate) async fn check_endpoint_model(
+    endpoint_id: String,
+    state: State<'_, AppState>,
+) -> Result<&'static str, ErrorEnvelope> {
+    settings::check_runtime_model(state.settings.as_ref(), &endpoint_id).await
+}
+
 /// Turn an endpoint on or off, keeping its configuration.
 ///
 /// # Errors

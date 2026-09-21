@@ -174,6 +174,7 @@ async fn a_supervised_runtime_whose_binary_is_missing_fails_without_stopping_the
             model_path: model.display().to_string(),
             model_id: "m".to_owned(),
             extra_args: Vec::new(),
+            provenance: None,
         },
         at(),
     );
@@ -204,6 +205,7 @@ fn mlx(directory: &std::path::Path, binary: &std::path::Path) -> ProviderEndpoin
             model_path: folder.display().to_string(),
             model_id: "qwen-mlx".to_owned(),
             extra_args: Vec::new(),
+            provenance: None,
         },
         at(),
     )
@@ -283,4 +285,134 @@ async fn an_mlx_endpoint_is_skipped_like_any_supervised_runtime_when_asked() {
     .await;
     assert!(plane.providers.is_empty());
     assert_eq!(plane.skipped, ["mlx"]);
+}
+
+/// A copy of the stand-in runtime this test may change, as an upgrade would.
+fn own_copy_of_the_runtime(directory: &std::path::Path) -> std::path::PathBuf {
+    let copy = directory.join(format!("llama-server{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(fake_llama_server(), &copy).unwrap();
+    copy
+}
+
+fn recorded_llama(
+    directory: &std::path::Path,
+    binary: &std::path::Path,
+    provenance: Option<tramontana_core::contracts::RuntimeProvenance>,
+) -> ProviderEndpoint {
+    let model = directory.join("model.gguf");
+    std::fs::write(&model, b"not a real model").unwrap();
+    ProviderEndpoint::new(
+        "llama",
+        "Local llama",
+        ProviderConfig::LlamaServer {
+            binary_path: binary.display().to_string(),
+            model_path: model.display().to_string(),
+            model_id: "m".to_owned(),
+            extra_args: Vec::new(),
+            provenance,
+        },
+        at(),
+    )
+}
+
+#[tokio::test]
+async fn a_runtime_whose_executable_changed_is_held_until_confirmed() {
+    let directory = tempfile::tempdir().unwrap();
+    let binary = own_copy_of_the_runtime(directory.path());
+    let model = directory.path().join("model.gguf");
+    std::fs::write(&model, b"not a real model").unwrap();
+    let recorded = tramontana_composition::record_provenance(&binary, &model, at())
+        .await
+        .unwrap();
+
+    // As recorded: it starts.
+    let mut plane = assemble_models(
+        &[recorded_llama(
+            directory.path(),
+            &binary,
+            Some(recorded.clone()),
+        )],
+        &resolver(),
+        Supervision::Start,
+    )
+    .await;
+    assert!(plane.failures.is_empty(), "{:?}", plane.failures);
+    plane.shutdown().await;
+
+    // Upgraded, or replaced: it is held, the others still start, and the
+    // reason says what to do.
+    std::fs::write(&binary, b"#!/bin/sh\nexit 0\n").unwrap();
+    let mut plane = assemble_models(
+        &[
+            recorded_llama(directory.path(), &binary, Some(recorded)),
+            openai("good", "http://localhost:8080"),
+        ],
+        &resolver(),
+        Supervision::Start,
+    )
+    .await;
+    assert_eq!(plane.providers.len(), 1);
+    assert_eq!(plane.failures.len(), 1);
+    let error = &plane.failures[0].error;
+    assert_eq!(
+        error.code,
+        tramontana_core::contracts::ErrorCode::PermissionDenied
+    );
+    assert!(
+        error.message.contains("changed since you added"),
+        "{error:?}"
+    );
+    assert!(error.message.contains("provider trust llama"), "{error:?}");
+    plane.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_runtime_added_before_records_were_kept_still_starts() {
+    let directory = tempfile::tempdir().unwrap();
+    let binary = own_copy_of_the_runtime(directory.path());
+    let mut plane = assemble_models(
+        &[recorded_llama(directory.path(), &binary, None)],
+        &resolver(),
+        Supervision::Start,
+    )
+    .await;
+    assert!(plane.failures.is_empty(), "{:?}", plane.failures);
+    plane.shutdown().await;
+}
+
+#[tokio::test]
+async fn files_are_checked_against_their_record() {
+    use tramontana_composition::{FileCheck, check_executable, check_model, record_provenance};
+    let directory = tempfile::tempdir().unwrap();
+    let binary = directory.path().join("server");
+    let model = directory.path().join("model.gguf");
+    std::fs::write(&binary, b"one").unwrap();
+    std::fs::write(&model, b"weights").unwrap();
+    let recorded = record_provenance(&binary, &model, at()).await.unwrap();
+    assert_eq!(recorded.executable_bytes, 3);
+    assert_eq!(recorded.model_bytes, 7);
+
+    assert_eq!(
+        check_executable(&binary, None).await,
+        FileCheck::NotRecorded
+    );
+    assert_eq!(
+        check_executable(&binary, Some(&recorded)).await,
+        FileCheck::Unchanged
+    );
+    assert_eq!(
+        check_model(&model, Some(&recorded)).await,
+        FileCheck::Unchanged
+    );
+    std::fs::write(&model, b"other weights").unwrap();
+    assert_eq!(
+        check_model(&model, Some(&recorded)).await,
+        FileCheck::Changed
+    );
+    std::fs::remove_file(&binary).unwrap();
+    assert_eq!(
+        check_executable(&binary, Some(&recorded)).await,
+        FileCheck::Unreadable
+    );
+    assert!(record_provenance(&binary, &model, at()).await.is_err());
 }

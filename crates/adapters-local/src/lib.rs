@@ -11,6 +11,7 @@
 //! decision: "Do not silently download executable code or models." The binary
 //! and the model are supplied by the user, by path.
 
+pub mod fingerprint;
 mod llama;
 pub mod runtime_records;
 

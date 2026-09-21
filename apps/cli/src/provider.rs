@@ -52,6 +52,13 @@ enum ProviderCommand {
     ToolCalls(ToggleArgs),
     /// Remove an endpoint. The credential in the OS store is left alone.
     Remove(RemoveArgs),
+    /// Say whether a runtime's executable and model are still what was
+    /// recorded when it was added or last confirmed. Reads the whole model.
+    Check(RemoveArgs),
+    /// Confirm a runtime's executable and model as they are now, after an
+    /// upgrade or a changed model (ADR 0043). A changed executable is not
+    /// started until this is done.
+    Trust(RemoveArgs),
 }
 
 #[derive(Debug, Args)]
@@ -211,6 +218,7 @@ pub(crate) async fn execute(args: ProviderArgs) -> ExitCode {
                     model_path: args.model_path.display().to_string(),
                     model_id: args.model.clone(),
                     extra_args: Vec::new(),
+                    provenance: None,
                 },
             )
             .await
@@ -225,6 +233,7 @@ pub(crate) async fn execute(args: ProviderArgs) -> ExitCode {
                     model_path: args.model_path.display().to_string(),
                     model_id: args.model.clone(),
                     extra_args: Vec::new(),
+                    provenance: None,
                 },
             )
             .await
@@ -233,6 +242,8 @@ pub(crate) async fn execute(args: ProviderArgs) -> ExitCode {
         ProviderCommand::Enable(args) => toggle(args, false).await,
         ProviderCommand::ToolCalls(args) => toggle(args, true).await,
         ProviderCommand::Remove(args) => remove(args).await,
+        ProviderCommand::Check(args) => check(args).await,
+        ProviderCommand::Trust(args) => trust(args).await,
     }
 }
 
@@ -275,6 +286,27 @@ async fn add(
             eprintln!("error: {error}");
             return ExitCode::FAILURE;
         }
+    };
+
+    // A runtime Tramontana starts is recorded as it is now, so a later
+    // change to its executable is held rather than run (ADR 0043).
+    let config = match tramontana_composition::runtime_files(&config) {
+        Some((binary, model, _)) => {
+            match tramontana_composition::record_provenance(
+                std::path::Path::new(binary),
+                std::path::Path::new(model),
+                SystemClock::new().now(),
+            )
+            .await
+            {
+                Ok(recorded) => tramontana_composition::with_provenance(config.clone(), recorded),
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        None => config,
     };
 
     let endpoint = ProviderEndpoint::new(
@@ -332,8 +364,19 @@ async fn list(args: ProfileArgs) -> ExitCode {
     }
 
     for endpoint in endpoints {
+        let files = match tramontana_composition::runtime_files(&endpoint.config) {
+            Some((binary, _, recorded)) => {
+                let check = tramontana_composition::check_executable(
+                    std::path::Path::new(binary),
+                    recorded,
+                )
+                .await;
+                format!(" files={}", describe_executable(check))
+            }
+            None => String::new(),
+        };
         println!(
-            "{:<20} {:<18} {:<24} {:<7} {} tool-calls={}",
+            "{:<20} {:<18} {:<24} {:<7} {} tool-calls={}{files}",
             endpoint.endpoint_id,
             endpoint.config.kind(),
             endpoint.config.model_id(),
@@ -426,6 +469,111 @@ async fn remove(args: RemoveArgs) -> ExitCode {
 }
 
 /// How a location reads in a listing.
+fn describe_executable(check: tramontana_composition::FileCheck) -> &'static str {
+    match check {
+        tramontana_composition::FileCheck::Unchanged => "confirmed",
+        tramontana_composition::FileCheck::Changed => "HELD(executable-changed)",
+        tramontana_composition::FileCheck::Unreadable => "HELD(executable-unreadable)",
+        tramontana_composition::FileCheck::NotRecorded => "not-recorded",
+    }
+}
+
+/// Find one endpoint by identifier, printing why when it cannot.
+async fn find(
+    profile: ProfileArgs,
+    id: &str,
+) -> Option<(SqliteProviderSettingsRepository, ProviderEndpoint)> {
+    let settings = match settings(profile).await {
+        Ok(settings) => settings,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return None;
+        }
+    };
+    match settings.list().await {
+        Ok(endpoints) => match endpoints
+            .into_iter()
+            .find(|endpoint| endpoint.endpoint_id == id)
+        {
+            Some(endpoint) => Some((settings, endpoint)),
+            None => {
+                eprintln!("error: no endpoint named {id:?}");
+                None
+            }
+        },
+        Err(error) => {
+            eprintln!("error: could not read endpoints: {error}");
+            None
+        }
+    }
+}
+
+async fn check(args: RemoveArgs) -> ExitCode {
+    let Some((_, endpoint)) = find(args.profile, &args.id).await else {
+        return ExitCode::FAILURE;
+    };
+    let Some((binary, model, recorded)) = tramontana_composition::runtime_files(&endpoint.config)
+    else {
+        eprintln!("error: {} is not a runtime Tramontana starts", args.id);
+        return ExitCode::FAILURE;
+    };
+    let executable =
+        tramontana_composition::check_executable(std::path::Path::new(binary), recorded).await;
+    let weights = tramontana_composition::check_model(std::path::Path::new(model), recorded).await;
+    println!("executable: {}", describe_executable(executable));
+    println!(
+        "model: {}",
+        match weights {
+            tramontana_composition::FileCheck::Unchanged => "as recorded",
+            tramontana_composition::FileCheck::Changed => "CHANGED since it was recorded",
+            tramontana_composition::FileCheck::Unreadable => "could not be read",
+            tramontana_composition::FileCheck::NotRecorded => "not recorded",
+        }
+    );
+    if let Some(recorded) = recorded {
+        println!(
+            "recorded {}: executable {} bytes, model {} bytes",
+            recorded.recorded_at.as_str(),
+            recorded.executable_bytes,
+            recorded.model_bytes
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+async fn trust(args: RemoveArgs) -> ExitCode {
+    let Some((settings, mut endpoint)) = find(args.profile, &args.id).await else {
+        return ExitCode::FAILURE;
+    };
+    let Some((binary, model, _)) = tramontana_composition::runtime_files(&endpoint.config) else {
+        eprintln!("error: {} is not a runtime Tramontana starts", args.id);
+        return ExitCode::FAILURE;
+    };
+    let recorded = match tramontana_composition::record_provenance(
+        std::path::Path::new(binary),
+        std::path::Path::new(model),
+        SystemClock::new().now(),
+    )
+    .await
+    {
+        Ok(recorded) => recorded,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    endpoint.config = tramontana_composition::with_provenance(endpoint.config.clone(), recorded);
+    if let Err(error) = settings.save(&endpoint).await {
+        eprintln!("error: could not save the endpoint: {error}");
+        return ExitCode::FAILURE;
+    }
+    println!(
+        "{}: executable and model confirmed as they are now; takes effect the next time Tramontana starts",
+        args.id
+    );
+    ExitCode::SUCCESS
+}
+
 fn location_label(location: ModelLocation) -> &'static str {
     match location {
         ModelLocation::Local => "local",

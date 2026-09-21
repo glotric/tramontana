@@ -131,6 +131,22 @@ export interface ConfiguredEndpoint {
   /** Tool-call support the person verified. Unknown is off. */
   readonly supportsToolCalls: boolean;
   readonly credential?: CredentialStatus;
+  /** A runtime Tramontana starts: its files and whether they changed. */
+  readonly runtime?: RuntimeFiles;
+}
+
+/** Whether a runtime's file is still what was recorded (ADR 0043). */
+export type FileStatus = "confirmed" | "held" | "unreadable" | "notRecorded";
+
+/** A supervised runtime's files, as recorded when it was added or confirmed. */
+export interface RuntimeFiles {
+  /** The executable's file name only. */
+  readonly executable: string;
+  /** `held` means it changed, and will not be started until confirmed. */
+  readonly executableStatus: FileStatus;
+  /** The model's size: the least memory it needs. */
+  readonly modelBytes?: number;
+  readonly recordedAt?: string;
 }
 
 /** Whether a configured endpoint came up when Tramontana opened. */
@@ -221,6 +237,16 @@ export async function addMlxEndpoint(endpoint: NewEndpoint): Promise<boolean | u
       modelId: endpoint.modelId,
     })) ?? undefined
   );
+}
+
+/** Record a runtime's files as they are now. Takes effect on restart. */
+export async function trustEndpoint(endpointId: string): Promise<void> {
+  return invoke("trust_endpoint", { endpointId });
+}
+
+/** Whether a runtime's model is still what was recorded. Reads all of it. */
+export async function checkEndpointModel(endpointId: string): Promise<FileStatus> {
+  return invoke<FileStatus>("check_endpoint_model", { endpointId });
 }
 
 /** Turn an endpoint on or off. Takes effect when Tramontana restarts. */

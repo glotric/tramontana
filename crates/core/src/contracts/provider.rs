@@ -71,6 +71,11 @@ pub enum ProviderConfig {
         /// Extra arguments, passed through verbatim. Never a credential.
         #[serde(skip_serializing_if = "Vec::is_empty", default)]
         extra_args: Vec<String>,
+        /// What the executable and the model were when the person chose or
+        /// last confirmed them (ADR 0043). Absent for an endpoint added
+        /// before they were recorded.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        provenance: Option<RuntimeProvenance>,
     },
     /// An `mlx_lm.server` this application starts and stops (ADR 0010).
     ///
@@ -89,7 +94,34 @@ pub enum ProviderConfig {
         /// Extra arguments, passed through verbatim. Never a credential.
         #[serde(skip_serializing_if = "Vec::is_empty", default)]
         extra_args: Vec<String>,
+        /// What the executable and the model were when the person chose or
+        /// last confirmed them (ADR 0043). Absent for an endpoint added
+        /// before they were recorded.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        provenance: Option<RuntimeProvenance>,
     },
+}
+
+/// What a supervised runtime's files were when the person chose or last
+/// confirmed them (ADR 0043).
+///
+/// Tramontana did not download them and cannot vouch for where they came
+/// from. It records exactly what they were, so that a changed executable is
+/// held until the person confirms it and a changed model is flagged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeProvenance {
+    /// The executable's SHA-256, lowercase hex.
+    pub executable_sha256: String,
+    /// Its size in bytes.
+    pub executable_bytes: u64,
+    /// The model's SHA-256: of the file, or of an MLX model folder's files
+    /// and their paths.
+    pub model_sha256: String,
+    /// The model's size in bytes, summed over a folder.
+    pub model_bytes: u64,
+    /// When they were recorded.
+    pub recorded_at: Timestamp,
 }
 
 impl ProviderConfig {
@@ -301,6 +333,7 @@ mod tests {
             model_path: "/models/m.gguf".to_owned(),
             model_id: "m".to_owned(),
             extra_args: Vec::new(),
+            provenance: None,
         };
         assert_eq!(config.location(), ModelLocation::Local);
         assert!(config.credential().is_none());

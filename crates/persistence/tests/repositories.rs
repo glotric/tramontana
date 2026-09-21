@@ -606,6 +606,7 @@ async fn provider_endpoints_round_trip_and_never_hold_a_credential() {
             model_path: "/models/m.gguf".to_owned(),
             model_id: "m".to_owned(),
             extra_args: vec!["--ctx-size".to_owned(), "8192".to_owned()],
+            provenance: None,
         },
         at(1),
     );

@@ -58,6 +58,38 @@ pub(crate) struct ConfiguredEndpoint {
     /// The credential it uses, when it uses one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<CredentialStatus>,
+    /// A runtime Tramontana starts: its files and whether they are still
+    /// what was recorded (ADR 0043).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeFiles>,
+}
+
+/// A supervised runtime's files, as the settings view shows them.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RuntimeFiles {
+    /// The executable's file name. Its full path names a folder, and usually
+    /// a person.
+    pub executable: String,
+    /// `confirmed`, `held` (changed since recorded), `unreadable`, or
+    /// `notRecorded` for an endpoint added before records were kept.
+    pub executable_status: &'static str,
+    /// The model's size in bytes, as recorded: the least memory it needs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_bytes: Option<u64>,
+    /// When the files were recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recorded_at: Option<String>,
+}
+
+/// How a file check reads in the settings view.
+pub(crate) fn describe_check(check: tramontana_composition::FileCheck) -> &'static str {
+    match check {
+        tramontana_composition::FileCheck::Unchanged => "confirmed",
+        tramontana_composition::FileCheck::Changed => "held",
+        tramontana_composition::FileCheck::Unreadable => "unreadable",
+        tramontana_composition::FileCheck::NotRecorded => "notRecorded",
+    }
 }
 
 /// An endpoint to configure.
@@ -123,7 +155,24 @@ pub(crate) async fn list(
                 },
             }),
         };
+        let runtime = match tramontana_composition::runtime_files(&endpoint.config) {
+            None => None,
+            Some((binary, _, recorded)) => {
+                let path = Path::new(binary);
+                let check = tramontana_composition::check_executable(path, recorded).await;
+                Some(RuntimeFiles {
+                    executable: path.file_name().map_or_else(
+                        || binary.to_owned(),
+                        |name| name.to_string_lossy().into_owned(),
+                    ),
+                    executable_status: describe_check(check),
+                    model_bytes: recorded.map(|recorded| recorded.model_bytes),
+                    recorded_at: recorded.map(|recorded| recorded.recorded_at.as_str().to_owned()),
+                })
+            }
+        };
         configured.push(ConfiguredEndpoint {
+            runtime,
             endpoint_id: endpoint.endpoint_id.clone(),
             display_name: endpoint.display_name.clone(),
             kind: endpoint.config.kind(),
@@ -190,6 +239,7 @@ pub(crate) async fn add(
                 model_path: check_file("the model file", &model_path)?,
                 model_id,
                 extra_args: Vec::new(),
+                provenance: None,
             }
         }
         NewEndpoint::MlxServer {
@@ -203,6 +253,7 @@ pub(crate) async fn add(
                 model_path: check_folder("the MLX model", &model_path)?,
                 model_id,
                 extra_args: Vec::new(),
+                provenance: None,
             }
         }
     };
@@ -236,6 +287,22 @@ pub(crate) async fn add(
         ));
     }
 
+    // A runtime Tramontana starts is recorded as it is now, so a later
+    // change to its executable is held rather than run (ADR 0043).
+    let config = match tramontana_composition::runtime_files(&config) {
+        Some((binary, model, _)) => {
+            let recorded = tramontana_composition::record_provenance(
+                Path::new(binary),
+                Path::new(model),
+                now.clone(),
+            )
+            .await
+            .map_err(invalid)?;
+            tramontana_composition::with_provenance(config.clone(), recorded)
+        }
+        None => config,
+    };
+
     let endpoint = ProviderEndpoint::new(
         endpoint_id,
         display_name
@@ -246,6 +313,77 @@ pub(crate) async fn add(
     );
     save(settings, &endpoint).await?;
     Ok(endpoint.location() == ModelLocation::Cloud)
+}
+
+/// Record a runtime's executable and model as they are now, after the person
+/// confirmed a change (ADR 0043). Takes effect the next time Tramontana
+/// opens.
+///
+/// # Errors
+///
+/// [`ErrorCode::NotFound`] when no endpoint has that name,
+/// [`ErrorCode::InvalidRequest`] when it is not a runtime Tramontana starts
+/// or its files cannot be read, or [`ErrorCode::PersistenceError`].
+pub(crate) async fn trust(
+    settings: &dyn ProviderSettingsRepository,
+    endpoint_id: &str,
+    now: Timestamp,
+) -> Result<(), ErrorEnvelope> {
+    let mut endpoint = find(settings, endpoint_id).await?;
+    let Some((binary, model, _)) = tramontana_composition::runtime_files(&endpoint.config) else {
+        return Err(invalid(format!(
+            "{endpoint_id} is not a runtime Tramontana starts"
+        )));
+    };
+    let recorded =
+        tramontana_composition::record_provenance(Path::new(binary), Path::new(model), now)
+            .await
+            .map_err(invalid)?;
+    endpoint.config = tramontana_composition::with_provenance(endpoint.config.clone(), recorded);
+    save(settings, &endpoint).await
+}
+
+/// Whether a runtime's model is still what was recorded. Reads all of it.
+///
+/// # Errors
+///
+/// As [`trust`], less the persistence error.
+pub(crate) async fn check_runtime_model(
+    settings: &dyn ProviderSettingsRepository,
+    endpoint_id: &str,
+) -> Result<&'static str, ErrorEnvelope> {
+    let endpoint = find(settings, endpoint_id).await?;
+    let Some((_, model, recorded)) = tramontana_composition::runtime_files(&endpoint.config) else {
+        return Err(invalid(format!(
+            "{endpoint_id} is not a runtime Tramontana starts"
+        )));
+    };
+    Ok(describe_check(
+        tramontana_composition::check_model(Path::new(model), recorded).await,
+    ))
+}
+
+async fn find(
+    settings: &dyn ProviderSettingsRepository,
+    endpoint_id: &str,
+) -> Result<ProviderEndpoint, ErrorEnvelope> {
+    settings
+        .list()
+        .await
+        .map_err(|error| {
+            failure(
+                ErrorCode::PersistenceError,
+                format!("could not read the endpoints: {error}"),
+            )
+        })?
+        .into_iter()
+        .find(|endpoint| endpoint.endpoint_id == endpoint_id)
+        .ok_or_else(|| {
+            failure(
+                ErrorCode::NotFound,
+                format!("no endpoint is named {endpoint_id}"),
+            )
+        })
 }
 
 /// What to change about an endpoint.
@@ -488,6 +626,7 @@ mod tests {
                 enabled: true,
                 supports_tool_calls: false,
                 credential: None,
+                runtime: None,
             }]
         );
     }
@@ -617,6 +756,63 @@ mod tests {
         let listed = list(&settings, &InMemorySecretVault::new()).await.unwrap();
         assert_eq!(listed[0].kind, "mlxServer");
         assert!(!listed[0].leaves_the_device);
+    }
+
+    #[tokio::test]
+    async fn a_runtimes_files_are_recorded_held_when_changed_and_confirmed() {
+        let directory = tempfile::tempdir().unwrap();
+        let settings = settings(&directory).await;
+        let binary = directory.path().join("llama-server");
+        let model = directory.path().join("model.gguf");
+        std::fs::write(&binary, b"version one").unwrap();
+        std::fs::write(&model, b"weights").unwrap();
+        add(
+            &settings,
+            "llama",
+            None,
+            NewEndpoint::LlamaServer {
+                binary_path: binary.clone(),
+                model_path: model.clone(),
+                model_id: "qwen".to_owned(),
+            },
+            now(),
+        )
+        .await
+        .unwrap();
+        let vault = InMemorySecretVault::new();
+        let runtime = |listed: Vec<ConfiguredEndpoint>| listed[0].runtime.clone().unwrap();
+
+        let files = runtime(list(&settings, &vault).await.unwrap());
+        assert_eq!(files.executable, "llama-server");
+        assert_eq!(files.executable_status, "confirmed");
+        assert_eq!(files.model_bytes, Some(7));
+
+        // An upgrade: held, and a changed model is found when asked.
+        std::fs::write(&binary, b"version two").unwrap();
+        std::fs::write(&model, b"new weights").unwrap();
+        assert_eq!(
+            runtime(list(&settings, &vault).await.unwrap()).executable_status,
+            "held"
+        );
+        assert_eq!(
+            check_runtime_model(&settings, "llama").await.unwrap(),
+            "held"
+        );
+
+        trust(&settings, "llama", now()).await.unwrap();
+        let files = runtime(list(&settings, &vault).await.unwrap());
+        assert_eq!(files.executable_status, "confirmed");
+        assert_eq!(files.model_bytes, Some(11));
+        assert_eq!(
+            check_runtime_model(&settings, "llama").await.unwrap(),
+            "confirmed"
+        );
+        // Only a runtime has files to confirm.
+        add(&settings, "local", None, local("qwen"), now())
+            .await
+            .unwrap();
+        assert!(trust(&settings, "local", now()).await.is_err());
+        assert!(trust(&settings, "absent", now()).await.is_err());
     }
 
     #[tokio::test]

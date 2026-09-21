@@ -78,6 +78,8 @@ pub fn run() {
             commands::add_anthropic_endpoint,
             commands::add_llama_endpoint,
             commands::add_mlx_endpoint,
+            commands::trust_endpoint,
+            commands::check_endpoint_model,
             commands::set_endpoint_enabled,
             commands::set_endpoint_tool_calls,
             commands::remove_endpoint,
