@@ -416,3 +416,58 @@ async fn files_are_checked_against_their_record() {
     );
     assert!(record_provenance(&binary, &model, at()).await.is_err());
 }
+
+/// A supervised runtime, assembled as both applications assemble it, obeys
+/// the model provider contract. The runtime takes only its own key, so this
+/// is also what shows composition hands the provider that key.
+#[tokio::test]
+async fn a_supervised_runtime_as_assembled_obeys_the_provider_contract() {
+    use std::sync::{Arc, Mutex};
+    use tramontana_core::testing::contract_suites::{ProviderScenario, model_provider_contract};
+
+    let directory = tempfile::tempdir().unwrap();
+    let model = directory.path().join("model.gguf");
+    std::fs::write(&model, b"not a real model").unwrap();
+    let planes = Arc::new(Mutex::new(Vec::new()));
+
+    model_provider_contract(|scenario| {
+        let model = model.clone();
+        let planes = Arc::clone(&planes);
+        async move {
+            let extra_args = match scenario {
+                ProviderScenario::Streams(chunks) => {
+                    let mut args = vec!["--fake-chat".to_owned(), "streams".to_owned()];
+                    for chunk in chunks {
+                        args.extend(["--fake-chunk".to_owned(), chunk]);
+                    }
+                    args
+                }
+                ProviderScenario::Fails => vec!["--fake-chat".to_owned(), "fails".to_owned()],
+                ProviderScenario::Slow => vec!["--fake-chat".to_owned(), "silent".to_owned()],
+            };
+            let endpoint = ProviderEndpoint::new(
+                "local",
+                "Local",
+                ProviderConfig::LlamaServer {
+                    binary_path: fake_llama_server().display().to_string(),
+                    model_path: model.display().to_string(),
+                    model_id: "test-model".to_owned(),
+                    extra_args,
+                    provenance: None,
+                },
+                at(),
+            );
+            let plane = assemble_models(&[endpoint], &resolver(), Supervision::Start).await;
+            assert!(plane.failures.is_empty(), "{:?}", plane.failures);
+            let provider = Arc::clone(&plane.providers[0]);
+            planes.lock().unwrap().push(plane);
+            provider
+        }
+    })
+    .await;
+
+    let planes = std::mem::take(&mut *planes.lock().unwrap());
+    for mut plane in planes {
+        plane.shutdown().await;
+    }
+}

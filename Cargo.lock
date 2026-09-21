@@ -5081,6 +5081,7 @@ dependencies = [
  "tracing",
  "tramontana-adapters-model",
  "tramontana-core",
+ "uuid",
 ]
 
 [[package]]

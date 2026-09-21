@@ -293,6 +293,8 @@ pub struct SupervisedLlamaServer {
     version: ProbedVersion,
     /// This runtime's record, removed when it stops.
     record: Option<PathBuf>,
+    /// The key a request must carry, when the runtime can require one.
+    api_key: Option<String>,
 }
 
 impl std::fmt::Debug for SupervisedLlamaServer {
@@ -367,7 +369,26 @@ impl SupervisedLlamaServer {
             None => reserve_port().await?,
         };
 
+        // Out of the box both runtimes answer any request that reaches their
+        // port and tell a browser any page may read the answer, so a web page
+        // could run prompts on the person's model and read them — the answer
+        // even names the model's full path. `llama-server` is given a key
+        // only this process knows, through its environment because a key in
+        // the arguments is visible to every process on the machine
+        // (`SECURITY_AND_PERMISSIONS.md` §7). `mlx_lm.server` has no key, so
+        // it is told that no web origin may read it: a page can still make it
+        // work, but cannot read what it says.
+        let api_key = match spec.kind {
+            RuntimeKind::LlamaServer => Some(uuid::Uuid::new_v4().simple().to_string()),
+            RuntimeKind::MlxLm => None,
+        };
         let mut command = base_command(&spec.binary);
+        if let Some(key) = &api_key {
+            command.env("LLAMA_API_KEY", key);
+        }
+        if spec.kind == RuntimeKind::MlxLm {
+            command.arg("--allowed-origins").arg("none");
+        }
         command
             .arg("--model")
             .arg(&spec.model)
@@ -427,6 +448,7 @@ impl SupervisedLlamaServer {
                 .map_err(|failure| StartError::Spawn(failure.to_string()))?,
             version,
             record,
+            api_key,
         };
 
         match server.await_ready(spec.readiness_timeout).await {
@@ -439,6 +461,14 @@ impl SupervisedLlamaServer {
                 Err(error)
             }
         }
+    }
+
+    /// The key every model request must carry, when this runtime takes one.
+    ///
+    /// Never stored and never printed; it lives as long as this runtime.
+    #[must_use]
+    pub fn api_key(&self) -> Option<&str> {
+        self.api_key.as_deref()
     }
 
     /// Where the runtime can be reached.

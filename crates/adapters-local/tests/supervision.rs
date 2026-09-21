@@ -458,3 +458,109 @@ fn only_apple_silicon_macs_can_run_mlx() {
         cfg!(all(target_os = "macos", target_arch = "aarch64"))
     );
 }
+
+/// A model request to `base_url`, with `key` as its bearer token and
+/// `origin` as a web page's, answered with its status.
+async fn chat_status(base_url: &str, key: Option<&str>, origin: Option<&str>) -> u16 {
+    let mut request = reqwest::Client::new()
+        .post(format!("{base_url}/v1/chat/completions"))
+        .header("content-type", "text/plain")
+        .body(r#"{"messages":[{"role":"user","content":"hi"}]}"#);
+    if let Some(key) = key {
+        request = request.bearer_auth(key);
+    }
+    if let Some(origin) = origin {
+        request = request.header("origin", origin);
+    }
+    request.send().await.unwrap().status().as_u16()
+}
+
+/// Out of the box, `llama-server` answers any request on its port and tells
+/// a browser any page may read the answer. Checked against the real runtime,
+/// build 10964: a request carrying a web page's origin was served, and its
+/// origin echoed back. Supervised, a runtime takes only this process's key.
+#[tokio::test]
+async fn a_supervised_runtime_answers_only_requests_carrying_its_key() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut spec = spec(&directory);
+    spec.extra_args = vec![
+        "--fake-chat".to_owned(),
+        "streams".to_owned(),
+        "--fake-chunk".to_owned(),
+        "ok".to_owned(),
+    ];
+    let mut server = SupervisedLlamaServer::start(&spec).await.unwrap();
+    let base = server.base_url();
+    let key = server
+        .api_key()
+        .expect("a llama-server is given a key")
+        .to_owned();
+    assert!(key.len() >= 32, "a key too short to be unguessable");
+
+    // Readiness is still open, or the supervisor could not see it load.
+    assert_eq!(server.health().await, Health::Available);
+    assert_eq!(chat_status(&base, None, None).await, 401);
+    assert_eq!(
+        chat_status(&base, None, Some("https://page.example")).await,
+        401,
+        "a web page reached the model"
+    );
+    assert_eq!(chat_status(&base, Some("guessed"), None).await, 401);
+    assert_eq!(chat_status(&base, Some(&key), None).await, 200);
+
+    // Another launch, another key.
+    let mut other = SupervisedLlamaServer::start(&spec).await.unwrap();
+    assert_ne!(other.api_key(), Some(key.as_str()));
+    other.shutdown().await;
+    server.shutdown().await;
+}
+
+/// The arguments a process was started with, as any process on the machine
+/// can read them.
+#[cfg(unix)]
+fn arguments_of(pid: u64) -> String {
+    let output = std::process::Command::new("ps")
+        .args(["-ww", "-o", "args=", "-p", &pid.to_string()])
+        .output()
+        .expect("`ps` must be available");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_runtimes_key_is_never_in_its_arguments() {
+    let directory = tempfile::tempdir().unwrap();
+    let records = directory.path().join("runtimes");
+    let mut spec = spec(&directory);
+    spec.records = Some(records.clone());
+    let mut server = start_in_mode(&spec, "ready", 0).await.unwrap();
+    let key = server.api_key().unwrap().to_owned();
+    let pid = records_in(&records)[0]["pid"].as_u64().unwrap();
+
+    let arguments = arguments_of(pid);
+    assert!(arguments.contains("--port"), "not the runtime: {arguments}");
+    assert!(
+        !arguments.contains(&key),
+        "the key is visible to every process: {arguments}"
+    );
+    server.shutdown().await;
+}
+
+/// `mlx_lm.server` takes no key, so it is told no web page may read it.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[tokio::test]
+async fn an_mlx_runtime_lets_no_web_page_read_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let records = directory.path().join("runtimes");
+    let mut spec = mlx_spec(&directory);
+    spec.records = Some(records.clone());
+    let mut server = start_in_mode(&spec, "ready", 0).await.unwrap();
+    assert_eq!(server.api_key(), None);
+    let pid = records_in(&records)[0]["pid"].as_u64().unwrap();
+    assert!(
+        arguments_of(pid).contains("--allowed-origins none"),
+        "{}",
+        arguments_of(pid)
+    );
+    server.shutdown().await;
+}

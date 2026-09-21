@@ -388,7 +388,9 @@ async fn bring_up(
                 provider_id,
                 runtime.base_url(),
                 descriptor(endpoint, model_id, ModelLocation::Local),
-                ProviderAuth::None,
+                runtime.api_key().map_or(ProviderAuth::None, |key| {
+                    ProviderAuth::Session(key.to_owned())
+                }),
             )?;
             supervised.push(runtime);
             Ok(Arc::new(provider))
