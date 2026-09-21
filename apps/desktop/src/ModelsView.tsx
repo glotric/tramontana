@@ -50,7 +50,15 @@ function describeUse(
 ): string {
   if (!endpoint.enabled) return "Turned off";
   if (running === undefined) return "Not in use until Tramontana restarts";
-  if (running.available) return `In use · ${running.models.join(", ")}`;
+  if (running.available) {
+    const where =
+      running.accelerators === undefined
+        ? ""
+        : running.accelerators.length === 0
+          ? " · reported no GPU, so it may run on the processor alone"
+          : ` · on ${running.accelerators.join(", ")}`;
+    return `In use · ${running.models.join(", ")}${where}`;
+  }
   return `Unavailable: ${running.unavailableReason ?? "no reason was given"}`;
 }
 

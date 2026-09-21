@@ -42,6 +42,14 @@ const BUILD: u64 = 9999;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--list-devices") {
+        // The shape build 10964 prints: one accelerator, and a processor
+        // library that is not one.
+        println!("Available devices:");
+        println!("  FAKE0: Stand-in GPU (1024 MiB, 1024 MiB free)");
+        println!("  BLAS: Stand-in BLAS (0 MiB, 0 MiB free)");
+        return;
+    }
     if args.iter().any(|arg| arg == "--version") {
         // The banner shape the supervisor parses, on stdout.
         println!("version: {BUILD} (fake0000)");

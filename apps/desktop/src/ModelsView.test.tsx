@@ -306,4 +306,20 @@ describe("the Models view", () => {
     expect(await screen.findByText(/The model changed since it was recorded/)).toBeInTheDocument();
     expect(checkEndpointModel).toHaveBeenCalledWith("llama");
   });
+
+  it("says which accelerator a runtime it started reported, or that it reported none", async () => {
+    listConfiguredEndpoints.mockResolvedValue([
+      llama,
+      { ...llama, endpointId: "cpu", displayName: "On the processor" },
+    ]);
+    listModelEndpoints.mockResolvedValue([
+      { ...health[0], accelerators: ["Apple M3 Max (MTL0, 28 GB)"] },
+      { ...health[0], endpointId: "cpu", accelerators: [] },
+    ]);
+    render(<ModelsView onClose={() => undefined} />);
+    await screen.findByRole("heading", { name: "Local Qwen" });
+
+    expect(endpoint("Local Qwen")).toHaveTextContent("on Apple M3 Max (MTL0, 28 GB)");
+    expect(endpoint("On the processor")).toHaveTextContent("reported no GPU");
+  });
 });

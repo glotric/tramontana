@@ -471,3 +471,25 @@ async fn a_supervised_runtime_as_assembled_obeys_the_provider_contract() {
         plane.shutdown().await;
     }
 }
+
+#[tokio::test]
+async fn a_started_runtimes_accelerators_are_kept_for_its_endpoint() {
+    let directory = tempfile::tempdir().unwrap();
+    let binary = own_copy_of_the_runtime(directory.path());
+    let mut plane = assemble_models(
+        &[
+            recorded_llama(directory.path(), &binary, None),
+            openai("good", "http://localhost:8080"),
+        ],
+        &resolver(),
+        Supervision::Start,
+    )
+    .await;
+    assert_eq!(
+        plane.accelerators("llama"),
+        Some(&["Stand-in GPU (FAKE0, 1 GB)".to_owned()][..])
+    );
+    // An endpoint Tramontana only points at reports nothing of the kind.
+    assert_eq!(plane.accelerators("good"), None);
+    plane.shutdown().await;
+}

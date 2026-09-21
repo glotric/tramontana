@@ -248,6 +248,50 @@ pub async fn probe_version(binary: &Path) -> Result<ProbedVersion, StartError> {
     })
 }
 
+/// The accelerators a `llama-server` reports it can use, from
+/// `--list-devices`, for the person to see where their model runs.
+///
+/// Best effort, and bounded: a build without the flag, or one that does not
+/// answer within a few seconds, reports none, and that never stops the
+/// runtime from starting.
+pub async fn probe_devices(binary: &Path) -> Vec<String> {
+    let run = base_command(binary).arg("--list-devices").output();
+    match tokio::time::timeout(Duration::from_secs(10), run).await {
+        Ok(Ok(output)) => {
+            let mut printed = String::from_utf8_lossy(&output.stdout).into_owned();
+            printed.push_str(&String::from_utf8_lossy(&output.stderr));
+            parse_devices(&printed)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The devices in `--list-devices` output that have memory of their own.
+///
+/// Lines look like `  MTL0: Apple M3 Max (28753 MiB, 28753 MiB free)`. A
+/// library that runs on the processor lists no memory — `BLAS: Accelerate
+/// (0 MiB, 0 MiB free)` — and is not an accelerator, so it is left out.
+#[must_use]
+pub fn parse_devices(printed: &str) -> Vec<String> {
+    printed
+        .lines()
+        .skip_while(|line| !line.trim_start().starts_with("Available devices"))
+        .skip(1)
+        .filter_map(|line| {
+            let (name, rest) = line.trim().split_once(": ")?;
+            let (description, memory) = rest.rsplit_once(" (")?;
+            let total = memory.split_once(" MiB")?.0.trim().parse::<u64>().ok()?;
+            (total > 0).then(|| {
+                format!(
+                    "{} ({name}, {} GB)",
+                    truncate(description, 120),
+                    (total + 512) / 1024
+                )
+            })
+        })
+        .collect()
+}
+
 /// The build number in a `llama.cpp` version banner, if there is one.
 ///
 /// The banner has looked like `version: 3527 (a1b2c3d)` for a long time, but
@@ -295,6 +339,8 @@ pub struct SupervisedLlamaServer {
     record: Option<PathBuf>,
     /// The key a request must carry, when the runtime can require one.
     api_key: Option<String>,
+    /// The accelerators the runtime reported, in the person's words.
+    accelerators: Vec<String>,
 }
 
 impl std::fmt::Debug for SupervisedLlamaServer {
@@ -449,6 +495,11 @@ impl SupervisedLlamaServer {
             version,
             record,
             api_key,
+            accelerators: match spec.kind {
+                RuntimeKind::LlamaServer => probe_devices(&spec.binary).await,
+                // MLX runs on Apple silicon's GPU by construction.
+                RuntimeKind::MlxLm => vec!["Apple silicon GPU (MLX)".to_owned()],
+            },
         };
 
         match server.await_ready(spec.readiness_timeout).await {
@@ -461,6 +512,13 @@ impl SupervisedLlamaServer {
                 Err(error)
             }
         }
+    }
+
+    /// The accelerators this runtime reported it can use. Empty means none
+    /// were reported: it may be running on the processor alone.
+    #[must_use]
+    pub fn accelerators(&self) -> &[String] {
+        &self.accelerators
     }
 
     /// The key every model request must carry, when this runtime takes one.
@@ -938,5 +996,21 @@ mod tests {
         assert!(cut.ends_with('…'));
         // The point: this would panic on a byte slice through a character.
         assert!(cut.chars().count() > 1);
+    }
+
+    #[test]
+    fn devices_with_memory_are_accelerators_and_a_processor_library_is_not() {
+        // What llama-server build 10964 prints on an M3 Max.
+        let printed = "load_backend: loaded stuff\nAvailable devices:\n  MTL0: Apple M3 Max (28753 MiB, 28753 MiB free)\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n";
+        assert_eq!(parse_devices(printed), ["Apple M3 Max (MTL0, 28 GB)"]);
+        // A GPU on another platform, and a machine with none.
+        assert_eq!(
+            parse_devices(
+                "Available devices:\n  CUDA0: NVIDIA GeForce RTX 4090 (24080 MiB, 23000 MiB free)\n"
+            ),
+            ["NVIDIA GeForce RTX 4090 (CUDA0, 24 GB)"]
+        );
+        assert!(parse_devices("Available devices:\n").is_empty());
+        assert!(parse_devices("error: unknown argument: --list-devices").is_empty());
     }
 }

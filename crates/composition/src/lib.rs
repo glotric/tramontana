@@ -209,8 +209,8 @@ pub struct ModelPlane {
     pub failures: Vec<EndpointFailure>,
     /// Supervised endpoints deliberately not started for this command.
     pub skipped: Vec<String>,
-    /// Runtimes this process started and must stop.
-    supervised: Vec<SupervisedLlamaServer>,
+    /// Runtimes this process started and must stop, by endpoint.
+    supervised: Vec<(String, SupervisedLlamaServer)>,
 }
 
 impl std::fmt::Debug for ModelPlane {
@@ -225,13 +225,24 @@ impl std::fmt::Debug for ModelPlane {
 }
 
 impl ModelPlane {
+    /// The accelerators a runtime this process started reported, for the
+    /// endpoint that started it; `None` for an endpoint Tramontana did not
+    /// start. An empty list means none were reported.
+    #[must_use]
+    pub fn accelerators(&self, endpoint_id: &str) -> Option<&[String]> {
+        self.supervised
+            .iter()
+            .find(|(id, _)| id == endpoint_id)
+            .map(|(_, runtime)| runtime.accelerators())
+    }
+
     /// Stop every runtime this process started.
     ///
     /// Providers that were only *pointed at* something — a URL the user
     /// already had running — are left alone: stopping a server we did not
     /// start would be reaching outside what we own.
     pub async fn shutdown(&mut self) {
-        for runtime in &mut self.supervised {
+        for (_, runtime) in &mut self.supervised {
             runtime.shutdown().await;
         }
         self.supervised.clear();
@@ -302,7 +313,7 @@ pub async fn assemble_models_recording(
 async fn bring_up(
     endpoint: &ProviderEndpoint,
     resolver: &Arc<dyn SecretResolver>,
-    supervised: &mut Vec<SupervisedLlamaServer>,
+    supervised: &mut Vec<(String, SupervisedLlamaServer)>,
     records: Option<&std::path::Path>,
 ) -> Result<Arc<dyn ModelProvider>, ErrorEnvelope> {
     // The configured endpoint's identifier *is* the provider identifier, so a
@@ -392,7 +403,7 @@ async fn bring_up(
                     ProviderAuth::Session(key.to_owned())
                 }),
             )?;
-            supervised.push(runtime);
+            supervised.push((endpoint.endpoint_id.clone(), runtime));
             Ok(Arc::new(provider))
         }
 

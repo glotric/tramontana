@@ -1155,6 +1155,10 @@ pub(crate) struct ModelEndpointStatus {
     /// Why it did not, when it did not. Already normalized and secret-free.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) unavailable_reason: Option<String>,
+    /// For a runtime Tramontana started, the accelerators it reported it can
+    /// use; empty when it reported none. Absent for anything else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) accelerators: Option<Vec<String>>,
 }
 
 /// Report every configured model endpoint and whether it is usable.
@@ -1176,8 +1180,10 @@ pub(crate) async fn list_model_endpoints(
 
     for provider in &plane.providers {
         let models = provider.list_models().await;
+        let endpoint_id = provider.id().to_string();
         statuses.push(ModelEndpointStatus {
-            endpoint_id: provider.id().to_string(),
+            accelerators: plane.accelerators(&endpoint_id).map(<[String]>::to_vec),
+            endpoint_id,
             leaves_the_device: models
                 .iter()
                 .any(|model| model.location == tramontana_core::contracts::ModelLocation::Cloud),
@@ -1196,6 +1202,7 @@ pub(crate) async fn list_model_endpoints(
             leaves_the_device: false,
             available: false,
             unavailable_reason: Some(failure.error.message.clone()),
+            accelerators: None,
         });
     }
 

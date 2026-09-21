@@ -564,3 +564,12 @@ async fn an_mlx_runtime_lets_no_web_page_read_it() {
     );
     server.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_runtime_reports_the_accelerators_it_can_use() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut server = start_in_mode(&spec(&directory), "ready", 0).await.unwrap();
+    // The stand-in lists one GPU and a processor library, as build 10964 does.
+    assert_eq!(server.accelerators(), ["Stand-in GPU (FAKE0, 1 GB)"]);
+    server.shutdown().await;
+}

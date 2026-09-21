@@ -156,6 +156,11 @@ export interface ModelEndpointStatus {
   readonly leavesTheDevice: boolean;
   readonly available: boolean;
   readonly unavailableReason?: string;
+  /**
+   * For a runtime Tramontana started, the accelerators it reported; empty
+   * when it reported none, so it may be running on the processor alone.
+   */
+  readonly accelerators?: readonly string[];
 }
 
 /** Every configured endpoint, with whether its credential is stored. */
