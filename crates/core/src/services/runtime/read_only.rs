@@ -20,14 +20,24 @@ const CALLS_NOT_RUN: &str = "reference.callsNotRun";
 struct Reservation {
     limits: ReadOnlyLimits,
     /// Recorded so a resume cannot change what the model may be offered.
-    /// Read-only reservations omit it and keep their M6 shape.
-    #[serde(default, skip_serializing_if = "ToolAdmission::is_read_only")]
+    /// Reservations at M6's level omit it and keep their M6 shape.
+    ///
+    /// Omitted only when it *is* that level. `is_read_only` is not the test:
+    /// a task that admits Apps and nothing else is read-only by that measure,
+    /// and omitting its admission read it back without Apps, so its second
+    /// turn saw the admission change and interrupted the task.
+    #[serde(default, skip_serializing_if = "is_m6_level")]
     admission: ToolAdmission,
     input_bytes: u64,
     output_bytes: u64,
     output_tokens: u64,
     time_ms: u64,
     tools: u64,
+}
+
+/// Whether an admission is M6's reads-only level, which reservations omit.
+fn is_m6_level(admission: &ToolAdmission) -> bool {
+    *admission == ToolAdmission::READ_ONLY
 }
 
 impl BrokeredHost {
@@ -518,4 +528,48 @@ fn validate_limits(limits: &ReadOnlyLimits) -> Result<(), ErrorEnvelope> {
         return Err(error(ErrorCode::InvalidRequest));
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests assert on known-good literals; a panic is the failure report"
+)]
+mod tests {
+    use super::*;
+
+    fn reservation(admission: ToolAdmission) -> Reservation {
+        Reservation {
+            limits: ReadOnlyLimits::default(),
+            admission,
+            input_bytes: 0,
+            output_bytes: TOOL_BYTES,
+            output_tokens: 0,
+            time_ms: ReadOnlyLimits::default().turn_ms,
+            tools: 1,
+        }
+    }
+
+    #[test]
+    fn every_admission_reads_back_as_it_was_recorded() {
+        // A resume compares the recorded admission with the task's own, so a
+        // record that loses any part of it interrupts the task.
+        for admission in [
+            ToolAdmission::READ_ONLY,
+            ToolAdmission::READ_ONLY.with_apps(),
+            ToolAdmission::READ_WRITE,
+            ToolAdmission::READ_ONLY.with_recipes(),
+            ToolAdmission::READ_WRITE.with_recipes().with_apps(),
+        ] {
+            let recorded = serde_json::to_string(&reservation(admission)).unwrap();
+            let read: Reservation = serde_json::from_str(&recorded).unwrap();
+            assert_eq!(read.admission, admission, "{recorded}");
+        }
+    }
+
+    #[test]
+    fn a_reads_only_reservation_keeps_its_m6_shape() {
+        let recorded = serde_json::to_string(&reservation(ToolAdmission::READ_ONLY)).unwrap();
+        assert!(!recorded.contains("admission"), "{recorded}");
+    }
 }
