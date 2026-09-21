@@ -82,7 +82,12 @@ export default tseslint.config(
     },
   },
   {
-    files: ["scripts/**/*.mjs", "*.config.{js,ts}", "**/vite.config.ts"],
+    files: [
+      "scripts/**/*.mjs",
+      "apps/desktop/e2e/**/*.mjs",
+      "*.config.{js,ts}",
+      "**/vite.config.ts",
+    ],
     languageOptions: { globals: globals.node },
   },
   {
@@ -98,7 +103,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["scripts/**/*.mjs", "eslint.config.js"],
+    files: ["scripts/**/*.mjs", "apps/desktop/e2e/**/*.mjs", "eslint.config.js"],
     extends: [tseslint.configs.disableTypeChecked],
   },
   prettier,

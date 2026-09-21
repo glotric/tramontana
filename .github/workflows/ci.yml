@@ -204,6 +204,54 @@ jobs:
       - name: CLI runs
         run: cargo run --quiet -p tramontana-cli -- info
 
+  # The real window, driven through its webview and IPC (ADR 0041). Linux
+  # only: tauri-driver has no macOS driver, and Windows is not tried yet.
+  desktop-window:
+    name: Desktop window (Linux, WebDriver)
+    runs-on: ubuntu-24.04
+    needs: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Linux system dependencies
+        run: |
+          # The same unused third-party sources the Rust job removes, for the
+          # same reason.
+          for source in $(grep -rIl -e 'dl\.google\.com' -e 'packages\.microsoft\.com' \
+                          /etc/apt/sources.list.d/ 2>/dev/null); do
+            sudo rm -f "$source"
+          done
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            patchelf \
+            webkit2gtk-driver \
+            xvfb \
+            dbus-x11
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      - name: Enable pnpm
+        run: corepack enable pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --version =2.0.6 --locked
+      - name: Build the application and the CLI
+        run: |
+          pnpm --filter @tramontana/desktop exec tauri build --debug --no-bundle
+          cargo build -p tramontana-cli
+      - name: Drive the window
+        env:
+          TRAMONTANA_APP: ${{ github.workspace }}/target/debug/tramontana-desktop
+          TRAMONTANA_CLI: ${{ github.workspace }}/target/debug/tramontana
+        run: dbus-run-session -- xvfb-run -a node apps/desktop/e2e/window.mjs
+
   supply-chain:
     name: Dependency audit
     runs-on: ubuntu-latest
