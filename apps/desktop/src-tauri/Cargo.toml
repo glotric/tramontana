@@ -24,6 +24,7 @@ tauri-build = { version = "2.6.3", features = [] }
 [dependencies]
 tramontana-core = { workspace = true }
 tramontana-composition = { workspace = true }
+tramontana-adapters-mcp = { workspace = true }
 tramontana-adapters-tools = { workspace = true }
 tramontana-persistence = { workspace = true }
 tramontana-platform = { workspace = true }

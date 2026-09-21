@@ -45,6 +45,8 @@ pub(crate) struct AppState {
     pub(crate) models: Arc<tokio::sync::Mutex<ModelPlane>>,
     /// The Apps this process started, stopped with it (ADR 0036).
     pub(crate) apps: tramontana_composition::AppPlane,
+    /// The profile's App settings, which the Apps screen changes.
+    pub(crate) app_settings: Arc<SqliteAppSettingsRepository>,
     /// The bundle folder the person last inspected, waiting for them to
     /// confirm the import.
     pub(crate) staged_bundle: Arc<crate::bundles::StagedSlot>,
@@ -92,7 +94,8 @@ impl AppState {
         // reason the window cannot open.
         let vault = Arc::new(PlatformSecretVault::new());
         let resolver = Arc::clone(&vault) as Arc<dyn SecretResolver>;
-        let configured_apps = SqliteAppSettingsRepository::new(database.clone())
+        let app_settings = Arc::new(SqliteAppSettingsRepository::new(database.clone()));
+        let configured_apps = app_settings
             .list()
             .await
             .map_err(|error| format!("could not read App settings: {error}"))?;
@@ -219,6 +222,7 @@ impl AppState {
             approvals,
             models: Arc::new(tokio::sync::Mutex::new(plane)),
             apps,
+            app_settings,
             staged_bundle: Arc::new(std::sync::Mutex::new(None)),
             settings,
             vault,

@@ -7,6 +7,7 @@
 //! result. The CLI is its peer over the same services.
 
 mod approval;
+mod apps;
 mod bundles;
 mod commands;
 mod settings;
@@ -86,6 +87,9 @@ pub fn run() {
             commands::list_project_grants,
             commands::revoke_project_grant,
             commands::list_model_endpoints,
+            commands::list_apps,
+            commands::set_app_enabled,
+            commands::app_permission_history,
         ])
         .build(tauri::generate_context!())
         .expect("failed to start the Tramontana desktop shell")

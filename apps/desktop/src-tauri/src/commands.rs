@@ -1130,3 +1130,43 @@ pub(crate) async fn list_model_endpoints(
 
     Ok(statuses)
 }
+
+/// Every configured App, and how each is doing in this window (ADR 0040).
+///
+/// # Errors
+///
+/// [`ErrorCode::PersistenceError`] when the App settings cannot be read.
+#[tauri::command]
+pub(crate) async fn list_apps(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::apps::AppView>, ErrorEnvelope> {
+    crate::apps::list(&state).await
+}
+
+/// Turn an App on or off. Takes effect the next time Tramontana opens.
+///
+/// # Errors
+///
+/// [`ErrorCode::NotFound`] when no App has that identifier, or
+/// [`ErrorCode::PersistenceError`].
+#[tauri::command]
+pub(crate) async fn set_app_enabled(
+    app_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    crate::apps::set_enabled(state.app_settings.as_ref(), &app_id, enabled).await
+}
+
+/// What was decided about an App's tools, newest first, from the record.
+///
+/// # Errors
+///
+/// Whatever reading the record reports.
+#[tauri::command]
+pub(crate) async fn app_permission_history(
+    app_id: String,
+    state: State<'_, AppState>,
+) -> Result<crate::apps::AppHistory, ErrorEnvelope> {
+    crate::apps::history(&state.service, &app_id).await
+}

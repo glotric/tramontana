@@ -20,7 +20,7 @@ mod apps;
 
 use std::sync::Arc;
 
-pub use apps::{AppFailure, AppPlane, app_folder, start_app, start_apps};
+pub use apps::{AppFailure, AppPlane, app_folder, offerable, start_app, start_apps};
 use tramontana_adapters_local::{LlamaServerSpec, SupervisedLlamaServer};
 use tramontana_adapters_model::{AnthropicProvider, OpenAiCompatibleProvider, ProviderAuth};
 use tramontana_core::contracts::{
