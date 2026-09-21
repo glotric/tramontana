@@ -261,4 +261,61 @@ mod tests {
         // out — is reported rather than silently accepted.
         assert!(!approver.resolve(&id, ApprovalDecisionKind::Deny));
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_question_nobody_answers_expires_and_is_refused() {
+        // Fail closed: a task waiting on a card nobody looked at stops rather
+        // than holding its worker forever, and the card does not linger to be
+        // answered after the task has moved on.
+        let approver = DesktopApprover::waiting();
+        let asking = tokio::spawn({
+            let approver = approver.clone();
+            async move { approver.ask(&question("approval-1")).await }
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(approver.pending().len(), 1);
+
+        tokio::time::advance(ANSWER_TIMEOUT + std::time::Duration::from_secs(1)).await;
+        // Checked before awaiting: a paused clock jumps to the next timer
+        // whenever nothing else can run, so awaiting first would expire any
+        // timeout, however long.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(asking.is_finished(), "still waiting past the timeout");
+        let answer = asking.await.unwrap();
+
+        assert!(
+            matches!(answer, Err(PermissionError::Expired)),
+            "{answer:?}"
+        );
+        assert!(approver.pending().is_empty());
+        assert!(!approver.resolve(
+            &ApprovalId::new("approval-1"),
+            ApprovalDecisionKind::AllowOnce
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_question_answered_in_time_is_not_expired() {
+        let approver = DesktopApprover::waiting();
+        let asking = tokio::spawn({
+            let approver = approver.clone();
+            async move { approver.ask(&question("approval-1")).await }
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(ANSWER_TIMEOUT - std::time::Duration::from_secs(1)).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!asking.is_finished(), "gave up before the timeout");
+        assert!(approver.resolve(
+            &ApprovalId::new("approval-1"),
+            ApprovalDecisionKind::AllowOnce
+        ));
+        assert_eq!(
+            asking.await.unwrap().ok(),
+            Some(ApprovalDecisionKind::AllowOnce)
+        );
+    }
 }

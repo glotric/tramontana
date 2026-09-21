@@ -37,6 +37,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Paused time, so a five-minute approval timeout is tested in no time.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
