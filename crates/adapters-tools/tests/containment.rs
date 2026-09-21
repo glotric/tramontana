@@ -152,6 +152,43 @@ async fn a_windows_device_or_stream_is_refused_though_it_looks_inside() {
     }
 }
 
+/// Percent-encoding is not a path syntax: `%2e%2e` is a folder named that,
+/// not the parent. Nothing between the model and the file system decodes a
+/// path, so an encoded traversal names something inside the project that
+/// does not exist, and never reaches the file outside it.
+#[tokio::test]
+async fn an_encoded_traversal_is_a_name_and_not_a_way_out() {
+    let (temp, root) = project();
+    std::fs::write(temp.path().join("secret.txt"), "credentials").unwrap();
+
+    for encoded in [
+        "%2e%2e/secret.txt",
+        "%2E%2E%2Fsecret.txt",
+        "..%2fsecret.txt",
+        "src/%2e%2e%2f%2e%2e%2fsecret.txt",
+    ] {
+        let request = authorize(
+            "builtin.fs.read",
+            &[&root],
+            serde_json::json!({ "path": encoded }),
+        )
+        .await;
+        let result = FilesystemTools::new()
+            .invoke(request, CancellationToken::new())
+            .await;
+        match result {
+            Err(error) => assert!(
+                matches!(
+                    error.code,
+                    ErrorCode::NotFound | ErrorCode::PermissionDenied
+                ),
+                "{encoded}: {error:?}"
+            ),
+            Ok(outcome) => panic!("{encoded} read something: {:?}", outcome.content),
+        }
+    }
+}
+
 #[tokio::test]
 async fn an_absolute_path_outside_the_project_is_refused() {
     let (temp, root) = project();
