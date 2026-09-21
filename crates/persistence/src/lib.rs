@@ -10,9 +10,12 @@
 //! is what lets the same contract suites run against the in-memory fakes and
 //! against this.
 
+mod apps;
 mod database;
 mod event_store;
 mod repositories;
+
+pub use apps::SqliteAppSettingsRepository;
 
 pub use database::{Database, DatabaseError};
 pub use event_store::SqliteEventStore;

@@ -29,8 +29,8 @@ pub use permission::{
 };
 pub use read_only::{ReadOnlyLimits, ReadOnlyTurn, TOOL_RUN_LIMIT, ToolAdmission};
 pub use repository::{
-    CheckpointRepository, ConfigurationRepository, ConversationRepository, ProjectRepository,
-    ProviderSettingsRepository, RepositoryError, TaskRepository,
+    AppSettingsRepository, CheckpointRepository, ConfigurationRepository, ConversationRepository,
+    ProjectRepository, ProviderSettingsRepository, RepositoryError, TaskRepository,
 };
 pub use secret::{SecretResolver, SecretVault};
 pub use tool::{ToolInvocation, ToolOutcome, ToolProvider};

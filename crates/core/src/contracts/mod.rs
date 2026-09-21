@@ -14,6 +14,7 @@
 //!   as unsupported rather than failing the parse;
 //! - secrets are never serialized — only an opaque [`SecretRef`].
 
+mod app;
 mod artifact;
 mod checkpoint;
 mod configuration;
@@ -34,6 +35,7 @@ mod routing;
 mod task;
 mod time;
 
+pub use app::{AppConfig, AppLaunch, AppSecret, AppVariable, MAX_APP_ID, is_valid_app_id};
 pub use artifact::{
     ArtifactContent, ArtifactProducer, ArtifactRecord, ArtifactRelation, CHANGED_FILES_MEDIA_TYPE,
     FileChange, FileChangeKind,

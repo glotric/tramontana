@@ -6,6 +6,7 @@
 //! arguments into an application call and renders the result; no routing,
 //! permission, or task behavior lives in this crate.
 
+mod app;
 mod approval;
 mod bundle;
 mod configuration;
@@ -43,6 +44,8 @@ enum Command {
     Bundle(bundle::BundleArgs),
     /// Resolve and inspect project-authored configuration.
     Configuration(configuration::ConfigurationArgs),
+    /// Configure Apps: MCP servers Tramontana starts.
+    App(app::AppArgs),
     /// Configure where models can be reached.
     Provider(provider::ProviderArgs),
     /// Store, inspect, and remove credentials in the operating system store.
@@ -86,6 +89,7 @@ async fn execute(command: Command) -> std::process::ExitCode {
         Command::Conversation(args) => conversation::execute(args).await,
         Command::Bundle(args) => bundle::execute(args).await,
         Command::Configuration(args) => configuration::execute(args).await,
+        Command::App(args) => app::execute(args).await,
         Command::Provider(args) => provider::execute(args).await,
         Command::Secret(args) => secret::execute(args).await,
         Command::Task(args) => run::execute(args).await,

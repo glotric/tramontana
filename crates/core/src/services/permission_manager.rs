@@ -11,6 +11,7 @@ use crate::ports::{
     ApprovalStore, Approver, IdSource, PermissionError, PermissionOutcome, PermissionPolicy,
     PermissionQuery, reason,
 };
+use crate::services::is_app_tool;
 
 /// Evaluates tool requests against policy, and is the only source of
 /// [`AuthorizedToolRequest`].
@@ -123,7 +124,8 @@ impl PermissionManager {
     ) -> (PermissionOutcome, Option<AuthorizedToolRequest>) {
         let quiet_read = query.risk_class == RiskClass::Read
             && query.scope.project_id.is_some()
-            && !query.scope.releases_data;
+            && !query.scope.releases_data
+            && !is_app_tool(&query.tool_id);
         if !quiet_read {
             return (
                 PermissionOutcome::Denied {
@@ -326,6 +328,8 @@ impl PermissionPolicy for PermissionManager {
         if query.risk_class == RiskClass::Read
             && query.scope.project_id.is_some()
             && !query.scope.releases_data
+            // An App's claim to read only is its own (ADR 0035).
+            && !is_app_tool(&query.tool_id)
         {
             return Ok(PermissionOutcome::Allowed {
                 reason_code: reason::SAFE_DEFAULT,
@@ -378,6 +382,28 @@ fn describe(query: &PermissionQuery) -> Vec<ApprovalDetail> {
         details.push(ApprovalDetail {
             label: "Within".to_owned(),
             value: query.scope.roots.join(", "),
+        });
+    }
+    if is_app_tool(&query.tool_id) {
+        // Whose tool this is, and that what it says about itself is its own
+        // word (ADR 0035).
+        details.push(ApprovalDetail {
+            label: "App".to_owned(),
+            value: query
+                .tool_id
+                .split('.')
+                .nth(1)
+                .unwrap_or_default()
+                .to_owned(),
+        });
+        details.push(ApprovalDetail {
+            label: "The App says".to_owned(),
+            value: if query.risk_class == RiskClass::Read {
+                "it only reads (not verified)"
+            } else {
+                "nothing about what it does"
+            }
+            .to_owned(),
         });
     }
     if query.scope.releases_data {

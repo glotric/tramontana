@@ -5,6 +5,7 @@ members = [
     "crates/adapters-tools",
     "crates/adapters-model",
     "crates/adapters-local",
+    "crates/adapters-mcp",
     "crates/composition",
     "crates/persistence",
     "crates/platform",
@@ -29,6 +30,7 @@ tramontana-core = { path = "crates/core" }
 tramontana-adapters-tools = { path = "crates/adapters-tools" }
 tramontana-adapters-model = { path = "crates/adapters-model" }
 tramontana-adapters-local = { path = "crates/adapters-local" }
+tramontana-adapters-mcp = { path = "crates/adapters-mcp" }
 tramontana-composition = { path = "crates/composition" }
 tramontana-persistence = { path = "crates/persistence" }
 tramontana-platform = { path = "crates/platform" }
@@ -44,6 +46,11 @@ process-wrap = { version = "10.0.0", default-features = false, features = [
     "job-object",
     "kill-on-drop",
 ] }
+# The official MCP SDK: the client side over plain streams, nothing else.
+# Tramontana spawns and owns the server process itself, and bounds what it
+# reads from it (ADR 0034). Pinned exactly: a protocol library's minor
+# release can change what reaches the permission boundary.
+rmcp = { version = "=3.4.0", default-features = false, features = ["client", "transport-async-rw"] }
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
