@@ -11,6 +11,11 @@ import type { ProjectChanges } from "./core.js";
  * now rather than one remembered. Every line keeps Git's own marks — `+`,
  * `-`, `@@` — so an added or removed line is told apart by its text, and the
  * colors only repeat it.
+ *
+ * Both panes are taller than the room they are given and scroll. A scrolling
+ * box that cannot be focused can only be read with a pointer, so each is a
+ * named region the keyboard can enter: reviewing a change before approving
+ * the next one is not something a person should need a mouse for.
  */
 
 type LineKind = "file" | "hunk" | "added" | "removed" | "context";
@@ -93,7 +98,7 @@ export function ChangesPanel({ projectId, revision }: ChangesPanelProps): React.
 
       {changes !== undefined && (
         <>
-          <pre className="changes-status" aria-label="Git status">
+          <pre className="changes-status" role="region" tabIndex={0} aria-label="Git status">
             {changes.status.trim() === "" ? "Git reported nothing." : changes.status}
           </pre>
           {changes.diff.trim() === "" ? (
@@ -101,7 +106,7 @@ export function ChangesPanel({ projectId, revision }: ChangesPanelProps): React.
               No changes to tracked files. New files, if any, are listed above.
             </p>
           ) : (
-            <pre className="changes-diff" aria-label="Git diff">
+            <pre className="changes-diff" role="region" tabIndex={0} aria-label="Git diff">
               {changes.diff.split("\n").map((line, index) => (
                 // Diff lines repeat, so their position is their identity.
                 <span key={index} className="diff-line" data-line={classify(line)}>

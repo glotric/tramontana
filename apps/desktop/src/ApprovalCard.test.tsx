@@ -101,6 +101,27 @@ describe("the approval card", () => {
     expect(document.activeElement).toBe(start);
   });
 
+  it("can be answered without a pointer", async () => {
+    // Focus lands on the card, so the next thing the keyboard reaches is the
+    // first answer. A question that stops a task has to be answerable by
+    // whoever is asked, not only by whoever has a mouse.
+    const user = userEvent.setup();
+    const answered = vi.fn();
+    render(<ApprovalCard request={request} waiting={0} onAnswered={answered} />);
+    await waitFor(() => {
+      expect(document.activeElement).toHaveAttribute("aria-labelledby", "approval-heading");
+    });
+
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Allow once" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => {
+      expect(resolveApproval).toHaveBeenCalledWith("approval-1", "allowOnce");
+    });
+    expect(answered).toHaveBeenCalledWith("approval-1");
+  });
+
   it("sends the decision by identifier", async () => {
     const user = userEvent.setup();
     const answered = vi.fn();

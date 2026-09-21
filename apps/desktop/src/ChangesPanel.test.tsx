@@ -63,6 +63,34 @@ describe("the Changes panel", () => {
     });
   });
 
+  it("lets a keyboard reach the status and the diff, and read them", async () => {
+    // Both panes scroll. Reaching them with the keyboard is the whole of
+    // being able to read a change without a pointer, and a `pre` that cannot
+    // take focus cannot be scrolled at all.
+    const user = userEvent.setup();
+    render(<ChangesPanel projectId="project-1" revision={0} />);
+    await screen.findByRole("region", { name: "Git status" });
+
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Refresh" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("region", { name: "Git status" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("region", { name: "Git diff" })).toHaveFocus();
+  });
+
+  it("reads again when the keyboard asks, not only a pointer", async () => {
+    const user = userEvent.setup();
+    render(<ChangesPanel projectId="project-1" revision={0} />);
+    await screen.findByRole("region", { name: "Git status" });
+
+    await user.tab();
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(projectChanges).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("says so when there is no diff, when the output was cut short, and when the read failed", async () => {
     projectChanges.mockResolvedValueOnce({
       schemaVersion: 1,

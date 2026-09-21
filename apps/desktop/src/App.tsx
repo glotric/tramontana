@@ -18,6 +18,8 @@ import { buildCards, describeHeader, MODE_LABEL } from "./cards.js";
 import { ChangesPanel } from "./ChangesPanel.js";
 import { GrantsPanel } from "./GrantsPanel.js";
 import { ModelsView } from "./ModelsView.js";
+import { foldFrame } from "./stream.js";
+import type { LiveStream } from "./stream.js";
 import { TaskHeader } from "./TaskHeader.js";
 import { CheckpointPanel } from "./CheckpointPanel.js";
 import {
@@ -112,7 +114,7 @@ export function App(): React.JSX.Element {
   const [tasks, setTasks] = useState<readonly TaskRecord[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>();
   const [events, setEvents] = useState<readonly EventEnvelope[]>([]);
-  const [streamed, setStreamed] = useState("");
+  const [stream, setStream] = useState<LiveStream | undefined>();
   const [goal, setGoal] = useState("Say hello");
   // Read-only and Automatic until the person says otherwise, for each task.
   const [routingMode, setRoutingMode] = useState<RoutingMode>("automatic");
@@ -147,6 +149,10 @@ export function App(): React.JSX.Element {
         if (seen.current.has(event.sequence)) return;
         seen.current.add(event.sequence);
         setEvents((previous) => [...previous, event]);
+        // The turn's whole answer is now in the record, and its card
+        // carries the text. Keeping the frames on screen as well would show
+        // the same words twice and leave them there while the next turn ran.
+        if (event.payload.kind === "messageCommitted") setStream(undefined);
         if (event.payload.kind === "configurationResolved") {
           const resolved = event.payload.configuration;
           setInspection((current) =>
@@ -164,7 +170,7 @@ export function App(): React.JSX.Element {
         break;
       }
       case "frame":
-        setStreamed((previous) => previous + update.frame.text);
+        setStream((current) => foldFrame(current, update.frame));
         break;
     }
   }, []);
@@ -173,7 +179,7 @@ export function App(): React.JSX.Element {
     async (taskId: string): Promise<void> => {
       const request = ++taskRequest.current;
       setSelectedTaskId(taskId);
-      setStreamed("");
+      setStream(undefined);
       setFailure(undefined);
       try {
         const replayed = await replayTaskEvents(taskId);
@@ -213,7 +219,7 @@ export function App(): React.JSX.Element {
       setSelectedTaskId(undefined);
       setTasks([]);
       setEvents([]);
-      setStreamed("");
+      setStream(undefined);
       setFailure(undefined);
       try {
         const records = await listTasks(conversationId);
@@ -242,7 +248,7 @@ export function App(): React.JSX.Element {
       setTasks([]);
       setSelectedTaskId(undefined);
       setEvents([]);
-      setStreamed("");
+      setStream(undefined);
       setFailure(undefined);
       try {
         const [detail, records] = await Promise.all([
@@ -413,7 +419,7 @@ export function App(): React.JSX.Element {
     const request = ++taskRequest.current;
     seen.current = new Set();
     setEvents([]);
-    setStreamed("");
+    setStream(undefined);
     setFailure(undefined);
     setSelectedTaskId(undefined);
 
@@ -713,10 +719,13 @@ export function App(): React.JSX.Element {
                       </details>
                     </>
                   )}
-                  {streamed !== "" && (
-                    <div className="stream-output">
-                      <span>live frame</span>
-                      <p>{streamed}</p>
+                  {stream !== undefined && stream.text !== "" && (
+                    <div className="stream-output" role="region" aria-label="Live answer">
+                      {/* A window that joined an answer already under way holds
+                          only the end of it, and says so rather than letting a
+                          fragment read as the whole thing. */}
+                      <span>{stream.partial ? "live frame · joined part-way" : "live frame"}</span>
+                      <p>{stream.text}</p>
                     </div>
                   )}
                 </section>

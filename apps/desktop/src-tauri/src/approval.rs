@@ -24,15 +24,35 @@ const ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 /// The event the interface listens for.
 pub(crate) const APPROVAL_REQUESTED: &str = "tramontana://approval-requested";
 
+/// Where a question is announced once it is waiting.
+#[derive(Clone)]
+enum Announce {
+    /// The window this process opened.
+    Window(AppHandle),
+    /// No window at all, so nobody can be asked and every question is
+    /// refused — the same fail-closed answer a headless CLI gives.
+    ///
+    /// Only a test can build one: the window's handle is the only way to
+    /// construct an approver in a shipping build, so this is what that rule
+    /// looks like when it is exercised rather than a state the product can
+    /// reach.
+    #[cfg(test)]
+    Nobody,
+    /// A test in the window's place. The question is queued and waited on
+    /// exactly as it would be, and the test answers it through [`resolve`],
+    /// as `resolve_approval` does for the window. Only the announcement is
+    /// skipped, because there is no webview to hear it.
+    ///
+    /// [`resolve`]: DesktopApprover::resolve
+    #[cfg(test)]
+    Test,
+}
+
 /// Raises approval questions in the desktop window.
 #[derive(Clone)]
 pub(crate) struct DesktopApprover {
-    /// The window to raise questions in.
-    ///
-    /// Absent when there is no window — a test, or a profile opened before the
-    /// interface exists. `ask` then refuses, which is the same fail-closed
-    /// answer a headless CLI gives.
-    app: Option<AppHandle>,
+    /// Where a question is announced, and whether there is anyone to ask.
+    announce: Announce,
     /// In the order the questions were asked, which is the order a person
     /// should be shown them.
     pending: Arc<Mutex<Vec<Waiting>>>,
@@ -59,7 +79,7 @@ impl DesktopApprover {
     /// An approver bound to a window.
     pub(crate) fn new(app: AppHandle) -> Self {
         Self {
-            app: Some(app),
+            announce: Announce::Window(app),
             pending: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -68,7 +88,17 @@ impl DesktopApprover {
     #[cfg(test)]
     pub(crate) fn headless() -> Self {
         Self {
-            app: None,
+            announce: Announce::Nobody,
+            pending: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// An approver that queues and waits, for a test answering in a person's
+    /// place. See [`Announce::Test`].
+    #[cfg(test)]
+    pub(crate) fn waiting() -> Self {
+        Self {
+            announce: Announce::Test,
             pending: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -119,9 +149,10 @@ impl Approver for DesktopApprover {
     ) -> Result<ApprovalDecisionKind, PermissionError> {
         // No window means no one to ask. Refusing is not a denial by the
         // user; it is the absence of a user, and both fail closed.
-        let Some(app) = self.app.clone() else {
+        #[cfg(test)]
+        if matches!(self.announce, Announce::Nobody) {
             return Err(PermissionError::NoApprover);
-        };
+        }
 
         let (sender, receiver) = tokio::sync::oneshot::channel();
 
@@ -138,7 +169,9 @@ impl Approver for DesktopApprover {
 
         // Registered before emitting, so an answer that arrives immediately
         // still finds the question waiting for it.
-        if app.emit(APPROVAL_REQUESTED, request).is_err() {
+        if let Announce::Window(app) = &self.announce
+            && app.emit(APPROVAL_REQUESTED, request).is_err()
+        {
             self.take(&request.approval_id);
             return Err(PermissionError::NoApprover);
         }

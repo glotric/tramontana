@@ -20,6 +20,11 @@ enum Scenario {
     Trailing,
     Silent,
     OpeningSilent,
+    /// A stream that opens and then says nothing before the cancel.
+    ///
+    /// The counterpart to `OpeningSilent`: the cancel lands on the other side
+    /// of the provider's `stream`, and the two must leave the same record.
+    SilentEmpty,
 }
 
 #[derive(Debug)]
@@ -45,13 +50,15 @@ impl ModelProvider for ScriptedModel {
         let stream_id = request.request().request_id.clone();
         let scenario = self.0;
         tokio::spawn(async move {
-            let _ = sender
-                .send(ModelEvent::TextDelta {
-                    stream_id: stream_id.clone(),
-                    offset: 0,
-                    text: "Partial".into(),
-                })
-                .await;
+            if !matches!(scenario, Scenario::SilentEmpty) {
+                let _ = sender
+                    .send(ModelEvent::TextDelta {
+                        stream_id: stream_id.clone(),
+                        offset: 0,
+                        text: "Partial".into(),
+                    })
+                    .await;
+            }
             let event = match scenario {
                 Scenario::ToolCall => ModelEvent::ToolCallDelta {
                     stream_id: stream_id.clone(),
@@ -78,7 +85,7 @@ impl ModelProvider for ScriptedModel {
                 Scenario::Trailing => ModelEvent::Completed {
                     stop_reason: StopReason::Stop,
                 },
-                Scenario::Silent | Scenario::OpeningSilent => {
+                Scenario::Silent | Scenario::OpeningSilent | Scenario::SilentEmpty => {
                     cancel.cancelled().await;
                     return;
                 }
@@ -199,7 +206,11 @@ async fn invalid_or_unsupported_turns_fail_without_a_tool_invocation() {
 
 #[tokio::test(start_paused = true)]
 async fn user_cancellation_during_a_model_call_is_cancelled_not_failed() {
-    for scenario in [Scenario::Silent, Scenario::OpeningSilent] {
+    for scenario in [
+        Scenario::Silent,
+        Scenario::OpeningSilent,
+        Scenario::SilentEmpty,
+    ] {
         let (service, events) = service(scenario);
         let task_id = service
             .start_task(StartTaskRequest {
@@ -250,5 +261,33 @@ async fn user_cancellation_during_a_model_call_is_cancelled_not_failed() {
             event.kind,
             TaskEventKind::TaskFailed | TaskEventKind::ToolRequested
         )));
+
+        // What the model had said when the cancel landed is kept; a turn
+        // stopped before it said anything leaves no message claiming it
+        // spoke, because there is nothing to coalesce.
+        let partials: Vec<String> = records
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::MessageCommitted { message }
+                    if message.status == MessageStatus::Partial =>
+                {
+                    Some(
+                        message
+                            .parts
+                            .iter()
+                            .map(|part| match part {
+                                MessagePart::Text { text } => text.clone(),
+                                _ => String::new(),
+                            })
+                            .collect::<String>(),
+                    )
+                }
+                _ => None,
+            })
+            .collect();
+        match scenario {
+            Scenario::Silent => assert_eq!(partials, ["Partial"], "{scenario:?}"),
+            _ => assert!(partials.is_empty(), "{scenario:?}: {partials:?}"),
+        }
     }
 }

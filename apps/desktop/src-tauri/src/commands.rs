@@ -84,6 +84,19 @@ pub(crate) async fn open_project(
     let Some(root) = pick_project_root(&app).await? else {
         return Ok(None);
     };
+    open_root(&state, &root).await.map(Some)
+}
+
+/// Open one canonical root as a durable project and resolve its configuration.
+///
+/// Separate from [`open_project`] because the picker is the only part of that
+/// command a test cannot drive: a root reaches the core from the native dialog
+/// and nowhere else, so what happens to it afterwards is what is left to
+/// check.
+pub(crate) async fn open_root(
+    state: &AppState,
+    root: &CanonicalRoot,
+) -> Result<ProjectInspection, ErrorEnvelope> {
     let name = root
         .as_path()
         .file_name()
@@ -99,16 +112,16 @@ pub(crate) async fn open_project(
         .service
         .resolve_configuration(
             &project.project_id,
-            discover(&root),
+            discover(root),
             &ConfigurationSelection::default(),
         )
         .await?;
 
-    Ok(Some(ProjectInspection {
+    Ok(ProjectInspection {
         schema_version: SCHEMA_VERSION,
         project,
         configuration: Some(configuration),
-    }))
+    })
 }
 
 /// List recent projects from the durable profile.
@@ -210,6 +223,34 @@ pub(crate) async fn start_task(
     channel: Channel<TaskUpdate>,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ErrorEnvelope> {
+    start_task_on(
+        &state,
+        goal,
+        conversation_id,
+        admission,
+        routing_mode,
+        move |update| channel.send(update).is_ok(),
+    )
+    .await
+}
+
+/// Start a task and forward its updates to `send`.
+///
+/// Separate from [`start_task`] because the channel is the window's half: the
+/// rules about the goal, the project a conversation belongs to, and following
+/// the task from its first event are the desktop's, and are what a test can
+/// hold to.
+pub(crate) async fn start_task_on<F>(
+    state: &AppState,
+    goal: String,
+    conversation_id: Option<ConversationId>,
+    admission: Option<ToolAdmission>,
+    routing_mode: Option<RoutingMode>,
+    send: F,
+) -> Result<TaskId, ErrorEnvelope>
+where
+    F: FnMut(TaskUpdate) -> bool + Send + 'static,
+{
     let goal = goal.trim().to_owned();
     if goal.is_empty() {
         return Err(invalid("a task needs a goal"));
@@ -239,14 +280,7 @@ pub(crate) async fn start_task(
     // Subscribe from the beginning so the interface sees the creation event
     // even though it was written before this call returned.
     let (replayed, updates) = service.subscribe_task_events(&task_id, 0).await?;
-    forward_updates(
-        service,
-        task_id.clone(),
-        0,
-        replayed,
-        updates,
-        move |update| channel.send(update).is_ok(),
-    );
+    forward_updates(service, task_id.clone(), 0, replayed, updates, send);
 
     Ok(task_id)
 }
@@ -946,8 +980,16 @@ pub(crate) async fn project_changes(
     project_id: ProjectId,
     state: State<'_, AppState>,
 ) -> Result<ProjectChanges, ErrorEnvelope> {
-    let status = state.service.read_project(&project_id, GIT_STATUS).await?;
-    let diff = state.service.read_project(&project_id, GIT_DIFF).await?;
+    project_changes_on(&state, &project_id).await
+}
+
+/// Read a project's Git status and diff. See [`project_changes`].
+pub(crate) async fn project_changes_on(
+    state: &AppState,
+    project_id: &ProjectId,
+) -> Result<ProjectChanges, ErrorEnvelope> {
+    let status = state.service.read_project(project_id, GIT_STATUS).await?;
+    let diff = state.service.read_project(project_id, GIT_DIFF).await?;
     Ok(ProjectChanges {
         schema_version: SCHEMA_VERSION,
         status: text_of(&status),

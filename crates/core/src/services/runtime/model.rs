@@ -288,7 +288,16 @@ impl BrokeredHost {
         let partial = crate::services::redact(turn.text()).text;
         let result = turn.finish();
         if let Some(error) = failure.or_else(|| result.as_ref().err().cloned()) {
-            self.commit_answer(&partial, MessageStatus::Partial).await?;
+            // What the model had said is kept, and a turn stopped before it
+            // said anything leaves nothing to coalesce (`CORE_CONTRACTS.md`
+            // §5). An empty assistant message would put a line in the record,
+            // and a card in the window, saying the model spoke when it did
+            // not; what ended the turn is recorded either way. It would also
+            // make the record depend on which side of the provider's `stream`
+            // a cancellation landed on, which is timing, not history.
+            if !partial.is_empty() {
+                self.commit_answer(&partial, MessageStatus::Partial).await?;
+            }
             return Err(ErrorEnvelope::new(
                 error.code,
                 "Model turn did not complete",

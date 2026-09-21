@@ -34,6 +34,7 @@ const listConfiguredEndpoints = vi.hoisted(() => vi.fn());
 const listModelEndpoints = vi.hoisted(() => vi.fn());
 const listProjectGrants = vi.hoisted(() => vi.fn());
 const watchTask = vi.hoisted(() => vi.fn());
+const latestCheckpoint = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -57,6 +58,7 @@ vi.mock("./core.js", async () => {
     listModelEndpoints,
     listProjectGrants,
     watchTask,
+    latestCheckpoint,
   };
 });
 
@@ -182,10 +184,12 @@ describe("M2 durable desktop surface", () => {
       listModelEndpoints,
       listProjectGrants,
       watchTask,
+      latestCheckpoint,
     ]) {
       mock.mockReset();
     }
     watchTask.mockResolvedValue(undefined);
+    latestCheckpoint.mockResolvedValue(undefined);
     listProjectGrants.mockResolvedValue([]);
     listConfiguredEndpoints.mockResolvedValue([]);
     listModelEndpoints.mockResolvedValue([]);
@@ -560,6 +564,86 @@ describe("M2 durable desktop surface", () => {
     expect(within(list).getAllByRole("listitem")).toHaveLength(3);
   });
 
+  it("neither loses nor repeats the answer when the window reloads mid-stream", async () => {
+    // The task goes on in the shell while the window is gone, so a reloaded
+    // window rejoins an answer already under way. Frames are transport, not
+    // record (`CORE_CONTRACTS.md` §5): the ones it missed are not replayed,
+    // and the whole answer arrives durably when the turn ends.
+    const running = { ...task, state: "running" as const, lastSequence: 2 };
+    listTasks.mockResolvedValue([running]);
+    replayTaskEvents.mockResolvedValue([
+      event(1, { kind: "taskCreated", goalSummary: "Existing durable task" }),
+      event(2, { kind: "modelStarted", streamId: "stream-1", modelId: "qwen2.5-7b-instruct" }),
+    ]);
+    let deliver: (update: TaskUpdate) => void = () => undefined;
+    watchTask.mockImplementation(
+      (_taskId: string, _after: number, onUpdate: (update: TaskUpdate) => void) => {
+        deliver = onUpdate;
+        return Promise.resolve();
+      },
+    );
+
+    const first = render(<App />);
+    await screen.findByRole("heading", { name: "M2 Conversation" });
+    await waitFor(() => {
+      expect(watchTask).toHaveBeenCalledWith(task.taskId, 2, expect.any(Function));
+    });
+    act(() => {
+      deliver({ kind: "frame", frame: { streamId: "stream-1", offset: 0, text: "Hello, " } });
+      deliver({ kind: "frame", frame: { streamId: "stream-1", offset: 7, text: "wor" } });
+    });
+    const answer = await screen.findByRole("region", { name: "Live answer" });
+    expect(answer).toHaveTextContent("Hello, wor");
+    expect(answer).not.toHaveTextContent("joined part-way");
+
+    // The reload. The shell keeps answering; this window starts over from the
+    // record, which does not yet hold the message being produced.
+    first.unmount();
+    render(<App />);
+    await screen.findByRole("heading", { name: "M2 Conversation" });
+    await waitFor(() => {
+      expect(watchTask).toHaveBeenCalledTimes(2);
+    });
+    act(() => {
+      deliver({ kind: "frame", frame: { streamId: "stream-1", offset: 10, text: "ld." } });
+    });
+
+    // What it holds is the end of an answer, and it says so instead of
+    // letting three characters read as everything the model said.
+    const rejoined = await screen.findByRole("region", { name: "Live answer" });
+    expect(rejoined).toHaveTextContent("ld.");
+    expect(rejoined).toHaveTextContent("joined part-way");
+
+    // The turn ends. The whole answer is in the record, once, and the frames
+    // it was streamed in are gone rather than sitting above it.
+    act(() => {
+      deliver({
+        kind: "event",
+        event: event(3, {
+          kind: "messageCommitted",
+          message: {
+            schemaVersion: 1,
+            messageId: "message-1",
+            role: "assistant",
+            status: "committed",
+            createdAt: "2026-01-01T00:00:05.000Z",
+            parts: [{ kind: "text", text: "Hello, world." }],
+          },
+        }),
+      });
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("region", { name: "Live answer" })).not.toBeInTheDocument();
+    });
+    expect(screen.getAllByText("Hello, world.")).toHaveLength(1);
+
+    // And the record itself reads once through, with nothing repeated.
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("All events (3)"));
+    const list = screen.getByRole("list", { name: "Task event stream" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(3);
+  });
+
   it("does not follow a task that has already ended", async () => {
     replayTaskEvents.mockResolvedValue([
       event(1, { kind: "taskCreated", goalSummary: "Existing durable task" }),
@@ -572,6 +656,59 @@ describe("M2 durable desktop surface", () => {
     ]);
     await renderLoaded();
     await screen.findByText("All events (2)");
+    expect(watchTask).not.toHaveBeenCalled();
+  });
+
+  it("offers a new profile somewhere to start rather than an empty window", async () => {
+    // The first thing a person who has never run Tramontana sees. Nothing is
+    // selected, nothing can be, and every panel that needs a project is gone;
+    // what is left has to say what to do.
+    listProjects.mockResolvedValue([]);
+    listConversations.mockResolvedValue([]);
+    listTasks.mockResolvedValue([]);
+
+    render(<App />);
+
+    expect(await screen.findByText("No durable projects yet.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "+ Open project" })).toBeEnabled();
+    expect(screen.getByRole("heading", { name: "Open a project", level: 1 })).toBeInTheDocument();
+    expect(screen.getByText(/Choose a local directory/)).toBeInTheDocument();
+    // Nothing was read for a project that is not there.
+    expect(inspectProject).not.toHaveBeenCalled();
+    expect(listConversations).not.toHaveBeenCalled();
+    expect(screen.queryByRole("region", { name: "Task summary" })).not.toBeInTheDocument();
+  });
+
+  it("puts an interrupted task to the person instead of waiting on it", async () => {
+    // A task stopped mid-flight: the shell will produce no more events for
+    // it, so following it would leave the window waiting on nothing. What it
+    // needs instead is the checkpoint, and a person to decide.
+    listTasks.mockResolvedValue([{ ...task, state: "interrupted" as const, lastSequence: 4 }]);
+    replayTaskEvents.mockResolvedValue([
+      event(1, { kind: "taskCreated", goalSummary: "Existing durable task" }),
+      event(2, {
+        kind: "taskStateChanged",
+        previous: "running",
+        current: "interrupted",
+        reasonCode: "task.interrupted",
+      }),
+    ]);
+    latestCheckpoint.mockResolvedValue({
+      schemaVersion: 1,
+      checkpointId: "checkpoint-1",
+      taskId: task.taskId,
+      eventSequence: 4,
+      createdAt: "2026-01-01T00:00:05.000Z",
+      taskState: "interrupted",
+      completedStepIds: [],
+      resume: { eligible: true, mode: "sameWorker", reasonCode: "checkpoint.clean" },
+    });
+
+    await renderLoaded();
+
+    const panel = await screen.findByRole("region", { name: "Interrupted" });
+    expect(panel).toHaveTextContent("Resume");
+    expect(latestCheckpoint).toHaveBeenCalledWith(task.taskId);
     expect(watchTask).not.toHaveBeenCalled();
   });
 
