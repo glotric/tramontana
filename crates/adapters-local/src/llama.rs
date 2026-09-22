@@ -61,12 +61,46 @@ const LOG_LINES: usize = 200;
 /// Longest single log line retained.
 const LOG_LINE_BYTES: usize = 2000;
 
+/// Which kind of local runtime to supervise.
+///
+/// Both speak the OpenAI chat-completions format on loopback, take `--model`,
+/// `--host` and `--port`, and report readiness on `/health` with 200, or 503
+/// while loading; that is why one supervisor serves both (ADR 0010).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeKind {
+    /// `llama-server` from llama.cpp, serving one GGUF model file.
+    LlamaServer,
+    /// `mlx_lm.server` from MLX LM, serving one MLX model folder. Apple
+    /// Silicon only; it reports no build to check.
+    MlxLm,
+}
+
+impl RuntimeKind {
+    /// What the runtime is called, in messages.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::LlamaServer => "llama-server",
+            Self::MlxLm => "mlx_lm.server",
+        }
+    }
+}
+
+/// Whether MLX can run on this machine: macOS on Apple Silicon.
+#[must_use]
+pub const fn mlx_supported() -> bool {
+    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+}
+
 /// What to start, and where.
 #[derive(Debug, Clone)]
 pub struct LlamaServerSpec {
-    /// The `llama-server` executable the user chose. Never discovered.
+    /// Which runtime this is.
+    pub kind: RuntimeKind,
+    /// The executable the user chose. Never discovered.
     pub binary: PathBuf,
-    /// The GGUF model file the user chose.
+    /// The model the user chose: a GGUF file for `llama-server`, a model
+    /// folder for `mlx_lm.server`.
     pub model: PathBuf,
     /// Port to bind, or `None` to have one allocated.
     pub port: Option<u16>,
@@ -87,6 +121,7 @@ impl LlamaServerSpec {
     #[must_use]
     pub fn new(binary: impl Into<PathBuf>, model: impl Into<PathBuf>) -> Self {
         Self {
+            kind: RuntimeKind::LlamaServer,
             binary: binary.into(),
             model: model.into(),
             port: None,
@@ -96,6 +131,16 @@ impl LlamaServerSpec {
             // child that exits fails immediately whatever this says.
             readiness_timeout: Duration::from_secs(120),
             records: None,
+        }
+    }
+
+    /// An `mlx_lm.server` serving the MLX model folder `model`, with the
+    /// same bounds.
+    #[must_use]
+    pub fn mlx(binary: impl Into<PathBuf>, model: impl Into<PathBuf>) -> Self {
+        Self {
+            kind: RuntimeKind::MlxLm,
+            ..Self::new(binary, model)
         }
     }
 }
@@ -114,11 +159,14 @@ pub struct ProbedVersion {
 #[non_exhaustive]
 pub enum StartError {
     /// The binary is missing, not executable, or not a file.
-    #[error("the llama-server binary is not usable: {0}")]
+    #[error("the runtime's executable is not usable: {0}")]
     Binary(String),
-    /// The model file is missing.
-    #[error("the model file is not usable: {0}")]
+    /// The model is missing, or is not the kind of path the runtime needs.
+    #[error("the model is not usable: {0}")]
     Model(String),
+    /// This runtime cannot run on this machine.
+    #[error("{0}")]
+    Unsupported(String),
     /// The binary is older than this adapter supports.
     #[error("llama-server build {found} is older than the supported minimum {minimum}")]
     TooOld {
@@ -131,10 +179,10 @@ pub enum StartError {
     #[error("could not reserve a local port: {0}")]
     Port(String),
     /// The process would not start at all.
-    #[error("could not start llama-server: {0}")]
+    #[error("could not start the runtime: {0}")]
     Spawn(String),
     /// The process exited before it became ready.
-    #[error("llama-server exited before it was ready ({status}); last output: {tail}")]
+    #[error("the runtime exited before it was ready ({status}); last output: {tail}")]
     ExitedEarly {
         /// How it exited.
         status: String,
@@ -142,7 +190,7 @@ pub enum StartError {
         tail: String,
     },
     /// The process stayed alive but never reported itself healthy.
-    #[error("llama-server did not become ready within {seconds}s; last output: {tail}")]
+    #[error("the runtime did not become ready within {seconds}s; last output: {tail}")]
     NotReady {
         /// The bound that elapsed.
         seconds: u64,
@@ -157,6 +205,7 @@ impl From<StartError> for ErrorEnvelope {
             StartError::Binary(_) | StartError::Model(_) | StartError::TooOld { .. } => {
                 ErrorCode::InvalidRequest
             }
+            StartError::Unsupported(_) => ErrorCode::CapabilityUnsupported,
             StartError::Port(_) | StartError::Spawn(_) => ErrorCode::Internal,
             StartError::ExitedEarly { .. } | StartError::NotReady { .. } => {
                 ErrorCode::ProviderUnavailable
@@ -197,6 +246,50 @@ pub async fn probe_version(binary: &Path) -> Result<ProbedVersion, StartError> {
         build: build_number(&reported),
         reported,
     })
+}
+
+/// The accelerators a `llama-server` reports it can use, from
+/// `--list-devices`, for the person to see where their model runs.
+///
+/// Best effort, and bounded: a build without the flag, or one that does not
+/// answer within a few seconds, reports none, and that never stops the
+/// runtime from starting.
+pub async fn probe_devices(binary: &Path) -> Vec<String> {
+    let run = base_command(binary).arg("--list-devices").output();
+    match tokio::time::timeout(Duration::from_secs(10), run).await {
+        Ok(Ok(output)) => {
+            let mut printed = String::from_utf8_lossy(&output.stdout).into_owned();
+            printed.push_str(&String::from_utf8_lossy(&output.stderr));
+            parse_devices(&printed)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The devices in `--list-devices` output that have memory of their own.
+///
+/// Lines look like `  MTL0: Apple M3 Max (28753 MiB, 28753 MiB free)`. A
+/// library that runs on the processor lists no memory — `BLAS: Accelerate
+/// (0 MiB, 0 MiB free)` — and is not an accelerator, so it is left out.
+#[must_use]
+pub fn parse_devices(printed: &str) -> Vec<String> {
+    printed
+        .lines()
+        .skip_while(|line| !line.trim_start().starts_with("Available devices"))
+        .skip(1)
+        .filter_map(|line| {
+            let (name, rest) = line.trim().split_once(": ")?;
+            let (description, memory) = rest.rsplit_once(" (")?;
+            let total = memory.split_once(" MiB")?.0.trim().parse::<u64>().ok()?;
+            (total > 0).then(|| {
+                format!(
+                    "{} ({name}, {} GB)",
+                    truncate(description, 120),
+                    (total + 512) / 1024
+                )
+            })
+        })
+        .collect()
 }
 
 /// The build number in a `llama.cpp` version banner, if there is one.
@@ -244,6 +337,10 @@ pub struct SupervisedLlamaServer {
     version: ProbedVersion,
     /// This runtime's record, removed when it stops.
     record: Option<PathBuf>,
+    /// The key a request must carry, when the runtime can require one.
+    api_key: Option<String>,
+    /// The accelerators the runtime reported, in the person's words.
+    accelerators: Vec<String>,
 }
 
 impl std::fmt::Debug for SupervisedLlamaServer {
@@ -264,29 +361,80 @@ impl SupervisedLlamaServer {
     /// to act on: a version, an exit status and the runtime's own output, or
     /// the bound that elapsed.
     pub async fn start(spec: &LlamaServerSpec) -> Result<Self, StartError> {
-        if !spec.model.is_file() {
-            return Err(StartError::Model(format!(
-                "{} is not a file",
-                spec.model.display()
-            )));
-        }
-
-        let version = probe_version(&spec.binary).await?;
-        if let Some(build) = version.build
-            && build < MINIMUM_BUILD
-        {
-            return Err(StartError::TooOld {
-                found: build,
-                minimum: MINIMUM_BUILD,
-            });
-        }
+        let version = match spec.kind {
+            RuntimeKind::LlamaServer => {
+                if !spec.model.is_file() {
+                    return Err(StartError::Model(format!(
+                        "{} is not a file",
+                        spec.model.display()
+                    )));
+                }
+                let version = probe_version(&spec.binary).await?;
+                if let Some(build) = version.build
+                    && build < MINIMUM_BUILD
+                {
+                    return Err(StartError::TooOld {
+                        found: build,
+                        minimum: MINIMUM_BUILD,
+                    });
+                }
+                version
+            }
+            RuntimeKind::MlxLm => {
+                // Refused before anything is started: MLX needs Apple
+                // Silicon, and elsewhere the endpoint is simply unavailable,
+                // not a reason the application cannot open.
+                if !mlx_supported() {
+                    return Err(StartError::Unsupported(
+                        "MLX runs only on a Mac with Apple Silicon".to_owned(),
+                    ));
+                }
+                if !spec.model.is_dir() {
+                    return Err(StartError::Model(format!(
+                        "{} is not a folder; an MLX model is a folder of weights, tokenizer and config",
+                        spec.model.display()
+                    )));
+                }
+                if !spec.binary.is_file() {
+                    return Err(StartError::Binary(format!(
+                        "{} is not a file",
+                        spec.binary.display()
+                    )));
+                }
+                // `mlx_lm.server` has no `--version`, so there is no build
+                // to check; its answering `/health` is what is trusted.
+                ProbedVersion {
+                    build: None,
+                    reported: RuntimeKind::MlxLm.name().to_owned(),
+                }
+            }
+        };
 
         let port = match spec.port {
             Some(port) => port,
             None => reserve_port().await?,
         };
 
+        // Out of the box both runtimes answer any request that reaches their
+        // port and tell a browser any page may read the answer, so a web page
+        // could run prompts on the person's model and read them — the answer
+        // even names the model's full path. `llama-server` is given a key
+        // only this process knows, through its environment because a key in
+        // the arguments is visible to every process on the machine
+        // (`SECURITY_AND_PERMISSIONS.md` §7). `mlx_lm.server` has no key, so
+        // it is told that no web origin may read it: a page can still make it
+        // work, but cannot read what it says.
+        let api_key = match spec.kind {
+            RuntimeKind::LlamaServer => Some(uuid::Uuid::new_v4().simple().to_string()),
+            RuntimeKind::MlxLm => None,
+        };
         let mut command = base_command(&spec.binary);
+        if let Some(key) = &api_key {
+            command.env("LLAMA_API_KEY", key);
+        }
+        if spec.kind == RuntimeKind::MlxLm {
+            command.arg("--allowed-origins").arg("none");
+        }
         command
             .arg("--model")
             .arg(&spec.model)
@@ -346,6 +494,12 @@ impl SupervisedLlamaServer {
                 .map_err(|failure| StartError::Spawn(failure.to_string()))?,
             version,
             record,
+            api_key,
+            accelerators: match spec.kind {
+                RuntimeKind::LlamaServer => probe_devices(&spec.binary).await,
+                // MLX runs on Apple silicon's GPU by construction.
+                RuntimeKind::MlxLm => vec!["Apple silicon GPU (MLX)".to_owned()],
+            },
         };
 
         match server.await_ready(spec.readiness_timeout).await {
@@ -358,6 +512,21 @@ impl SupervisedLlamaServer {
                 Err(error)
             }
         }
+    }
+
+    /// The accelerators this runtime reported it can use. Empty means none
+    /// were reported: it may be running on the processor alone.
+    #[must_use]
+    pub fn accelerators(&self) -> &[String] {
+        &self.accelerators
+    }
+
+    /// The key every model request must carry, when this runtime takes one.
+    ///
+    /// Never stored and never printed; it lives as long as this runtime.
+    #[must_use]
+    pub fn api_key(&self) -> Option<&str> {
+        self.api_key.as_deref()
     }
 
     /// Where the runtime can be reached.
@@ -827,5 +996,21 @@ mod tests {
         assert!(cut.ends_with('…'));
         // The point: this would panic on a byte slice through a character.
         assert!(cut.chars().count() > 1);
+    }
+
+    #[test]
+    fn devices_with_memory_are_accelerators_and_a_processor_library_is_not() {
+        // What llama-server build 10964 prints on an M3 Max.
+        let printed = "load_backend: loaded stuff\nAvailable devices:\n  MTL0: Apple M3 Max (28753 MiB, 28753 MiB free)\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n";
+        assert_eq!(parse_devices(printed), ["Apple M3 Max (MTL0, 28 GB)"]);
+        // A GPU on another platform, and a machine with none.
+        assert_eq!(
+            parse_devices(
+                "Available devices:\n  CUDA0: NVIDIA GeForce RTX 4090 (24080 MiB, 23000 MiB free)\n"
+            ),
+            ["NVIDIA GeForce RTX 4090 (CUDA0, 24 GB)"]
+        );
+        assert!(parse_devices("Available devices:\n").is_empty());
+        assert!(parse_devices("error: unknown argument: --list-devices").is_empty());
     }
 }

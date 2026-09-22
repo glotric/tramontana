@@ -665,6 +665,77 @@ pub(crate) async fn add_llama_endpoint(
     .map(Some)
 }
 
+/// Configure an `mlx_lm.server` this application starts and stops, from an
+/// executable and a model folder the person picks. `None` when they cancel
+/// either picker. Apple Silicon only: elsewhere it is saved but unavailable.
+/// Takes effect the next time Tramontana opens.
+///
+/// # Errors
+///
+/// See [`settings::add`].
+#[tauri::command]
+pub(crate) async fn add_mlx_endpoint(
+    endpoint_id: String,
+    display_name: Option<String>,
+    model_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<bool>, ErrorEnvelope> {
+    let Some(binary_path) = pick_file(&app, "Choose the mlx_lm.server executable").await? else {
+        return Ok(None);
+    };
+    let Some(model_path) = pick_folder(&app, "Choose the MLX model folder").await? else {
+        return Ok(None);
+    };
+    settings::add(
+        state.settings.as_ref(),
+        &endpoint_id,
+        display_name,
+        settings::NewEndpoint::MlxServer {
+            binary_path,
+            model_path,
+            model_id,
+        },
+        SystemClock::new().now(),
+    )
+    .await
+    .map(Some)
+}
+
+/// Confirm a runtime's executable and model as they are now (ADR 0043). A
+/// changed executable is held until this is done. Takes effect the next time
+/// Tramontana opens.
+///
+/// # Errors
+///
+/// See [`settings::trust`].
+#[tauri::command]
+pub(crate) async fn trust_endpoint(
+    endpoint_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    settings::trust(
+        state.settings.as_ref(),
+        &endpoint_id,
+        SystemClock::new().now(),
+    )
+    .await
+}
+
+/// Whether a runtime's model is still what was recorded: `confirmed`,
+/// `held` (changed), `unreadable` or `notRecorded`. Reads the whole model.
+///
+/// # Errors
+///
+/// See [`settings::check_runtime_model`].
+#[tauri::command]
+pub(crate) async fn check_endpoint_model(
+    endpoint_id: String,
+    state: State<'_, AppState>,
+) -> Result<&'static str, ErrorEnvelope> {
+    settings::check_runtime_model(state.settings.as_ref(), &endpoint_id).await
+}
+
 /// Turn an endpoint on or off, keeping its configuration.
 ///
 /// # Errors
@@ -1084,6 +1155,10 @@ pub(crate) struct ModelEndpointStatus {
     /// Why it did not, when it did not. Already normalized and secret-free.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) unavailable_reason: Option<String>,
+    /// For a runtime Tramontana started, the accelerators it reported it can
+    /// use; empty when it reported none. Absent for anything else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) accelerators: Option<Vec<String>>,
 }
 
 /// Report every configured model endpoint and whether it is usable.
@@ -1105,8 +1180,10 @@ pub(crate) async fn list_model_endpoints(
 
     for provider in &plane.providers {
         let models = provider.list_models().await;
+        let endpoint_id = provider.id().to_string();
         statuses.push(ModelEndpointStatus {
-            endpoint_id: provider.id().to_string(),
+            accelerators: plane.accelerators(&endpoint_id).map(<[String]>::to_vec),
+            endpoint_id,
             leaves_the_device: models
                 .iter()
                 .any(|model| model.location == tramontana_core::contracts::ModelLocation::Cloud),
@@ -1125,6 +1202,7 @@ pub(crate) async fn list_model_endpoints(
             leaves_the_device: false,
             available: false,
             unavailable_reason: Some(failure.error.message.clone()),
+            accelerators: None,
         });
     }
 

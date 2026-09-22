@@ -28,6 +28,10 @@
 //! - `silent`  — headers, then nothing, so a cancellation lands mid-stream
 //!
 //! Without it, anything but `/health` is 404.
+//!
+//! Like `llama-server`, it takes an API key from `LLAMA_API_KEY` and then
+//! refuses any request but `/health` that does not carry it as a bearer
+//! token, with 401. Checked against the real runtime, build 10964.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -38,6 +42,14 @@ const BUILD: u64 = 9999;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--list-devices") {
+        // The shape build 10964 prints: one accelerator, and a processor
+        // library that is not one.
+        println!("Available devices:");
+        println!("  FAKE0: Stand-in GPU (1024 MiB, 1024 MiB free)");
+        println!("  BLAS: Stand-in BLAS (0 MiB, 0 MiB free)");
+        return;
+    }
     if args.iter().any(|arg| arg == "--version") {
         // The banner shape the supervisor parses, on stdout.
         println!("version: {BUILD} (fake0000)");
@@ -117,6 +129,9 @@ fn main() {
     };
 
     let chat = flag(&args, "--fake-chat").unwrap_or_default();
+    let key = std::env::var("LLAMA_API_KEY")
+        .ok()
+        .filter(|key| !key.is_empty());
     let chunks = flags(&args, "--fake-chunk");
     let started = Instant::now();
     println!("HTTP server listening on 127.0.0.1:{port}");
@@ -130,12 +145,13 @@ fn main() {
         // stop `/health` from answering.
         let chat = chat.clone();
         let chunks = chunks.clone();
-        std::thread::spawn(move || serve(stream, loading, &chat, &chunks));
+        let key = key.clone();
+        std::thread::spawn(move || serve(stream, loading, &chat, &chunks, key.as_deref()));
     }
 }
 
 /// Answer one connection.
-fn serve(mut stream: TcpStream, loading: bool, chat: &str, chunks: &[String]) {
+fn serve(mut stream: TcpStream, loading: bool, chat: &str, chunks: &[String], key: Option<&str>) {
     let Ok(clone) = stream.try_clone() else {
         return;
     };
@@ -147,6 +163,7 @@ fn serve(mut stream: TcpStream, loading: bool, chat: &str, chunks: &[String]) {
     // The rest of the request too, so a client still sending its body is not
     // answered with a reset.
     let mut length: usize = 0;
+    let mut bearer = None;
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line) {
@@ -155,6 +172,11 @@ fn serve(mut stream: TcpStream, loading: bool, chat: &str, chunks: &[String]) {
             Ok(_) => {
                 if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
                     length = value.trim().parse().unwrap_or(0);
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("authorization")
+                {
+                    bearer = value.trim().strip_prefix("Bearer ").map(str::to_owned);
                 }
             }
         }
@@ -172,6 +194,12 @@ fn serve(mut stream: TcpStream, loading: bool, chat: &str, chunks: &[String]) {
         } else {
             respond(&mut stream, "200 OK", r#"{"status":"ok"}"#);
         }
+    } else if key.is_some() && bearer.as_deref() != key {
+        respond(
+            &mut stream,
+            "401 Unauthorized",
+            r#"{"error":{"message":"Invalid API Key"}}"#,
+        );
     } else if request_line.contains("/chat/completions") {
         chat_completion(&mut stream, chat, chunks);
     } else {

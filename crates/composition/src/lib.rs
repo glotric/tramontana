@@ -209,8 +209,8 @@ pub struct ModelPlane {
     pub failures: Vec<EndpointFailure>,
     /// Supervised endpoints deliberately not started for this command.
     pub skipped: Vec<String>,
-    /// Runtimes this process started and must stop.
-    supervised: Vec<SupervisedLlamaServer>,
+    /// Runtimes this process started and must stop, by endpoint.
+    supervised: Vec<(String, SupervisedLlamaServer)>,
 }
 
 impl std::fmt::Debug for ModelPlane {
@@ -225,13 +225,24 @@ impl std::fmt::Debug for ModelPlane {
 }
 
 impl ModelPlane {
+    /// The accelerators a runtime this process started reported, for the
+    /// endpoint that started it; `None` for an endpoint Tramontana did not
+    /// start. An empty list means none were reported.
+    #[must_use]
+    pub fn accelerators(&self, endpoint_id: &str) -> Option<&[String]> {
+        self.supervised
+            .iter()
+            .find(|(id, _)| id == endpoint_id)
+            .map(|(_, runtime)| runtime.accelerators())
+    }
+
     /// Stop every runtime this process started.
     ///
     /// Providers that were only *pointed at* something — a URL the user
     /// already had running — are left alone: stopping a server we did not
     /// start would be reaching outside what we own.
     pub async fn shutdown(&mut self) {
-        for runtime in &mut self.supervised {
+        for (_, runtime) in &mut self.supervised {
             runtime.shutdown().await;
         }
         self.supervised.clear();
@@ -271,7 +282,10 @@ pub async fn assemble_models_recording(
             continue;
         }
         if supervision == Supervision::Skip
-            && matches!(endpoint.config, ProviderConfig::LlamaServer { .. })
+            && matches!(
+                endpoint.config,
+                ProviderConfig::LlamaServer { .. } | ProviderConfig::MlxServer { .. }
+            )
         {
             plane.skipped.push(endpoint.endpoint_id.clone());
             continue;
@@ -299,7 +313,7 @@ pub async fn assemble_models_recording(
 async fn bring_up(
     endpoint: &ProviderEndpoint,
     resolver: &Arc<dyn SecretResolver>,
-    supervised: &mut Vec<SupervisedLlamaServer>,
+    supervised: &mut Vec<(String, SupervisedLlamaServer)>,
     records: Option<&std::path::Path>,
 ) -> Result<Arc<dyn ModelProvider>, ErrorEnvelope> {
     // The configured endpoint's identifier *is* the provider identifier, so a
@@ -349,8 +363,30 @@ async fn bring_up(
             model_path,
             model_id,
             extra_args,
+            provenance,
+        }
+        | ProviderConfig::MlxServer {
+            binary_path,
+            model_path,
+            model_id,
+            extra_args,
+            provenance,
         } => {
-            let mut spec = LlamaServerSpec::new(binary_path, model_path);
+            // A changed executable is code nobody has looked at: it is held
+            // until the person confirms it (ADR 0043). One without a record
+            // was added before records were kept, and runs as before.
+            if let Some(recorded) = provenance {
+                hold_if_changed(endpoint, binary_path, recorded).await?;
+            }
+            // One supervisor for both runtimes (ADR 0010); only what it
+            // checks before starting differs, including MLX's refusal off
+            // Apple Silicon, which leaves the endpoint unavailable rather
+            // than the application unable to open.
+            let mut spec = if matches!(endpoint.config, ProviderConfig::MlxServer { .. }) {
+                LlamaServerSpec::mlx(binary_path, model_path)
+            } else {
+                LlamaServerSpec::new(binary_path, model_path)
+            };
             spec.extra_args = extra_args.clone();
             spec.records = records.map(std::path::Path::to_path_buf);
             let runtime = SupervisedLlamaServer::start(&spec).await?;
@@ -363,9 +399,11 @@ async fn bring_up(
                 provider_id,
                 runtime.base_url(),
                 descriptor(endpoint, model_id, ModelLocation::Local),
-                ProviderAuth::None,
+                runtime.api_key().map_or(ProviderAuth::None, |key| {
+                    ProviderAuth::Session(key.to_owned())
+                }),
             )?;
-            supervised.push(runtime);
+            supervised.push((endpoint.endpoint_id.clone(), runtime));
             Ok(Arc::new(provider))
         }
 
@@ -383,6 +421,186 @@ async fn bring_up(
             tramontana_core::contracts::CorrelationId::new("composition"),
         )),
     }
+}
+
+/// What a supervised runtime's files are now, as a record (ADR 0043).
+///
+/// Taken when the person adds the endpoint, and again when they confirm a
+/// change. Reading a model of several gigabytes takes seconds, so it runs off
+/// the async runtime.
+///
+/// # Errors
+///
+/// A message naming which file could not be read.
+pub async fn record_provenance(
+    binary: &std::path::Path,
+    model: &std::path::Path,
+    recorded_at: tramontana_core::contracts::Timestamp,
+) -> Result<tramontana_core::contracts::RuntimeProvenance, String> {
+    let (binary, model) = (binary.to_path_buf(), model.to_path_buf());
+    tokio::task::spawn_blocking(move || {
+        let executable = tramontana_adapters_local::fingerprint::fingerprint_file(&binary)
+            .map_err(|error| format!("could not read the executable: {error}"))?;
+        let weights = tramontana_adapters_local::fingerprint::fingerprint_model(&model)
+            .map_err(|error| format!("could not read the model: {error}"))?;
+        Ok(tramontana_core::contracts::RuntimeProvenance {
+            executable_sha256: executable.sha256,
+            executable_bytes: executable.bytes,
+            model_sha256: weights.sha256,
+            model_bytes: weights.bytes,
+            recorded_at,
+        })
+    })
+    .await
+    .map_err(|_| "the files could not be checked".to_owned())?
+}
+
+/// A supervised runtime's executable, model and record, when it is one.
+#[must_use]
+pub fn runtime_files(
+    config: &ProviderConfig,
+) -> Option<(
+    &str,
+    &str,
+    Option<&tramontana_core::contracts::RuntimeProvenance>,
+)> {
+    match config {
+        ProviderConfig::LlamaServer {
+            binary_path,
+            model_path,
+            provenance,
+            ..
+        }
+        | ProviderConfig::MlxServer {
+            binary_path,
+            model_path,
+            provenance,
+            ..
+        } => Some((binary_path, model_path, provenance.as_ref())),
+        _ => None,
+    }
+}
+
+/// The same configuration, with its files recorded as they are now.
+#[must_use]
+pub fn with_provenance(
+    config: ProviderConfig,
+    recorded: tramontana_core::contracts::RuntimeProvenance,
+) -> ProviderConfig {
+    match config {
+        ProviderConfig::LlamaServer {
+            binary_path,
+            model_path,
+            model_id,
+            extra_args,
+            ..
+        } => ProviderConfig::LlamaServer {
+            binary_path,
+            model_path,
+            model_id,
+            extra_args,
+            provenance: Some(recorded),
+        },
+        ProviderConfig::MlxServer {
+            binary_path,
+            model_path,
+            model_id,
+            extra_args,
+            ..
+        } => ProviderConfig::MlxServer {
+            binary_path,
+            model_path,
+            model_id,
+            extra_args,
+            provenance: Some(recorded),
+        },
+        other => other,
+    }
+}
+
+/// Where a supervised runtime's files stand against their record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileCheck {
+    /// Nothing was recorded: added before records were kept.
+    NotRecorded,
+    /// As recorded.
+    Unchanged,
+    /// Different from the record.
+    Changed,
+    /// Could not be read.
+    Unreadable,
+}
+
+/// Whether a runtime's executable is still what was recorded. Cheap enough
+/// to run whenever the endpoints are listed: an executable is megabytes.
+pub async fn check_executable(
+    binary: &std::path::Path,
+    recorded: Option<&tramontana_core::contracts::RuntimeProvenance>,
+) -> FileCheck {
+    let Some(recorded) = recorded else {
+        return FileCheck::NotRecorded;
+    };
+    let expected = recorded.executable_sha256.clone();
+    let binary = binary.to_path_buf();
+    match tokio::task::spawn_blocking(move || {
+        tramontana_adapters_local::fingerprint::fingerprint_file(&binary)
+    })
+    .await
+    {
+        Ok(Ok(now)) if now.sha256 == expected => FileCheck::Unchanged,
+        Ok(Ok(_)) => FileCheck::Changed,
+        _ => FileCheck::Unreadable,
+    }
+}
+
+/// Whether a runtime's model is still what was recorded. Reads all of it,
+/// so it runs only when asked.
+pub async fn check_model(
+    model: &std::path::Path,
+    recorded: Option<&tramontana_core::contracts::RuntimeProvenance>,
+) -> FileCheck {
+    let Some(recorded) = recorded else {
+        return FileCheck::NotRecorded;
+    };
+    let expected = recorded.model_sha256.clone();
+    let model = model.to_path_buf();
+    match tokio::task::spawn_blocking(move || {
+        tramontana_adapters_local::fingerprint::fingerprint_model(&model)
+    })
+    .await
+    {
+        Ok(Ok(now)) if now.sha256 == expected => FileCheck::Unchanged,
+        Ok(Ok(_)) => FileCheck::Changed,
+        _ => FileCheck::Unreadable,
+    }
+}
+
+/// Refuse to start a runtime whose executable is no longer the one the
+/// person chose or confirmed (ADR 0043).
+async fn hold_if_changed(
+    endpoint: &ProviderEndpoint,
+    binary_path: &str,
+    recorded: &tramontana_core::contracts::RuntimeProvenance,
+) -> Result<(), ErrorEnvelope> {
+    match check_executable(std::path::Path::new(binary_path), Some(recorded)).await {
+        FileCheck::Unchanged | FileCheck::NotRecorded => Ok(()),
+        FileCheck::Changed => Err(held_error(
+            endpoint,
+            "its executable changed since you added or last confirmed it",
+        )),
+        FileCheck::Unreadable => Err(held_error(endpoint, "its executable could not be read")),
+    }
+}
+
+fn held_error(endpoint: &ProviderEndpoint, why: &str) -> ErrorEnvelope {
+    ErrorEnvelope::new(
+        tramontana_core::contracts::ErrorCode::PermissionDenied,
+        format!(
+            "{} is held: {why}. Confirm it in Models and credentials, or with `tramontana provider trust {}`",
+            endpoint.display_name, endpoint.endpoint_id
+        ),
+        tramontana_core::contracts::CorrelationId::new("composition"),
+    )
 }
 
 /// The descriptor an endpoint advertises.

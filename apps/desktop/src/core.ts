@@ -123,7 +123,7 @@ export interface CredentialStatus {
 export interface ConfiguredEndpoint {
   readonly endpointId: string;
   readonly displayName: string;
-  readonly kind: "openAiCompatible" | "anthropic" | "llamaServer";
+  readonly kind: "openAiCompatible" | "anthropic" | "llamaServer" | "mlxServer";
   readonly modelId: string;
   /** Whether work sent here leaves the device. Derived, never declared. */
   readonly leavesTheDevice: boolean;
@@ -131,6 +131,22 @@ export interface ConfiguredEndpoint {
   /** Tool-call support the person verified. Unknown is off. */
   readonly supportsToolCalls: boolean;
   readonly credential?: CredentialStatus;
+  /** A runtime Tramontana starts: its files and whether they changed. */
+  readonly runtime?: RuntimeFiles;
+}
+
+/** Whether a runtime's file is still what was recorded (ADR 0043). */
+export type FileStatus = "confirmed" | "held" | "unreadable" | "notRecorded";
+
+/** A supervised runtime's files, as recorded when it was added or confirmed. */
+export interface RuntimeFiles {
+  /** The executable's file name only. */
+  readonly executable: string;
+  /** `held` means it changed, and will not be started until confirmed. */
+  readonly executableStatus: FileStatus;
+  /** The model's size: the least memory it needs. */
+  readonly modelBytes?: number;
+  readonly recordedAt?: string;
 }
 
 /** Whether a configured endpoint came up when Tramontana opened. */
@@ -140,6 +156,11 @@ export interface ModelEndpointStatus {
   readonly leavesTheDevice: boolean;
   readonly available: boolean;
   readonly unavailableReason?: string;
+  /**
+   * For a runtime Tramontana started, the accelerators it reported; empty
+   * when it reported none, so it may be running on the processor alone.
+   */
+  readonly accelerators?: readonly string[];
 }
 
 /** Every configured endpoint, with whether its credential is stored. */
@@ -205,6 +226,32 @@ export async function addLlamaEndpoint(endpoint: NewEndpoint): Promise<boolean |
       modelId: endpoint.modelId,
     })) ?? undefined
   );
+}
+
+/**
+ * Configure an `mlx_lm.server` Tramontana starts (ADR 0010). The shell asks
+ * the native picker for the executable and the model folder; resolves
+ * `undefined` when either is cancelled, and nothing is saved. Runs only on
+ * Apple Silicon; elsewhere it is saved and shown as unavailable.
+ */
+export async function addMlxEndpoint(endpoint: NewEndpoint): Promise<boolean | undefined> {
+  return (
+    (await invoke<boolean | null>("add_mlx_endpoint", {
+      endpointId: endpoint.endpointId,
+      displayName: endpoint.displayName ?? null,
+      modelId: endpoint.modelId,
+    })) ?? undefined
+  );
+}
+
+/** Record a runtime's files as they are now. Takes effect on restart. */
+export async function trustEndpoint(endpointId: string): Promise<void> {
+  return invoke("trust_endpoint", { endpointId });
+}
+
+/** Whether a runtime's model is still what was recorded. Reads all of it. */
+export async function checkEndpointModel(endpointId: string): Promise<FileStatus> {
+  return invoke<FileStatus>("check_endpoint_model", { endpointId });
 }
 
 /** Turn an endpoint on or off. Takes effect when Tramontana restarts. */

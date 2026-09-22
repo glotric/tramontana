@@ -58,7 +58,9 @@ async fn a_supervised_runtime_obeys_the_model_provider_contract() {
                 "local",
                 runtime.base_url(),
                 OpenAiCompatibleProvider::local_descriptor("local", "test-model", "Test model"),
-                ProviderAuth::None,
+                // As composition connects: with the key the runtime was started
+                // with, which it now requires of every model request.
+                ProviderAuth::Session(runtime.api_key().unwrap().to_owned()),
             )
             .unwrap();
             runtimes.lock().unwrap().push(runtime);

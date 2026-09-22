@@ -44,6 +44,11 @@ pub enum ProviderAuth {
         /// What turns the reference into a value.
         resolver: Arc<dyn SecretResolver>,
     },
+    /// A key this process made up for a runtime it started, so nothing else
+    /// on the machine — a web page in a browser least of all — can use that
+    /// runtime. Held in memory for the runtime's life; never stored, never
+    /// printed.
+    Session(String),
 }
 
 impl std::fmt::Debug for ProviderAuth {
@@ -55,6 +60,7 @@ impl std::fmt::Debug for ProviderAuth {
         match self {
             Self::None => f.write_str("ProviderAuth::None"),
             Self::Bearer { .. } => f.write_str("ProviderAuth::Bearer(..)"),
+            Self::Session(_) => f.write_str("ProviderAuth::Session(..)"),
         }
     }
 }
@@ -182,13 +188,16 @@ impl ModelProvider for OpenAiCompatibleProvider {
 
         // Resolved here and moved into the header. It is never stored on the
         // provider, never in the URL, and never in a process argument.
-        if let ProviderAuth::Bearer {
-            reference,
-            resolver,
-        } = &self.auth
-        {
-            let value = resolver.resolve(reference).await?;
-            builder = builder.bearer_auth(value);
+        match &self.auth {
+            ProviderAuth::None => {}
+            ProviderAuth::Bearer {
+                reference,
+                resolver,
+            } => {
+                let value = resolver.resolve(reference).await?;
+                builder = builder.bearer_auth(value);
+            }
+            ProviderAuth::Session(key) => builder = builder.bearer_auth(key),
         }
 
         let stream_id = request.request_id.clone();

@@ -71,7 +71,57 @@ pub enum ProviderConfig {
         /// Extra arguments, passed through verbatim. Never a credential.
         #[serde(skip_serializing_if = "Vec::is_empty", default)]
         extra_args: Vec<String>,
+        /// What the executable and the model were when the person chose or
+        /// last confirmed them (ADR 0043). Absent for an endpoint added
+        /// before they were recorded.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        provenance: Option<RuntimeProvenance>,
     },
+    /// An `mlx_lm.server` this application starts and stops (ADR 0010).
+    ///
+    /// Apple Silicon only; elsewhere it is configured but unavailable. The
+    /// executable and the model folder are paths the user chose: nothing is
+    /// downloaded, no Python is bundled, and `PATH` is not searched.
+    #[serde(rename_all = "camelCase")]
+    MlxServer {
+        /// The `mlx_lm.server` executable, usually inside a virtual
+        /// environment the user made.
+        binary_path: String,
+        /// The MLX model folder: weights, tokenizer and config.
+        model_path: String,
+        /// The name the model is reported under.
+        model_id: String,
+        /// Extra arguments, passed through verbatim. Never a credential.
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        extra_args: Vec<String>,
+        /// What the executable and the model were when the person chose or
+        /// last confirmed them (ADR 0043). Absent for an endpoint added
+        /// before they were recorded.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        provenance: Option<RuntimeProvenance>,
+    },
+}
+
+/// What a supervised runtime's files were when the person chose or last
+/// confirmed them (ADR 0043).
+///
+/// Tramontana did not download them and cannot vouch for where they came
+/// from. It records exactly what they were, so that a changed executable is
+/// held until the person confirms it and a changed model is flagged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeProvenance {
+    /// The executable's SHA-256, lowercase hex.
+    pub executable_sha256: String,
+    /// Its size in bytes.
+    pub executable_bytes: u64,
+    /// The model's SHA-256: of the file, or of an MLX model folder's files
+    /// and their paths.
+    pub model_sha256: String,
+    /// The model's size in bytes, summed over a folder.
+    pub model_bytes: u64,
+    /// When they were recorded.
+    pub recorded_at: Timestamp,
 }
 
 impl ProviderConfig {
@@ -82,6 +132,7 @@ impl ProviderConfig {
             Self::OpenAiCompatible { .. } => "openAiCompatible",
             Self::Anthropic { .. } => "anthropic",
             Self::LlamaServer { .. } => "llamaServer",
+            Self::MlxServer { .. } => "mlxServer",
         }
     }
 
@@ -91,7 +142,8 @@ impl ProviderConfig {
         match self {
             Self::OpenAiCompatible { model_id, .. }
             | Self::Anthropic { model_id, .. }
-            | Self::LlamaServer { model_id, .. } => model_id,
+            | Self::LlamaServer { model_id, .. }
+            | Self::MlxServer { model_id, .. } => model_id,
         }
     }
 
@@ -101,7 +153,7 @@ impl ProviderConfig {
         match self {
             Self::OpenAiCompatible { credential, .. } => credential.as_ref(),
             Self::Anthropic { credential, .. } => Some(credential),
-            Self::LlamaServer { .. } => None,
+            Self::LlamaServer { .. } | Self::MlxServer { .. } => None,
         }
     }
 
@@ -115,7 +167,8 @@ impl ProviderConfig {
     #[must_use]
     pub fn location(&self) -> ModelLocation {
         match self {
-            Self::LlamaServer { .. } => ModelLocation::Local,
+            // A supervised process is on this device by construction.
+            Self::LlamaServer { .. } | Self::MlxServer { .. } => ModelLocation::Local,
             // Anthropic is a third party wherever its URL points. A loopback
             // proxy in front of it is still a route off this device.
             Self::Anthropic { .. } => ModelLocation::Cloud,
@@ -280,6 +333,7 @@ mod tests {
             model_path: "/models/m.gguf".to_owned(),
             model_id: "m".to_owned(),
             extra_args: Vec::new(),
+            provenance: None,
         };
         assert_eq!(config.location(), ModelLocation::Local);
         assert!(config.credential().is_none());

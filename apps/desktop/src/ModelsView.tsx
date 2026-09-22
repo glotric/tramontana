@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { AddEndpointForm } from "./AddEndpointForm.js";
 import {
   asErrorEnvelope,
+  checkEndpointModel,
   forgetCredential,
   listConfiguredEndpoints,
   listModelEndpoints,
@@ -12,8 +13,15 @@ import {
   setEndpointEnabled,
   setEndpointToolCalls,
   storeCredential,
+  trustEndpoint,
 } from "./core.js";
-import type { ConfiguredEndpoint, CredentialStatus, ModelEndpointStatus } from "./core.js";
+import type {
+  ConfiguredEndpoint,
+  CredentialStatus,
+  FileStatus,
+  ModelEndpointStatus,
+  RuntimeFiles,
+} from "./core.js";
 
 /**
  * Models and credentials: what is configured, and whether it is in use.
@@ -32,6 +40,7 @@ const KIND_TEXT: Record<ConfiguredEndpoint["kind"], string> = {
   openAiCompatible: "OpenAI-compatible",
   anthropic: "Anthropic",
   llamaServer: "llama-server started by Tramontana",
+  mlxServer: "mlx_lm.server started by Tramontana",
 };
 
 /** Whether an endpoint is in use now, in words. */
@@ -41,9 +50,45 @@ function describeUse(
 ): string {
   if (!endpoint.enabled) return "Turned off";
   if (running === undefined) return "Not in use until Tramontana restarts";
-  if (running.available) return `In use · ${running.models.join(", ")}`;
+  if (running.available) {
+    const where =
+      running.accelerators === undefined
+        ? ""
+        : running.accelerators.length === 0
+          ? " · reported no GPU, so it may run on the processor alone"
+          : ` · on ${running.accelerators.join(", ")}`;
+    return `In use · ${running.models.join(", ")}${where}`;
+  }
   return `Unavailable: ${running.unavailableReason ?? "no reason was given"}`;
 }
+
+/** A size in words a person reads at a glance. */
+function describeBytes(bytes: number): string {
+  const gib = bytes / 1024 ** 3;
+  if (gib >= 1) return `${gib.toFixed(1)} GB`;
+  return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+}
+
+/** Where a runtime's executable stands against its record (ADR 0043). */
+function describeExecutable(runtime: RuntimeFiles): string {
+  switch (runtime.executableStatus) {
+    case "confirmed":
+      return `${runtime.executable} is as you added or last confirmed it.`;
+    case "held":
+      return `Held: ${runtime.executable} changed since you added or last confirmed it, and will not be started until you confirm it.`;
+    case "unreadable":
+      return `Held: ${runtime.executable} could not be read.`;
+    case "notRecorded":
+      return `${runtime.executable} was added before files were recorded; confirm it to record them.`;
+  }
+}
+
+const MODEL_CHECK_TEXT: Record<FileStatus, string> = {
+  confirmed: "The model is as recorded.",
+  held: "The model changed since it was recorded. Confirm the files if you meant to change it.",
+  unreadable: "The model could not be read.",
+  notRecorded: "The model was not recorded; confirm the files to record it.",
+};
 
 function describeCredential(credential: CredentialStatus): string {
   if (credential.configured === undefined) {
@@ -203,6 +248,55 @@ export function ModelsView({ onClose }: ModelsViewProps): React.JSX.Element {
                   </span>
                 </p>
                 <p className="endpoint-use">{describeUse(endpoint, health)}</p>
+                {endpoint.runtime !== undefined && (
+                  <div className="endpoint-credential">
+                    <p>{describeExecutable(endpoint.runtime)}</p>
+                    {endpoint.runtime.modelBytes !== undefined && (
+                      <p className="card-meta">
+                        Model {describeBytes(endpoint.runtime.modelBytes)}, so it needs at least
+                        that much memory. Recorded {endpoint.runtime.recordedAt}.
+                      </p>
+                    )}
+                    <div className="endpoint-actions">
+                      <button
+                        type="button"
+                        className="button button--secondary"
+                        disabled={busy}
+                        onClick={() =>
+                          void act(
+                            async () =>
+                              MODEL_CHECK_TEXT[await checkEndpointModel(endpoint.endpointId)],
+                            "Could not check the model.",
+                            false,
+                          )
+                        }
+                      >
+                        Check the model
+                      </button>
+                      <button
+                        type="button"
+                        className={
+                          endpoint.runtime.executableStatus === "confirmed"
+                            ? "button button--secondary"
+                            : "button button--primary"
+                        }
+                        disabled={busy}
+                        onClick={() =>
+                          void act(
+                            async () => {
+                              await trustEndpoint(endpoint.endpointId);
+                              return `Confirmed the files of ${endpoint.displayName} as they are now.`;
+                            },
+                            "Could not confirm the files.",
+                            true,
+                          )
+                        }
+                      >
+                        Confirm files
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="endpoint-switches">
                   <label>

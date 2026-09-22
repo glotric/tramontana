@@ -11,9 +11,11 @@
 //! decision: "Do not silently download executable code or models." The binary
 //! and the model are supplied by the user, by path.
 
+pub mod fingerprint;
 mod llama;
 pub mod runtime_records;
 
 pub use llama::{
-    LlamaServerSpec, MINIMUM_BUILD, ProbedVersion, StartError, SupervisedLlamaServer, probe_version,
+    LlamaServerSpec, MINIMUM_BUILD, ProbedVersion, RuntimeKind, StartError, SupervisedLlamaServer,
+    mlx_supported, parse_devices, probe_devices, probe_version,
 };

@@ -17,6 +17,8 @@ const forgetCredential = vi.hoisted(() => vi.fn());
 const restartApplication = vi.hoisted(() => vi.fn());
 const restartSupported = vi.hoisted(() => vi.fn());
 const addLlamaEndpoint = vi.hoisted(() => vi.fn());
+const trustEndpoint = vi.hoisted(() => vi.fn());
+const checkEndpointModel = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -32,6 +34,8 @@ vi.mock("./core.js", async () => {
     restartApplication,
     restartSupported,
     addLlamaEndpoint,
+    trustEndpoint,
+    checkEndpointModel,
   };
 });
 
@@ -102,6 +106,8 @@ describe("the Models view", () => {
       restartApplication,
       restartSupported,
       addLlamaEndpoint,
+      trustEndpoint,
+      checkEndpointModel,
     ]) {
       mock.mockReset();
     }
@@ -115,6 +121,8 @@ describe("the Models view", () => {
     storeCredential.mockResolvedValue(7);
     forgetCredential.mockResolvedValue(true);
     restartApplication.mockResolvedValue(undefined);
+    trustEndpoint.mockResolvedValue(undefined);
+    checkEndpointModel.mockResolvedValue("confirmed");
   });
 
   it("says where each endpoint runs and whether it is in use, in words", async () => {
@@ -248,5 +256,70 @@ describe("the Models view", () => {
       expect(removeEndpoint).toHaveBeenCalledOnce();
     });
     expect(removeEndpoint).toHaveBeenCalledWith("llama");
+  });
+
+  it("holds a runtime whose executable changed, says why, and confirms it on request", async () => {
+    listConfiguredEndpoints.mockResolvedValue([
+      {
+        ...llama,
+        runtime: {
+          executable: "llama-server",
+          executableStatus: "held",
+          modelBytes: 4_683_000_000,
+          recordedAt: "2026-09-21T10:00:00.000Z",
+        },
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<ModelsView onClose={() => undefined} />);
+    await screen.findByRole("heading", { name: "Local Qwen" });
+
+    expect(endpoint("Local Qwen")).toHaveTextContent(
+      "Held: llama-server changed since you added or last confirmed it",
+    );
+    expect(endpoint("Local Qwen")).toHaveTextContent("Model 4.4 GB, so it needs at least");
+
+    await user.click(screen.getByRole("button", { name: "Confirm files" }));
+    await waitFor(() => {
+      expect(trustEndpoint).toHaveBeenCalledWith("llama");
+    });
+    expect(await screen.findByText(/Confirmed the files of Local Qwen/)).toBeInTheDocument();
+    // Confirming takes effect on restart, as every settings change does.
+    expect(screen.getByRole("button", { name: "Restart now" })).toBeInTheDocument();
+  });
+
+  it("checks a runtime's model only when asked, and says what it found", async () => {
+    listConfiguredEndpoints.mockResolvedValue([
+      {
+        ...llama,
+        runtime: { executable: "llama-server", executableStatus: "confirmed" },
+      },
+    ]);
+    checkEndpointModel.mockResolvedValue("held");
+    const user = userEvent.setup();
+    render(<ModelsView onClose={() => undefined} />);
+    await screen.findByRole("heading", { name: "Local Qwen" });
+    expect(endpoint("Local Qwen")).toHaveTextContent("is as you added or last confirmed it");
+
+    expect(checkEndpointModel).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Check the model" }));
+    expect(await screen.findByText(/The model changed since it was recorded/)).toBeInTheDocument();
+    expect(checkEndpointModel).toHaveBeenCalledWith("llama");
+  });
+
+  it("says which accelerator a runtime it started reported, or that it reported none", async () => {
+    listConfiguredEndpoints.mockResolvedValue([
+      llama,
+      { ...llama, endpointId: "cpu", displayName: "On the processor" },
+    ]);
+    listModelEndpoints.mockResolvedValue([
+      { ...health[0], accelerators: ["Apple M3 Max (MTL0, 28 GB)"] },
+      { ...health[0], endpointId: "cpu", accelerators: [] },
+    ]);
+    render(<ModelsView onClose={() => undefined} />);
+    await screen.findByRole("heading", { name: "Local Qwen" });
+
+    expect(endpoint("Local Qwen")).toHaveTextContent("on Apple M3 Max (MTL0, 28 GB)");
+    expect(endpoint("On the processor")).toHaveTextContent("reported no GPU");
   });
 });
