@@ -537,7 +537,10 @@ fn fake_mcp_server() -> PathBuf {
         .parent()
         .and_then(Path::parent)
         .expect("the test binary lives under the target directory")
-        .join("tramontana-fake-mcp-server");
+        .join(format!(
+            "tramontana-fake-mcp-server{}",
+            std::env::consts::EXE_SUFFIX
+        ));
     assert!(
         path.exists(),
         "{} is missing; build the workspace (`cargo test --workspace`) first",
@@ -602,7 +605,10 @@ async fn the_apps_screen_shows_an_app_its_tools_its_decisions_and_nothing_secret
     assert_eq!(apps.len(), 1, "{apps:?}");
     let app = &apps[0];
     assert_eq!(app.status, crate::apps::AppStatus::Running);
-    assert_eq!(app.program, "tramontana-fake-mcp-server");
+    assert_eq!(
+        app.program,
+        format!("tramontana-fake-mcp-server{}", std::env::consts::EXE_SUFFIX)
+    );
     assert_eq!(app.variables, ["GREETING_STYLE"]);
     assert!(app.protocol_version.is_some());
     let offered: Vec<(&str, bool)> = app

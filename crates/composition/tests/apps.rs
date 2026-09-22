@@ -27,7 +27,10 @@ fn fake_server() -> PathBuf {
         .parent()
         .and_then(std::path::Path::parent)
         .expect("the test binary lives under the target directory")
-        .join("tramontana-fake-mcp-server");
+        .join(format!(
+            "tramontana-fake-mcp-server{}",
+            std::env::consts::EXE_SUFFIX
+        ));
     assert!(
         path.exists(),
         "{} is missing; build the workspace (`cargo test --workspace`) first",

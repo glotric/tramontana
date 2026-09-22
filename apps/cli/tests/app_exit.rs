@@ -77,7 +77,10 @@ fn fake_server() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_tramontana"))
         .parent()
         .expect("the test binary has a directory")
-        .join("tramontana-fake-mcp-server")
+        .join(format!(
+            "tramontana-fake-mcp-server{}",
+            std::env::consts::EXE_SUFFIX
+        ))
 }
 
 /// Configure the stand-in App in `mode`, through the CLI as a person would.
