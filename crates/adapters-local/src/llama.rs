@@ -341,6 +341,8 @@ pub struct SupervisedLlamaServer {
     api_key: Option<String>,
     /// The accelerators the runtime reported, in the person's words.
     accelerators: Vec<String>,
+    /// Which runtime this is.
+    kind: RuntimeKind,
 }
 
 impl std::fmt::Debug for SupervisedLlamaServer {
@@ -434,6 +436,14 @@ impl SupervisedLlamaServer {
         }
         if spec.kind == RuntimeKind::MlxLm {
             command.arg("--allowed-origins").arg("none");
+            // `mlx_lm.server` loads whatever a request names, downloading it
+            // from Hugging Face when it is not a local path — a request from
+            // anywhere could make it reach the network, and Local Only must
+            // never. Offline, the Hugging Face library refuses instead.
+            // Checked against mlx-lm 0.31.3.
+            command
+                .env("HF_HUB_OFFLINE", "1")
+                .env("HF_HUB_DISABLE_TELEMETRY", "1");
         }
         command
             .arg("--model")
@@ -495,6 +505,7 @@ impl SupervisedLlamaServer {
             version,
             record,
             api_key,
+            kind: spec.kind,
             accelerators: match spec.kind {
                 RuntimeKind::LlamaServer => probe_devices(&spec.binary).await,
                 // MLX runs on Apple silicon's GPU by construction.
@@ -519,6 +530,17 @@ impl SupervisedLlamaServer {
     #[must_use]
     pub fn accelerators(&self) -> &[String] {
         &self.accelerators
+    }
+
+    /// What a request's `model` field must say, when the runtime needs
+    /// something other than the model's identifier: `default_model` for
+    /// `mlx_lm.server`, its name for the model it was started with.
+    #[must_use]
+    pub fn wire_model(&self) -> Option<&'static str> {
+        match self.kind {
+            RuntimeKind::LlamaServer => None,
+            RuntimeKind::MlxLm => Some("default_model"),
+        }
     }
 
     /// The key every model request must carry, when this runtime takes one.

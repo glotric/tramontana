@@ -395,7 +395,7 @@ async fn bring_up(
             // adapter every other chat-completions endpoint uses. A supervised
             // runtime is not a special kind of model, only a model whose
             // lifetime this process owns.
-            let provider = OpenAiCompatibleProvider::new(
+            let mut provider = OpenAiCompatibleProvider::new(
                 provider_id,
                 runtime.base_url(),
                 descriptor(endpoint, model_id, ModelLocation::Local),
@@ -403,6 +403,9 @@ async fn bring_up(
                     ProviderAuth::Session(key.to_owned())
                 }),
             )?;
+            if let Some(name) = runtime.wire_model() {
+                provider = provider.with_wire_model(name);
+            }
             supervised.push((endpoint.endpoint_id.clone(), runtime));
             Ok(Arc::new(provider))
         }

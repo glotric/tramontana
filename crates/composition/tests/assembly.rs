@@ -493,3 +493,94 @@ async fn a_started_runtimes_accelerators_are_kept_for_its_endpoint() {
     assert_eq!(plane.accelerators("good"), None);
     plane.shutdown().await;
 }
+
+/// A real `mlx_lm.server`, assembled as both applications assemble it.
+///
+/// Runs only when `TRAMONTANA_LIVE_MLX_SERVER` names an `mlx_lm.server` and
+/// `TRAMONTANA_LIVE_MLX_MODEL` an MLX model folder; otherwise it says so and
+/// passes, as the other live variants in this repository do.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[tokio::test]
+async fn a_real_mlx_runtime_answers_and_stops() {
+    use tramontana_core::contracts::{ModelEvent, StopReason};
+    use tramontana_core::testing::contract_suites::model_request;
+    use tramontana_core::testing::release::locally_authorized;
+
+    let (Ok(server), Ok(model)) = (
+        std::env::var("TRAMONTANA_LIVE_MLX_SERVER"),
+        std::env::var("TRAMONTANA_LIVE_MLX_MODEL"),
+    ) else {
+        eprintln!("skipped: set TRAMONTANA_LIVE_MLX_SERVER and TRAMONTANA_LIVE_MLX_MODEL");
+        return;
+    };
+    let endpoint = ProviderEndpoint::new(
+        "mlx",
+        "Local MLX",
+        ProviderConfig::MlxServer {
+            binary_path: server,
+            model_path: model,
+            model_id: "qwen-mlx".to_owned(),
+            extra_args: Vec::new(),
+            provenance: None,
+        },
+        at(),
+    );
+    let mut plane = assemble_models(&[endpoint], &resolver(), Supervision::Start).await;
+    assert!(plane.failures.is_empty(), "{:?}", plane.failures);
+    assert_eq!(
+        plane.accelerators("mlx"),
+        Some(&["Apple silicon GPU (MLX)".to_owned()][..])
+    );
+
+    // It answers, through the same adapter as every other endpoint, asked
+    // for its model as `default_model` rather than by a name it would try to
+    // download.
+    let mut stream = plane.providers[0]
+        .stream(
+            locally_authorized(model_request("live-1")),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let mut text = String::new();
+    let mut stopped = None;
+    while let Some(event) = stream.recv().await {
+        match event {
+            ModelEvent::TextDelta { text: delta, .. } => text.push_str(&delta),
+            ModelEvent::Completed { stop_reason } => stopped = Some(stop_reason),
+            ModelEvent::Failed { error } => panic!("the model failed: {error:?}"),
+            _ => {}
+        }
+    }
+    assert!(!text.trim().is_empty(), "no text came back");
+    assert!(
+        matches!(stopped, Some(StopReason::Stop | StopReason::Length)),
+        "{stopped:?}"
+    );
+
+    // Cancelled mid-answer, it ends promptly and once.
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let mut stream = plane.providers[0]
+        .stream(locally_authorized(model_request("live-2")), cancel.clone())
+        .await
+        .unwrap();
+    let _first = stream.recv().await;
+    cancel.cancel();
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut terminal = 0;
+        while let Some(event) = stream.recv().await {
+            if matches!(
+                event,
+                ModelEvent::Completed { .. } | ModelEvent::Failed { .. }
+            ) {
+                terminal += 1;
+            }
+        }
+        terminal
+    })
+    .await
+    .expect("a cancelled request did not end");
+    assert_eq!(ended, 1);
+
+    plane.shutdown().await;
+}
