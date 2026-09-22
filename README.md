@@ -20,9 +20,12 @@ Phase 1 has no enterprise server dependency. The default architecture is persona
 
 ## Status
 
-Tramontana is working toward its first beta. Milestones M0–M8 and validation
-gates V1–V3 are closed; each left an evidence note in
+Tramontana is working toward its first beta. Milestones M0–M11 and validation
+gates V1–V3 are closed, and M12 is under way; each left an evidence note in
 [docs/evidence/](docs/evidence/) that says what it proved and what it did not.
+M9 to M12 were built before gate V4's demonstration, at the owner's
+direction and by recorded exception (ADRs 0033, 0038, 0042, 0046, 0047):
+what that demonstration finds may still revise them.
 
 - **Done and demonstrated:** a desktop application and a CLI over one durable
   record; a built-in worker that reads, edits files and runs the project's
@@ -149,6 +152,8 @@ in a checkout):
 ```bash
 pnpm dev:cli project open /path/to/project
 pnpm dev:cli task "Say hello"   # a read-only task
+pnpm dev:cli task "Read the README and summarize it" --allow-writes --browse \
+    --worker builtin.reference@<ENDPOINT>/<MODEL>
 pnpm check:fast                 # format, contracts, lint, types, tests
 pnpm check                      # the above plus the release build
 ```
@@ -158,7 +163,8 @@ Stopping and continuing work, carrying it elsewhere, and configuring models:
 ```bash
 tramontana task inspect  <TASK>                          # state, checkpoint, replay safety
 tramontana task resume   <TASK> --checkpoint-id <CP>     # the same worker continues
-tramontana task handoff  <TASK> --checkpoint-id <CP> --to fake.receiving
+tramontana task handoff  <TASK> --checkpoint-id <CP> \
+    --to builtin.reference@<ENDPOINT>/<MODEL>           # an unknown name lists them
 tramontana task discard  <TASK>                          # keeps history, undoes nothing
 tramontana bundle export  ./out --project-id <PROJECT>
 tramontana bundle inspect ./out                          # validates, writes nothing
@@ -213,7 +219,7 @@ crates/adapters-tools/  Filesystem, Git and recipe tools, and the command broker
 crates/adapters-mcp/    MCP Apps over stdio or HTTP, behind the tool port
 crates/adapters-browser/ The built-in browser: an installed Chrome, over DevTools
 crates/adapters-model/  Model provider adapters: chat-completions and Anthropic
-crates/adapters-local/  Supervised local model runtimes (llama.cpp)
+crates/adapters-local/  Supervised local model runtimes (llama.cpp and MLX)
 crates/composition/     Configured endpoints turned into live providers
 packages/shared/    Generated schemas and TypeScript client types
 xtask/              Repository build tooling; not shipped
