@@ -351,6 +351,121 @@ async fn a_task_that_ran_out_of_steps_is_handed_to_another_model_and_finishes() 
 }
 
 #[tokio::test]
+async fn a_task_can_start_on_the_worker_a_person_named() {
+    let small = Model::new("a-small", ModelLocation::Local, usize::MAX);
+    let large = Model::new("b-large", ModelLocation::Local, 0);
+    let service = service(
+        RoutingMode::LocalOnly,
+        &[small.clone(), large.clone()],
+        ScriptedApprover::unavailable(),
+    );
+    let project = service
+        .create_project("Fixture", vec!["/fixture".into()])
+        .await
+        .unwrap();
+    let conversation = service
+        .create_conversation(Some(project.project_id), "Question")
+        .await
+        .unwrap();
+    let task = service
+        .start_task(StartTaskRequest {
+            conversation_id: Some(conversation.conversation_id.clone()),
+            goal: "Find the fact".into(),
+            worker: Some("builtin.reference@b-large/model".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let events = settled(&service, &task, 0).await;
+    assert_eq!(events.last().unwrap().kind, TaskEventKind::TaskCompleted);
+    // It ran on the model that was named, and the other was never asked.
+    assert!(events.iter().any(|event| matches!(&event.payload,
+        EventPayload::WorkerSelected { descriptor }
+            if descriptor.agent_id == "builtin.reference@b-large/model")));
+    assert_eq!(small.asked(), 0);
+    assert!(large.asked() > 0);
+
+    // A name nobody offers is refused, and no task is written for it.
+    let before = service
+        .list_tasks(Some(&conversation.conversation_id))
+        .await
+        .unwrap()
+        .len();
+    let unknown = service
+        .start_task(StartTaskRequest {
+            conversation_id: Some(conversation.conversation_id.clone()),
+            goal: "Find the fact".into(),
+            worker: Some("builtin.reference@nobody/model".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(unknown.code, ErrorCode::NotFound);
+    assert_eq!(
+        service
+            .list_tasks(Some(&conversation.conversation_id))
+            .await
+            .unwrap()
+            .len(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn a_local_only_task_cannot_start_on_a_model_off_this_device() {
+    let small = Model::new("a-small", ModelLocation::Local, usize::MAX);
+    let cloud = Model::new("c-cloud", ModelLocation::Cloud, 0);
+    let service = service(
+        RoutingMode::LocalOnly,
+        &[small.clone(), cloud.clone()],
+        ScriptedApprover::unavailable(),
+    );
+    let refused = service
+        .start_task(StartTaskRequest {
+            goal: "Find the fact".into(),
+            worker: Some("builtin.reference@c-cloud/model".into()),
+            routing_mode: Some(RoutingMode::LocalOnly),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict);
+    assert!(
+        refused.message.contains("Local Only"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(cloud.asked(), 0);
+
+    // The same worker under Automatic is the person's own choice, and runs.
+    let service = service_with(RoutingMode::Automatic, &[small, cloud.clone()]);
+    let task = service
+        .start_task(StartTaskRequest {
+            goal: "Find the fact".into(),
+            worker: Some("builtin.reference@c-cloud/model".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let events = settled(&service, &task, 0).await;
+    assert_eq!(
+        events.last().unwrap().kind,
+        TaskEventKind::TaskCompleted,
+        "{events:?}"
+    );
+    assert!(cloud.asked() > 0);
+}
+
+/// The same service, with a person at the approvals.
+fn service_with(mode: RoutingMode, models: &[Arc<Model>]) -> TaskService {
+    service(
+        mode,
+        models,
+        ScriptedApprover::always(ApprovalDecisionKind::AllowOnce),
+    )
+}
+
+#[tokio::test]
 async fn a_pinned_cloud_model_is_asked_about_under_automatic_and_refused_under_local_only() {
     // Automatic: the person chose the cloud worker, so it may be used, and
     // what is released to it is put to them.

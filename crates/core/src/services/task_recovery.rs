@@ -288,13 +288,7 @@ impl TaskService {
         // it moves, rather than failing once it has.
         let local_only =
             created_mode(&events).unwrap_or_else(|| self.routing_mode()) == RoutingMode::LocalOnly;
-        let cloud = self.pinned.as_ref().is_some_and(|(models, _)| {
-            models.iter().any(|model| {
-                model.agent_id() == agent_id
-                    && model.location == crate::contracts::ModelLocation::Cloud
-            })
-        });
-        if local_only && cloud {
+        if local_only && self.is_cloud_worker(agent_id) {
             return Err(self.error(
                 ErrorCode::Conflict,
                 "This task runs Local Only, so it cannot be handed to a model off this device",
@@ -308,8 +302,19 @@ impl TaskService {
         self.hand_off_task(task_id, checkpoint_id, receiving).await
     }
 
+    /// Whether the worker named `agent_id` is pinned to a model off this
+    /// device (ADR 0048).
+    pub(super) fn is_cloud_worker(&self, agent_id: &str) -> bool {
+        self.pinned.as_ref().is_some_and(|(models, _)| {
+            models.iter().any(|model| {
+                model.agent_id() == agent_id
+                    && model.location == crate::contracts::ModelLocation::Cloud
+            })
+        })
+    }
+
     /// The worker named `agent_id` at `admission`, if this service offers it.
-    fn build_worker(
+    pub(super) fn build_worker(
         &self,
         agent_id: &str,
         admission: ToolAdmission,

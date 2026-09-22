@@ -45,12 +45,15 @@ gates V1–V3 are closed; each left an evidence note in
   Chrome, Edge or Chromium, with a throwaway profile of its own. The first
   visit to each site is asked about, and every form it would submit. Tasks
   run up to 40 steps in 30 minutes.
-- **Built:** handing a task to another model (ADR 0048). A task whose worker
+- **Built:** choosing the model a task runs on, in the composer's **Worker**
+  choice or the CLI's `--worker` (ADR 0051), and handing a task to another
+  model (ADR 0048). A task whose worker
   ran out of steps, or whose model failed, stops with a checkpoint instead of
   failing; **Hand over to…** gives it to the built-in worker on another
   configured model, such as a larger local one or Claude, which continues
-  from the task's record. Nothing moves without your click, and a Local Only
-  task is never handed to the cloud.
+  from the task's record. It suggests another model on this device first, the
+  cloud last. Nothing moves without your click, and a Local Only task is
+  never run on, or handed to, a model off this device.
 - **Deferred from Beta 1:** an external coding worker (M10, ADR 0038), and
   the rest listed in the [draft release notes](docs/RELEASE_NOTES_BETA_1.md).
 

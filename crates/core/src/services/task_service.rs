@@ -45,6 +45,11 @@ pub struct StartTaskRequest {
     ///
     /// Recorded when the task is created, and kept if it is resumed.
     pub routing_mode: Option<RoutingMode>,
+    /// The worker to run it, by name, from [`TaskService::workers`]
+    /// (ADR 0048). `None` is the built-in worker as the routing mode runs
+    /// it. A worker pinned to a model off this device is refused to a task
+    /// that runs Local Only, before the task is written.
+    pub worker: Option<String>,
 }
 
 /// Runtime state for a task that is currently running.
@@ -543,17 +548,30 @@ impl TaskService {
         self.require_execution()?;
         // Both chosen before anything is written, so a refusal leaves no
         // task behind.
-        let worker = match (request.admission, &self.workers) {
-            (None, _) => Arc::clone(&self.providers.worker),
-            (Some(admission), Some(choose)) => choose(admission),
-            (Some(_), None) => {
+        let routing_mode = request.routing_mode.unwrap_or_else(|| self.routing_mode());
+        let worker = match (request.admission, request.worker.as_deref(), &self.workers) {
+            (None, None, _) => Arc::clone(&self.providers.worker),
+            (Some(admission), None, Some(choose)) => choose(admission),
+            (admission, Some(name), _) => {
+                // A named worker: the built-in one, or it pinned to a model
+                // the person chose (ADR 0048).
+                let admission = admission.unwrap_or(ToolAdmission::READ_ONLY);
+                if routing_mode == RoutingMode::LocalOnly && self.is_cloud_worker(name) {
+                    return Err(self.error(
+                        ErrorCode::Conflict,
+                        "This task runs Local Only, so it cannot run on a model off this device",
+                    ));
+                }
+                self.build_worker(name, admission)
+                    .ok_or_else(|| self.error(ErrorCode::NotFound, "No such worker is offered"))?
+            }
+            (Some(_), None, None) => {
                 return Err(self.error(
                     ErrorCode::CapabilityUnsupported,
                     "This application runs every task with one worker, and cannot choose one for this task",
                 ));
             }
         };
-        let routing_mode = request.routing_mode.unwrap_or_else(|| self.routing_mode());
         let project_id = match &request.conversation_id {
             Some(id) => {
                 let conversation = self

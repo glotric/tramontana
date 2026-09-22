@@ -210,6 +210,9 @@ pub(crate) async fn replay_task_events(
 /// profile's mode. Admission only lets the model ask: every write and every
 /// recipe run is still put to the person as an approval.
 ///
+/// `worker` is the one the person chose, from [`list_workers`]; absent, the
+/// built-in worker as the routing mode runs it (ADR 0048).
+///
 /// # Errors
 ///
 /// [`ErrorCode::InvalidRequest`] for an empty or oversized goal, or whatever
@@ -220,6 +223,7 @@ pub(crate) async fn start_task(
     conversation_id: Option<ConversationId>,
     admission: Option<ToolAdmission>,
     routing_mode: Option<RoutingMode>,
+    worker: Option<String>,
     channel: Channel<TaskUpdate>,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ErrorEnvelope> {
@@ -229,6 +233,7 @@ pub(crate) async fn start_task(
         conversation_id,
         admission,
         routing_mode,
+        worker,
         move |update| channel.send(update).is_ok(),
     )
     .await
@@ -246,6 +251,7 @@ pub(crate) async fn start_task_on<F>(
     conversation_id: Option<ConversationId>,
     admission: Option<ToolAdmission>,
     routing_mode: Option<RoutingMode>,
+    worker: Option<String>,
     send: F,
 ) -> Result<TaskId, ErrorEnvelope>
 where
@@ -274,6 +280,7 @@ where
             goal,
             admission,
             routing_mode,
+            worker,
         })
         .await?;
 
