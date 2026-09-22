@@ -79,6 +79,40 @@ describe("the approval card", () => {
     expect(screen.getByText(/until Tramontana quits/)).toBeVisible();
   });
 
+  it("asks about a web site in the browser's words, and can allow it for the task", async () => {
+    const user = userEvent.setup();
+    const answered = vi.fn();
+    render(
+      <ApprovalCard
+        request={{
+          ...request,
+          capability: "browser.navigate",
+          toolId: "builtin.browser.open",
+          riskClass: "dangerous",
+          sideEffect: "external",
+          summary: "builtin.browser.open wants to browser.navigate",
+          details: [
+            { label: "Open", value: "https://example.com/pricing" },
+            { label: "Site", value: "https://example.com" },
+          ],
+          eligibleDecisions: ["allowOnce", "allowSite", "deny"],
+        }}
+        waiting={0}
+        onAnswered={answered}
+      />,
+    );
+
+    expect(screen.getByText("Acts on a web page")).toBeInTheDocument();
+    expect(screen.queryByText("Runs a command")).not.toBeInTheDocument();
+    expect(screen.getByText("An effect outside this device.")).toBeInTheDocument();
+    expect(screen.getByText("https://example.com/pricing")).toBeInTheDocument();
+    expect(screen.getByText(/Submitting a form is still asked about every time/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Allow this site for this task" }));
+    await waitFor(() => {
+      expect(resolveApproval).toHaveBeenCalledWith("approval-1", "allowSite");
+    });
+  });
+
   it("takes the focus when it appears and gives it back once answered", async () => {
     const user = userEvent.setup();
     const answered = vi.fn();

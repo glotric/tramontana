@@ -46,6 +46,7 @@ pub use journal::{JournalPorts, TaskJournal};
 pub use model_catalogue::ModelToolCatalogue;
 pub use model_context::{
     ModelContentProvenance, ModelContextInput, PreparedModelContext, prepare_model_context,
+    prepare_model_context_on,
 };
 pub use model_history::CanonicalModelHistory;
 pub use model_input::{
@@ -59,12 +60,22 @@ pub use recipe::{COMMAND_ENVIRONMENT, RECIPE_TOOL_ID};
 pub use redaction::{
     PLACEHOLDER, Redacted, carries_credential, reason as redaction_reason, redact, redacted_hash,
 };
-pub use reference_worker::{REFERENCE_AGENT_ID, ReferenceWorker};
+/// The reason a task moved on to another worker, from which that worker's
+/// budget is counted (ADR 0048).
+pub const HANDED_OVER: &str = "user.handedOver";
+
+pub use reference_worker::{PinnedModel, REFERENCE_AGENT_ID, ReferenceWorker};
 pub use release::{RELEASE_CAPABILITY, ReleaseContext, ReleaseError, ReleaseManager};
 pub use routing::{
     AvailabilitySnapshot, NoEligibleRoute, RoutingInput, route, route_after_failure,
 };
 pub use task_export::ImportSummary;
-pub use task_service::{Providers, Repositories, StartTaskRequest, TaskService, WorkerChoice};
-pub use tool_registry::{APP_NAMESPACE, RegisteredTool, RegistryError, ToolRegistry, is_app_tool};
+pub use task_service::{
+    PinnedWorkerChoice, Providers, Repositories, StartTaskRequest, TaskService, WorkerChoice,
+    WorkerOption,
+};
+pub use tool_registry::{
+    APP_NAMESPACE, BROWSER_PROVIDER, RegisteredTool, RegistryError, ToolRegistry, is_app_tool,
+    is_browser_tool,
+};
 pub use tool_schema::{TOOL_INPUT_BYTES, ToolInputSchema};

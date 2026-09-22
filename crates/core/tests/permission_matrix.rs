@@ -48,6 +48,7 @@ fn read_query() -> PermissionQuery {
         scope: scope(&["/work/project"]),
         persistable: true,
         details: Vec::new(),
+        site: None,
     }
 }
 
@@ -679,4 +680,164 @@ fn read_query_asked() -> PermissionQuery {
     let mut query = read_query();
     query.scope.releases_data = true;
     query
+}
+
+// --- Sites the browser acts on (ADR 0047) -----------------------------------
+
+fn site_query(origin: &str, grantable: bool) -> PermissionQuery {
+    PermissionQuery {
+        tool_id: "builtin.browser.open".to_owned(),
+        capability: Capability::new("browser.navigate"),
+        risk_class: RiskClass::Dangerous,
+        persistable: false,
+        site: Some(tramontana_core::ports::SiteAccess {
+            origin: origin.to_owned(),
+            grantable,
+        }),
+        ..read_query()
+    }
+}
+
+#[tokio::test]
+async fn a_site_allowed_for_a_task_covers_that_site_in_that_task_only() {
+    let (manager, store) = manager(ScriptedApprover::always(ApprovalDecisionKind::AllowSite));
+    let query = site_query("https://example.com", true);
+    let (first, authorized) = manager
+        .authorize(
+            &query,
+            &task(),
+            &invocation(),
+            serde_json::json!({}),
+            &now(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.reason_code(), reason::APPROVED_SITE);
+    let authorized = authorized.unwrap();
+    assert_eq!(authorized.grant_kind(), GrantKind::Site);
+    assert_eq!(authorized.site(), Some("https://example.com"));
+    let offered = &store.requests()[0].eligible_decisions;
+    assert!(offered.contains(&ApprovalDecisionKind::AllowSite));
+    assert!(!offered.contains(&ApprovalDecisionKind::AllowProject));
+
+    // The same site in the same task is not asked about again.
+    let again = manager
+        .evaluate(&query, &task(), &invocation(), &now())
+        .await
+        .unwrap();
+    assert_eq!(again.reason_code(), reason::SITE_GRANT);
+    assert_eq!(store.requests().len(), 1);
+
+    // Another site, or the same site in another task, is.
+    for (query, task_id) in [
+        (site_query("https://example.org", true), task()),
+        (site_query("http://example.com", true), task()),
+        (query.clone(), TaskId::new("task-2")),
+    ] {
+        manager
+            .evaluate(&query, &task_id, &invocation(), &now())
+            .await
+            .unwrap();
+    }
+    assert_eq!(store.requests().len(), 4);
+
+    // An ended task's sites are forgotten.
+    manager.task_ended(&task());
+    manager
+        .evaluate(&query, &task(), &invocation(), &now())
+        .await
+        .unwrap();
+    assert_eq!(store.requests().len(), 5);
+}
+
+#[tokio::test]
+async fn submitting_a_form_is_asked_every_time_even_on_an_allowed_site() {
+    let (allowing, _) = manager(ScriptedApprover::always(ApprovalDecisionKind::AllowSite));
+    allowing
+        .evaluate(
+            &site_query("https://example.com", true),
+            &task(),
+            &invocation(),
+            &now(),
+        )
+        .await
+        .unwrap();
+    let submit = PermissionQuery {
+        tool_id: "builtin.browser.submit".to_owned(),
+        capability: Capability::new("browser.submit"),
+        ..site_query("https://example.com", false)
+    };
+    // The approver answers AllowSite, which was not offered: not consent.
+    let outcome = allowing
+        .evaluate(&submit, &task(), &invocation(), &now())
+        .await
+        .unwrap();
+    assert!(!outcome.is_allowed());
+    assert_eq!(outcome.reason_code(), reason::USER_DENIED);
+
+    let (once, store) = manager(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce));
+    for _ in 0..2 {
+        let outcome = once
+            .evaluate(&submit, &task(), &invocation(), &now())
+            .await
+            .unwrap();
+        assert_eq!(outcome.reason_code(), reason::APPROVED_ONCE);
+    }
+    assert_eq!(store.requests().len(), 2);
+    assert!(
+        !store.requests()[0]
+            .eligible_decisions
+            .contains(&ApprovalDecisionKind::AllowSite)
+    );
+}
+
+#[tokio::test]
+async fn a_page_on_the_web_is_never_a_safe_default_read() {
+    // Even a tool that says it only reads: the page is someone else's, and
+    // reaching it leaves the device.
+    let query = PermissionQuery {
+        risk_class: RiskClass::Read,
+        ..site_query("https://example.com", true)
+    };
+    let (manager, store) = manager(ScriptedApprover::unavailable());
+    let outcome = manager
+        .evaluate(&query, &task(), &invocation(), &now())
+        .await
+        .unwrap();
+    assert!(!outcome.is_allowed());
+    assert_eq!(outcome.reason_code(), reason::NO_APPROVER);
+    assert_eq!(
+        store.requests()[0].side_effect,
+        tramontana_core::contracts::SideEffect::External
+    );
+    let details = &store.requests()[0].details;
+    assert!(
+        details
+            .iter()
+            .any(|detail| detail.label == "Site" && detail.value == "https://example.com")
+    );
+    assert!(
+        details
+            .iter()
+            .any(|detail| detail.label == "Leaves this device" && detail.value == "yes")
+    );
+}
+
+#[tokio::test]
+async fn allow_site_is_refused_for_a_call_that_names_no_site() {
+    let query = PermissionQuery {
+        risk_class: RiskClass::Modify,
+        ..read_query()
+    };
+    let (manager, store) = manager(ScriptedApprover::always(ApprovalDecisionKind::AllowSite));
+    let outcome = manager
+        .evaluate(&query, &task(), &invocation(), &now())
+        .await
+        .unwrap();
+    assert!(!outcome.is_allowed());
+    assert!(
+        !store.requests()[0]
+            .eligible_decisions
+            .contains(&ApprovalDecisionKind::AllowSite)
+    );
 }

@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import type { PendingAction, ReplaySafety, TaskCheckpoint } from "@tramontana/shared";
 
-import { asErrorEnvelope, discardCheckpoint, latestCheckpoint, resumeTask } from "./core.js";
+import {
+  asErrorEnvelope,
+  discardCheckpoint,
+  handOffTask,
+  latestCheckpoint,
+  listWorkers,
+  resumeTask,
+  type WorkerView,
+} from "./core.js";
 
 /**
  * The checkpoint inspector.
@@ -35,12 +43,23 @@ const KIND_TEXT: Record<PendingAction["kind"], string> = {
 interface CheckpointPanelProps {
   /** The interrupted task. */
   readonly taskId: string;
+  /**
+   * Why the worker stopped, when it stopped because it could not go on
+   * rather than because someone paused it (ADR 0048).
+   */
+  readonly stoppedBecause?: string | undefined;
   /** Called after resume or discard changes the task, so the shell reloads. */
   readonly onChanged: () => void;
 }
 
-export function CheckpointPanel({ taskId, onChanged }: CheckpointPanelProps): React.JSX.Element {
+export function CheckpointPanel({
+  taskId,
+  stoppedBecause,
+  onChanged,
+}: CheckpointPanelProps): React.JSX.Element {
   const [checkpoint, setCheckpoint] = useState<TaskCheckpoint | undefined>();
+  const [workers, setWorkers] = useState<readonly WorkerView[]>([]);
+  const [receiving, setReceiving] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | undefined>();
@@ -66,6 +85,20 @@ export function CheckpointPanel({ taskId, onChanged }: CheckpointPanelProps): Re
       active = false;
     };
   }, [taskId]);
+
+  // The workers it could go to. A failure to list them leaves only resume.
+  useEffect(() => {
+    let active = true;
+    void listWorkers().then(
+      (found) => {
+        if (active) setWorkers(found);
+      },
+      () => undefined,
+    );
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const act = useCallback(
     async (action: () => Promise<void>, fallback: string): Promise<void> => {
@@ -113,13 +146,28 @@ export function CheckpointPanel({ taskId, onChanged }: CheckpointPanelProps): Re
   const pending = checkpoint.pendingAction;
   const replayable = pending === undefined || pending.replaySafety === "safe";
   const resumable = checkpoint.resume.eligible && replayable;
+  // Not the worker that already has the task: that is a resume.
+  const previous = checkpoint.worker?.descriptor.agentId;
+  const others = workers.filter((worker) => worker.agentId !== previous);
+  const chosen = others.find((worker) => worker.agentId === receiving) ?? others[0];
 
   return (
     <section className="checkpoint" aria-labelledby="checkpoint-heading">
       <div className="section-heading-row">
-        <h2 id="checkpoint-heading">Interrupted</h2>
+        <h2 id="checkpoint-heading">
+          {stoppedBecause === undefined ? "Interrupted" : "Stopped: the worker could not go on"}
+        </h2>
         <code>{checkpoint.checkpointId}</code>
       </div>
+
+      {stoppedBecause !== undefined && (
+        <p className="notice" role="note">
+          {stoppedBecause}{" "}
+          {others.length > 0
+            ? "Another worker can continue it from here, with a budget of its own."
+            : "Configure another model to hand it to, or resume it once this one can go on."}
+        </p>
+      )}
 
       <dl className="checkpoint-facts">
         <dt>Stopped at</dt>
@@ -185,6 +233,45 @@ export function CheckpointPanel({ taskId, onChanged }: CheckpointPanelProps): Re
           Discard
         </button>
       </div>
+
+      {others.length > 0 && chosen !== undefined && (
+        <div className="checkpoint-handoff">
+          <label>
+            Hand over to
+            <select
+              value={chosen.agentId}
+              disabled={busy}
+              onChange={(changed) => {
+                setReceiving(changed.target.value);
+              }}
+            >
+              {others.map((worker) => (
+                <option key={worker.agentId} value={worker.agentId}>
+                  {worker.displayName}
+                  {worker.cloud === true ? " (off this device)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="button button--primary"
+            disabled={!resumable || busy}
+            onClick={() =>
+              void act(
+                () => handOffTask(taskId, checkpoint.checkpointId, chosen.agentId),
+                "Could not hand this task over.",
+              )
+            }
+          >
+            Hand over
+          </button>
+          <p className="checkpoint-note">
+            The worker continues from the task's record. What it may do stays what this task was
+            allowed, and each approval and cloud release is asked again.
+          </p>
+        </div>
+      )}
       <p className="checkpoint-note">
         Discarding keeps the history and undoes nothing that already happened.
       </p>

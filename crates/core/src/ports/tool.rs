@@ -2,9 +2,10 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
 use crate::contracts::{
-    AuthorizedToolRequest, ErrorEnvelope, FileChange, InvocationId, ProviderId, SideEffect,
-    ToolDescriptor,
+    ApprovalDetail, AuthorizedToolRequest, ErrorEnvelope, FileChange, InvocationId, ProviderId,
+    SideEffect, TaskId, ToolDescriptor,
 };
+use crate::ports::SiteAccess;
 
 /// A tool call that has passed schema validation but not yet policy.
 ///
@@ -40,6 +41,20 @@ pub struct ToolOutcome {
     pub changes: Vec<FileChange>,
 }
 
+/// What a call would act on, as its provider resolves it before anyone is
+/// asked (ADR 0047).
+///
+/// Only the built-in browser says anything here: the site of the page a
+/// click lands on is known to the browser, not to the call's arguments.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolTarget {
+    /// The web site the call acts on.
+    pub site: Option<SiteAccess>,
+    /// What the approval prompt shows about it, such as the page and the
+    /// button. Redacted by the core before anyone sees it.
+    pub details: Vec<ApprovalDetail>,
+}
+
 /// A source of tools.
 ///
 /// A provider contributes tools; it never grants permission to use them. The
@@ -71,4 +86,26 @@ pub trait ToolProvider: Send + Sync {
         request: AuthorizedToolRequest,
         cancel: CancellationToken,
     ) -> Result<ToolOutcome, ErrorEnvelope>;
+
+    /// What a call would act on, before it is authorized.
+    ///
+    /// Must not change anything: it only looks. Nothing by default.
+    ///
+    /// # Errors
+    ///
+    /// A normalized error the model can act on, such as a page that is not
+    /// open; the call is then refused without anyone being asked.
+    async fn target(
+        &self,
+        _task_id: &TaskId,
+        _tool_id: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<ToolTarget, ErrorEnvelope> {
+        Ok(ToolTarget::default())
+    }
+
+    /// A task has ended, however it ended, or was interrupted. A provider
+    /// that holds something for the task, such as a browser window, lets it
+    /// go. Nothing by default.
+    async fn task_ended(&self, _task_id: &TaskId) {}
 }

@@ -79,6 +79,16 @@ pub(crate) struct TaskArgs {
     #[arg(long)]
     apps: bool,
 
+    /// Let the reference worker browse the web in a window of your installed
+    /// Chrome, Edge or Chromium, with a throwaway profile of its own.
+    ///
+    /// The first visit to each site is asked about on the terminal, showing
+    /// the address; after that the task may read, click and type there.
+    /// Submitting a form is asked about every time. Local Only does not
+    /// cover the browser: it governs where models run (ADR 0047).
+    #[arg(long)]
+    browse: bool,
+
     /// Where this task's models may run. Recorded with the task and kept if
     /// it is resumed. Without it the task routes under the default mode,
     /// automatic.
@@ -127,7 +137,9 @@ struct HandoffArgs {
     #[arg(long, requires = "to")]
     checkpoint_id: Option<String>,
 
-    /// Worker to hand the task to.
+    /// Worker to hand the task to: `builtin.reference` for the model the
+    /// routing mode chooses, or `builtin.reference@<endpoint>/<model>` for
+    /// one configured model. An unknown name lists what is offered.
     #[arg(long, value_name = "AGENT_ID", default_value = "fake.receiving")]
     to: String,
 
@@ -159,6 +171,9 @@ struct TaskResumeArgs {
     /// started.
     #[arg(long)]
     apps: bool,
+    /// Resume with the browser allowed. Must match how the task was started.
+    #[arg(long)]
+    browse: bool,
     #[arg(long)]
     json: bool,
     #[arg(long, default_value_t = 120)]
@@ -238,16 +253,19 @@ impl From<ModeArg> for tramontana_core::contracts::RoutingMode {
 }
 
 /// What the reference worker may offer its model, from `--allow-writes`,
-/// `--allow-recipes` and `--apps`: separate choices, none implying another.
+/// `--allow-recipes`, `--apps` and `--browse`: separate choices, none
+/// implying another.
 fn admission(
     allow_writes: bool,
     allow_recipes: bool,
     apps: bool,
+    browse: bool,
 ) -> tramontana_core::ports::ToolAdmission {
     tramontana_core::ports::ToolAdmission {
         writes: allow_writes,
         recipes: allow_recipes,
         apps,
+        browse,
     }
 }
 
@@ -256,7 +274,12 @@ async fn run(args: TaskArgs) -> ExitCode {
     let (service, mut models, apps) = match wiring::open_running(
         &profile,
         args.chunk_delay_ms,
-        admission(args.allow_writes, args.allow_recipes, args.apps),
+        admission(
+            args.allow_writes,
+            args.allow_recipes,
+            args.apps,
+            args.browse,
+        ),
     )
     .await
     {
@@ -474,7 +497,12 @@ async fn resume(args: TaskResumeArgs) -> ExitCode {
     let (service, _models, _apps) = match wiring::open_running(
         &wiring::profile_path(args.profile),
         args.chunk_delay_ms,
-        admission(args.allow_writes, args.allow_recipes, args.apps),
+        admission(
+            args.allow_writes,
+            args.allow_recipes,
+            args.apps,
+            args.browse,
+        ),
     )
     .await
     {
@@ -588,19 +616,31 @@ async fn handoff(args: HandoffArgs) -> ExitCode {
         };
     };
 
-    let Some(receiving) = wiring::worker_named(&args.to) else {
-        eprintln!(
-            "error: unknown worker {:?}; available: {}",
-            args.to,
-            wiring::available_workers().join(", ")
-        );
+    let checkpoint_id = CheckpointId::new(checkpoint_id);
+    let offered = service.workers();
+    let handed = if offered.iter().any(|worker| worker.agent_id == args.to) {
+        // The built-in worker, as the router runs it or pinned to a model,
+        // offered what the task was allowed (ADR 0048).
+        service
+            .hand_off_to(&task_id, &checkpoint_id, &args.to)
+            .await
+    } else if let Some(receiving) = wiring::worker_named(&args.to) {
+        service
+            .hand_off_task(&task_id, &checkpoint_id, receiving)
+            .await
+    } else {
+        eprintln!("error: unknown worker {:?}; available:", args.to);
+        for worker in &offered {
+            eprintln!("  {}  {}", worker.agent_id, worker.display_name);
+        }
+        for name in wiring::available_workers() {
+            if !offered.iter().any(|worker| worker.agent_id == name) {
+                eprintln!("  {name}");
+            }
+        }
         return ExitCode::FAILURE;
     };
-
-    let handed = match service
-        .hand_off_task(&task_id, &CheckpointId::new(checkpoint_id), receiving)
-        .await
-    {
+    let handed = match handed {
         Ok(handed) => handed,
         Err(error) => return render::application_error(&error),
     };

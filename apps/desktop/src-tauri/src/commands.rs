@@ -949,6 +949,60 @@ pub(crate) async fn discard_checkpoint(
     state.service.discard_checkpoint(&task_id).await
 }
 
+/// A worker a task can be handed to (ADR 0048).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkerView {
+    /// The name a handoff uses.
+    agent_id: String,
+    /// What a person calls it.
+    display_name: String,
+    /// Whether its model runs off this device. `None` for the worker whose
+    /// model the routing mode chooses.
+    cloud: Option<bool>,
+}
+
+/// The workers a stopped task can be handed to: the built-in worker as the
+/// routing mode runs it, and pinned to each configured model.
+#[tauri::command]
+pub(crate) fn list_workers(state: State<'_, AppState>) -> Vec<WorkerView> {
+    state
+        .service
+        .workers()
+        .into_iter()
+        .map(|worker| WorkerView {
+            agent_id: worker.agent_id,
+            display_name: worker.display_name,
+            cloud: worker
+                .model
+                .map(|model| model.location == tramontana_core::contracts::ModelLocation::Cloud),
+        })
+        .collect()
+}
+
+/// Hand the checkpoint the person inspected to the worker they chose, which
+/// continues the task from its canonical record (ADR 0048).
+///
+/// # Errors
+///
+/// [`ErrorCode::NotFound`] when no such worker is offered, and
+/// [`ErrorCode::Conflict`] when the worker already has the task, the
+/// checkpoint is stale, or the task runs Local Only and the worker's model
+/// does not.
+#[tauri::command]
+pub(crate) async fn hand_off_task(
+    task_id: TaskId,
+    checkpoint_id: CheckpointId,
+    agent_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    state
+        .service
+        .hand_off_to(&task_id, &checkpoint_id, &agent_id)
+        .await
+        .map(|_| ())
+}
+
 /// Build an invalid-request error for a boundary rejection.
 fn invalid(message: impl Into<String>) -> ErrorEnvelope {
     ErrorEnvelope::new(

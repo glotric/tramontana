@@ -20,12 +20,15 @@ use crate::ports::{AgentProvider, ToolAdmission};
 use crate::services::handoff::build_handoff;
 
 /// Every admission a task can start with, to find the worker one recorded.
-const ADMISSIONS: [ToolAdmission; 4] = [
-    ToolAdmission::READ_ONLY,
-    ToolAdmission::READ_WRITE,
-    ToolAdmission::READ_ONLY.with_recipes(),
-    ToolAdmission::READ_WRITE.with_recipes(),
-];
+/// Every admission a task could have been started with.
+fn admissions() -> impl Iterator<Item = ToolAdmission> {
+    (0u8..16).map(|bits| ToolAdmission {
+        writes: bits & 1 != 0,
+        recipes: bits & 2 != 0,
+        apps: bits & 4 != 0,
+        browse: bits & 8 != 0,
+    })
+}
 
 /// The routing mode a task was created under, when its record says.
 ///
@@ -258,8 +261,67 @@ impl TaskService {
                 .worker
                 .as_ref()
                 .map(|worker| &worker.descriptor),
+            crate::services::runtime::recorded_admission(&continuation.events),
         )?;
         self.launch(continuation, worker, None).await
+    }
+
+    /// Hand an interrupted task to the worker a person chose by name, from
+    /// [`TaskService::workers`] (ADR 0048).
+    ///
+    /// The receiving worker offers its model what the task was allowed to
+    /// offer, taken from the task's own record: handing a task on is not a
+    /// way to gain writes, recipes, Apps or the browser nobody gave it.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::NotFound`] when no such worker is offered, and every
+    /// refusal [`TaskService::hand_off_task`] makes.
+    pub async fn hand_off_to(
+        &self,
+        task_id: &TaskId,
+        checkpoint_id: &CheckpointId,
+        agent_id: &str,
+    ) -> Result<HandoffBundle, ErrorEnvelope> {
+        let events = self.replay_task_events(task_id, 0).await?;
+        // A task that runs Local Only is refused a cloud model here, before
+        // it moves, rather than failing once it has.
+        let local_only =
+            created_mode(&events).unwrap_or_else(|| self.routing_mode()) == RoutingMode::LocalOnly;
+        let cloud = self.pinned.as_ref().is_some_and(|(models, _)| {
+            models.iter().any(|model| {
+                model.agent_id() == agent_id
+                    && model.location == crate::contracts::ModelLocation::Cloud
+            })
+        });
+        if local_only && cloud {
+            return Err(self.error(
+                ErrorCode::Conflict,
+                "This task runs Local Only, so it cannot be handed to a model off this device",
+            ));
+        }
+        let admission = crate::services::runtime::recorded_admission(&events)
+            .unwrap_or(ToolAdmission::READ_ONLY);
+        let receiving = self
+            .build_worker(agent_id, admission)
+            .ok_or_else(|| self.error(ErrorCode::NotFound, "No such worker is offered"))?;
+        self.hand_off_task(task_id, checkpoint_id, receiving).await
+    }
+
+    /// The worker named `agent_id` at `admission`, if this service offers it.
+    fn build_worker(
+        &self,
+        agent_id: &str,
+        admission: ToolAdmission,
+    ) -> Option<Arc<dyn AgentProvider>> {
+        if agent_id == crate::services::REFERENCE_AGENT_ID {
+            return self.workers.as_ref().map(|choose| choose(admission));
+        }
+        let (models, choose) = self.pinned.as_ref()?;
+        models
+            .iter()
+            .find(|model| model.agent_id() == agent_id)
+            .map(|model| choose(admission, model))
     }
 
     /// The worker that recorded a task, to continue it.
@@ -269,19 +331,33 @@ impl TaskService {
     /// could have run is compared with the recorded descriptor. None matching
     /// is a refusal: a resume cannot add to or take from what the model may
     /// be offered.
+    ///
+    /// The admission the task recorded is tried first. Two admissions can
+    /// describe themselves alike (Apps change no descriptor field), and the
+    /// wrong one would interrupt the resumed task at its first turn.
     fn recorded_worker(
         &self,
         recorded: Option<&AgentDescriptor>,
+        admission: Option<ToolAdmission>,
     ) -> Result<Arc<dyn AgentProvider>, ErrorEnvelope> {
         let Some(recorded) = recorded else {
             return Ok(Arc::clone(&self.providers.worker));
         };
-        let chosen = self
-            .workers
-            .iter()
-            .flat_map(|choose| ADMISSIONS.map(|admission| choose(admission)));
-        std::iter::once(Arc::clone(&self.providers.worker))
-            .chain(chosen)
+        let chosen = admission
+            .into_iter()
+            .chain(admissions())
+            .flat_map(|admission| {
+                let general = self.workers.as_ref().map(|choose| choose(admission));
+                let pinned = self.pinned.as_ref().and_then(|(models, choose)| {
+                    models
+                        .iter()
+                        .find(|model| model.agent_id() == recorded.agent_id)
+                        .map(|model| choose(admission, model))
+                });
+                general.into_iter().chain(pinned)
+            });
+        chosen
+            .chain(std::iter::once(Arc::clone(&self.providers.worker)))
             .find(|worker| worker.describe() == *recorded)
             .ok_or_else(|| {
                 self.error(
@@ -378,7 +454,7 @@ impl TaskService {
         let (updates, _) = broadcast::channel(256);
 
         let reason = if handoff.is_some() {
-            "user.handedOver"
+            super::HANDED_OVER
         } else {
             "user.resumedCheckpoint"
         };
@@ -418,7 +494,8 @@ impl TaskService {
         let plan = ResumePlan::from_events(&events);
         let driver = TaskDriver::new(journal, self.providers.clone(), scope, self.clock.clone())
             .with_routing_mode(routing_mode)
-            .with_configuration(configuration);
+            .with_configuration(configuration)
+            .with_checkpoints(Arc::clone(&self.repositories.checkpoints));
         let driver = match handoff {
             Some(handoff) => driver.handing_over(worker, handoff, plan, interrupt),
             None => driver

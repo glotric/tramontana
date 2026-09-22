@@ -94,11 +94,13 @@ function describeChoices(
   writes: boolean,
   recipes: boolean,
   apps: boolean,
+  browse: boolean,
 ): string {
   const asks = [
     ...(writes ? ["edit files"] : []),
     ...(recipes ? ["run the project's recipes"] : []),
     ...(apps ? ["use the Apps' reading tools"] : []),
+    ...(browse ? ["open websites in a window of its own"] : []),
   ];
   const access =
     asks.length === 0
@@ -108,7 +110,27 @@ function describeChoices(
     mode === "localOnly" && recipes
       ? " Local only governs where models run, not the commands a recipe runs."
       : "";
-  return `${MODE_TEXT[mode]} ${access}${commands}`;
+  const browsing = browse
+    ? mode === "localOnly"
+      ? " Each new site is asked about once, and every form. Local only governs where models run, not the pages the browser opens."
+      : " Each new site is asked about once, and every form."
+    : "";
+  return `${MODE_TEXT[mode]} ${access}${commands}${browsing}`;
+}
+
+/**
+ * Why a task's worker stopped, if the latest stop was the worker's rather
+ * than a person's (ADR 0048).
+ */
+function stoppedBecause(events: readonly EventEnvelope[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const payload = events[index]?.payload;
+    if (payload?.kind === "taskStateChanged" && payload.current !== "interrupted") return undefined;
+    if (payload?.kind === "diagnosticRecorded" && payload.code.startsWith("worker.stopped.")) {
+      return payload.summary;
+    }
+  }
+  return undefined;
 }
 
 /** M2 desktop surface over the same durable service and profile as the CLI. */
@@ -128,6 +150,7 @@ export function App(): React.JSX.Element {
   const [mayWrite, setMayWrite] = useState(false);
   const [mayRunRecipes, setMayRunRecipes] = useState(false);
   const [mayUseApps, setMayUseApps] = useState(false);
+  const [mayBrowse, setMayBrowse] = useState(false);
   const [conversationTitle, setConversationTitle] = useState("");
   const [approvals, setApprovals] = useState<readonly ApprovalRequest[]>([]);
   // Moves on whenever a task ends, so the Changes panel reads the tree again.
@@ -439,6 +462,7 @@ export function App(): React.JSX.Element {
       writes: mayWrite,
       recipes: mayRunRecipes,
       apps: mayUseApps,
+      browse: mayBrowse,
       routingMode,
     }).then(
       (id) => {
@@ -452,6 +476,7 @@ export function App(): React.JSX.Element {
   }, [
     goal,
     handleUpdate,
+    mayBrowse,
     mayRunRecipes,
     mayUseApps,
     mayWrite,
@@ -701,6 +726,7 @@ export function App(): React.JSX.Element {
                   <CheckpointPanel
                     key={selectedTaskId}
                     taskId={selectedTaskId}
+                    stoppedBecause={stoppedBecause(events)}
                     onChanged={() => {
                       if (selectedConversationId !== undefined) {
                         void selectConversation(selectedConversationId);
@@ -823,9 +849,19 @@ export function App(): React.JSX.Element {
                       />
                       May use Apps
                     </label>
+                    <label className="composer-toggle">
+                      <input
+                        type="checkbox"
+                        checked={mayBrowse}
+                        onChange={(changed) => {
+                          setMayBrowse(changed.target.checked);
+                        }}
+                      />
+                      May browse the web
+                    </label>
                   </fieldset>
                   <p className="composer-disclosure">
-                    {describeChoices(routingMode, mayWrite, mayRunRecipes, mayUseApps)}
+                    {describeChoices(routingMode, mayWrite, mayRunRecipes, mayUseApps, mayBrowse)}
                   </p>
                   <div className="composer-footer">
                     <span>

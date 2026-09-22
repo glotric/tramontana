@@ -76,6 +76,7 @@ const GRANT_TEXT = {
   implicitSafeDefault: "allowed without asking",
   once: "allowed once",
   project: "allowed in this project",
+  site: "allowed on this site for the task",
 } as const;
 
 /** Each routing mode's name, as the composer, the header and the cards all say it. */

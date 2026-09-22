@@ -6,6 +6,7 @@ members = [
     "crates/adapters-model",
     "crates/adapters-local",
     "crates/adapters-mcp",
+    "crates/adapters-browser",
     "crates/composition",
     "crates/persistence",
     "crates/platform",
@@ -31,6 +32,7 @@ tramontana-adapters-tools = { path = "crates/adapters-tools" }
 tramontana-adapters-model = { path = "crates/adapters-model" }
 tramontana-adapters-local = { path = "crates/adapters-local" }
 tramontana-adapters-mcp = { path = "crates/adapters-mcp" }
+tramontana-adapters-browser = { path = "crates/adapters-browser" }
 tramontana-composition = { path = "crates/composition" }
 tramontana-persistence = { path = "crates/persistence" }
 tramontana-platform = { path = "crates/platform" }

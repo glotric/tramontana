@@ -381,6 +381,12 @@ export interface TaskOptions {
    * only read (ADR 0036). Every call is still put to the person.
    */
   readonly apps: boolean;
+  /**
+   * Let the model browse the web in a window of its own (ADR 0047). The
+   * first visit to each site is put to the person, and every form
+   * submission.
+   */
+  readonly browse: boolean;
   /** Where this task's models may run. Kept if the task is resumed. */
   readonly routingMode: RoutingMode;
 }
@@ -406,7 +412,12 @@ export async function startTask(
     admission:
       options === undefined
         ? null
-        : { writes: options.writes, recipes: options.recipes, apps: options.apps },
+        : {
+            writes: options.writes,
+            recipes: options.recipes,
+            apps: options.apps,
+            browse: options.browse,
+          },
     routingMode: options?.routingMode ?? null,
     channel,
   });
@@ -498,6 +509,34 @@ export async function discardCheckpoint(taskId: string): Promise<void> {
   return invoke("discard_checkpoint", { taskId });
 }
 
+/** A worker a stopped task can be handed to (ADR 0048). */
+export interface WorkerView {
+  /** The name a handoff uses. */
+  readonly agentId: string;
+  /** What a person calls it. */
+  readonly displayName: string;
+  /** Whether its model runs off this device; absent when the mode chooses. */
+  readonly cloud?: boolean;
+}
+
+/** The workers a stopped task can be handed to. */
+export async function listWorkers(): Promise<readonly WorkerView[]> {
+  return invoke<WorkerView[]>("list_workers");
+}
+
+/**
+ * Hand the checkpoint on screen to another worker, which continues the task
+ * from its record with a budget of its own. Like resuming, it names the
+ * checkpoint the person inspected.
+ */
+export async function handOffTask(
+  taskId: string,
+  checkpointId: string,
+  agentId: string,
+): Promise<void> {
+  return invoke("hand_off_task", { taskId, checkpointId, agentId });
+}
+
 /** Where an App stands in this window (ADR 0040). */
 export type AppStatus =
   | { readonly kind: "running" }
@@ -541,7 +580,7 @@ export interface AppDecision {
   readonly toolId: string;
   readonly allowed: boolean;
   readonly reasonCode: string;
-  readonly grantKind?: "implicitSafeDefault" | "once" | "project";
+  readonly grantKind?: "implicitSafeDefault" | "once" | "project" | "site";
   readonly outcome?: "completed" | "failed";
   readonly decidedAt: string;
 }

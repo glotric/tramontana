@@ -117,6 +117,22 @@ pub struct PermissionQuery {
     /// name — a recipe's command, say — for the prompt to show. Never a
     /// secret, never raw file content.
     pub details: Vec<ApprovalDetail>,
+    /// The web site the call acts on, for the built-in browser's tools
+    /// (ADR 0047). `None` for every other tool.
+    pub site: Option<SiteAccess>,
+}
+
+/// A web site a call acts on, as its provider resolved it before anyone was
+/// asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiteAccess {
+    /// The site's origin: scheme, host and port, such as
+    /// `https://example.com`. The unit a person allows.
+    pub origin: String,
+    /// Whether allowing the site for the task covers this call. Opening,
+    /// reading, clicking and typing: yes. Submitting a form: never, so each
+    /// one is asked about.
+    pub grantable: bool,
 }
 
 /// Why a request was allowed or refused.
@@ -147,6 +163,10 @@ pub mod reason {
     /// Outside a task a person may only read, and only where no question
     /// would be needed (ADR 0032).
     pub const PERSON_READ_ONLY: &str = "policy.person_read_only";
+    /// The person had allowed this site for this task (ADR 0047).
+    pub const SITE_GRANT: &str = "policy.site_grant";
+    /// The person allowed this site for the rest of this task.
+    pub const APPROVED_SITE: &str = "policy.approved_site";
 }
 
 /// The outcome of evaluating a request.

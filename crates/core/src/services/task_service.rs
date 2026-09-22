@@ -123,6 +123,21 @@ impl std::fmt::Debug for Providers {
 /// [`Providers::worker`] (ADR 0031).
 pub type WorkerChoice = Arc<dyn Fn(ToolAdmission) -> Arc<dyn AgentProvider> + Send + Sync>;
 
+/// Builds the built-in worker pinned to one model, at an admission (ADR 0048).
+pub type PinnedWorkerChoice =
+    Arc<dyn Fn(ToolAdmission, &super::PinnedModel) -> Arc<dyn AgentProvider> + Send + Sync>;
+
+/// A worker a task can be handed to, as a person chooses it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerOption {
+    /// The worker's identity, which a handoff names.
+    pub agent_id: String,
+    /// What a person calls it.
+    pub display_name: String,
+    /// The model it is pinned to, or `None` for the one the router chooses.
+    pub model: Option<super::PinnedModel>,
+}
+
 /// The application service the CLI and desktop shell both call.
 ///
 /// Owns task lifecycle, event ordering, and cancellation. Adapters translate
@@ -143,6 +158,9 @@ pub struct TaskService {
     pub(super) routing_mode: Mutex<RoutingMode>,
     /// Builds a worker for a task that asks for its own admission.
     pub(super) workers: Option<WorkerChoice>,
+    /// The models a person may pin the built-in worker to, and how to build
+    /// it pinned (ADR 0048).
+    pub(super) pinned: Option<(Vec<super::PinnedModel>, PinnedWorkerChoice)>,
     pub(super) execution_allowed: bool,
     pub(super) execution_guard: Option<Arc<dyn Send + Sync>>,
 }
@@ -173,6 +191,7 @@ impl TaskService {
             // chooses otherwise.
             routing_mode: Mutex::new(RoutingMode::Automatic),
             workers: None,
+            pinned: None,
             execution_allowed: true,
             execution_guard: None,
         }
@@ -191,6 +210,37 @@ impl TaskService {
     pub fn with_worker_choice(mut self, workers: WorkerChoice) -> Self {
         self.workers = Some(workers);
         self
+    }
+
+    /// Offer the built-in worker pinned to each of `models` as a worker a
+    /// task can be handed to, built with `choose` (ADR 0048).
+    #[must_use]
+    pub fn with_pinned_workers(
+        mut self,
+        models: Vec<super::PinnedModel>,
+        choose: PinnedWorkerChoice,
+    ) -> Self {
+        self.pinned = Some((models, choose));
+        self
+    }
+
+    /// The workers a task can be handed to: the built-in worker as the
+    /// router runs it, then pinned to each model, in the order given.
+    #[must_use]
+    pub fn workers(&self) -> Vec<WorkerOption> {
+        let mut options = vec![WorkerOption {
+            agent_id: super::REFERENCE_AGENT_ID.to_owned(),
+            display_name: "Automatic: the model the routing mode chooses".to_owned(),
+            model: None,
+        }];
+        if let Some((models, _)) = &self.pinned {
+            options.extend(models.iter().map(|model| WorkerOption {
+                agent_id: model.agent_id(),
+                display_name: model.display_name.clone(),
+                model: Some(model.clone()),
+            }));
+        }
+        options
     }
 
     /// Change the routing mode. `setRoutingMode` in `CORE_CONTRACTS.md` §13.
@@ -664,6 +714,7 @@ impl TaskService {
         .with_worker(worker)
         .with_configuration(resolved_configuration)
         .with_goal_redactions(goal.reason_codes.clone())
+        .with_checkpoints(Arc::clone(&self.repositories.checkpoints))
         .continuing(None, super::ResumePlan::default(), interrupt);
         // The redacted text, not `request.goal`. The worker, the manifest, and
         // the model payload all see the same thing the record does.

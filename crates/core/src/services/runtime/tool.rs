@@ -254,6 +254,27 @@ impl BrokeredHost {
             let details = Self::named_paths(&arguments);
             (arguments, details)
         };
+        // What the call acts on, where only its provider knows: the site of
+        // the page a browser click lands on (ADR 0047). Resolved before
+        // anyone is asked, and a call that cannot be resolved is refused
+        // without a question, in words the model can act on.
+        let target = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(self.tool_error(ErrorCode::Cancelled)),
+            target = registered.provider.target(self.journal.task_id(), &descriptor.tool_id, &arguments) => target?,
+        };
+        let details = details
+            .into_iter()
+            .chain(
+                target
+                    .details
+                    .into_iter()
+                    .map(|detail| crate::contracts::ApprovalDetail {
+                        label: redact(&detail.label).text,
+                        value: redact(&detail.value).text,
+                    }),
+            )
+            .collect();
         let query = PermissionQuery {
             tool_id: descriptor.tool_id.clone(),
             capability: Capability::new(&descriptor.capability),
@@ -261,6 +282,7 @@ impl BrokeredHost {
             scope: self.tools.scope.clone(),
             persistable: descriptor.risk_class != RiskClass::Dangerous,
             details,
+            site: target.site,
         };
         let now = self.tools.clock.now();
         let authorization = self.tools.permissions.authorize(

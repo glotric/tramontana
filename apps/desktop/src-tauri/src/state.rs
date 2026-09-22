@@ -45,6 +45,8 @@ pub(crate) struct AppState {
     pub(crate) models: Arc<tokio::sync::Mutex<ModelPlane>>,
     /// The Apps this process started, stopped with it (ADR 0036).
     pub(crate) apps: tramontana_composition::AppPlane,
+    /// The built-in browser, stopped with the application (ADR 0047).
+    pub(crate) browser: Arc<tramontana_composition::BrowserProvider>,
     /// The profile's App settings, which the Apps screen changes.
     pub(crate) app_settings: Arc<SqliteAppSettingsRepository>,
     /// The bundle folder the person last inspected, waiting for them to
@@ -108,6 +110,7 @@ impl AppState {
             );
         }
         let app_tools = apps.tool_ids();
+        let browser = tramontana_composition::browser(path);
         let mut providers: Vec<Arc<dyn ToolProvider>> = vec![
             Arc::new(
                 FilesystemTools::new()
@@ -117,6 +120,9 @@ impl AppState {
             // Registered so both adapters hold the same set; offered to a
             // model only in a task whose person chose to allow recipes.
             Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
+            // Likewise the browser, started only when a task that may browse
+            // first opens a page (ADR 0047).
+            Arc::clone(&browser) as Arc<dyn ToolProvider>,
         ];
         providers.extend(apps.providers());
         let (registry, permissions, releases) = assemble_tool_plane(
@@ -138,6 +144,7 @@ impl AppState {
             for note in tramontana_composition::reap_runtimes(path).await {
                 tracing::warn!("{note}");
             }
+            tramontana_composition::reap_browser_profiles(path);
         }
         let records = lease
             .is_some()
@@ -206,11 +213,22 @@ impl AppState {
             Arc::new(SystemClock::new()),
             Arc::new(UuidIdSource::new()),
         );
+        // The built-in worker pinned to each configured model a task can be
+        // handed to (ADR 0048). None on a profile with no endpoint.
+        let pinnable = if has_configured {
+            tramontana_composition::pinnable_models(&plane.providers).await
+        } else {
+            Vec::new()
+        };
         let service = service
             .with_worker_choice(tramontana_composition::worker_choice(
                 has_configured,
-                app_tools,
+                app_tools.clone(),
             ))
+            .with_pinned_workers(
+                pinnable,
+                tramontana_composition::pinned_worker_choice(app_tools),
+            )
             .with_execution_guard(lease);
         service
             .recover()
@@ -222,6 +240,7 @@ impl AppState {
             approvals,
             models: Arc::new(tokio::sync::Mutex::new(plane)),
             apps,
+            browser,
             app_settings,
             staged_bundle: Arc::new(std::sync::Mutex::new(None)),
             settings,
@@ -236,6 +255,7 @@ impl AppState {
     pub(crate) async fn shut_down(&self) {
         self.models.lock().await.shutdown().await;
         self.apps.shutdown().await;
+        self.browser.shutdown().await;
     }
 }
 

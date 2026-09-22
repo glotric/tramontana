@@ -322,7 +322,7 @@ describe("M2 durable desktop surface", () => {
         "Say hello",
         expect.any(Function),
         conversation.conversationId,
-        { writes: false, recipes: false, apps: false, routingMode: "automatic" },
+        { writes: false, recipes: false, apps: false, browse: false, routingMode: "automatic" },
       );
     });
     updates.emit({
@@ -456,7 +456,7 @@ describe("M2 durable desktop surface", () => {
         "Say hello",
         expect.any(Function),
         conversation.conversationId,
-        { writes: true, recipes: true, apps: false, routingMode: "localOnly" },
+        { writes: true, recipes: true, apps: false, browse: false, routingMode: "localOnly" },
       );
     });
   });
@@ -473,7 +473,28 @@ describe("M2 durable desktop surface", () => {
         "Say hello",
         expect.any(Function),
         conversation.conversationId,
-        { writes: false, recipes: false, apps: true, routingMode: "automatic" },
+        { writes: false, recipes: false, apps: true, browse: false, routingMode: "automatic" },
+      );
+    });
+  });
+
+  it("lets a task browse only when the person allows it, and says what Local only does not cover", async () => {
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    await user.click(screen.getByRole("radio", { name: "Local only" }));
+    await user.click(screen.getByRole("checkbox", { name: "May browse the web" }));
+    expect(screen.getByText(/may ask to open websites in a window of its own/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Local only governs where models run, not the pages the browser opens/),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalledWith(
+        "Say hello",
+        expect.any(Function),
+        conversation.conversationId,
+        { writes: false, recipes: false, apps: false, browse: true, routingMode: "localOnly" },
       );
     });
   });

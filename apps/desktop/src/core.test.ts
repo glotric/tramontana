@@ -277,12 +277,13 @@ describe("task options", () => {
       writes: true,
       recipes: false,
       apps: true,
+      browse: true,
       routingMode: "localOnly",
     });
     expect(invoke).toHaveBeenLastCalledWith(
       "start_task",
       expect.objectContaining({
-        admission: { writes: true, recipes: false, apps: true },
+        admission: { writes: true, recipes: false, apps: true, browse: true },
         routingMode: "localOnly",
       }),
     );

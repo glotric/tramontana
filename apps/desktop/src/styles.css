@@ -599,6 +599,34 @@ button:disabled {
   font-size: 11px;
 }
 
+/* Handing the task to another worker: a second decision, set apart from
+   resume and discard (ADR 0048). */
+.checkpoint-handoff {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  gap: 8px;
+}
+
+.checkpoint-handoff label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.checkpoint-handoff select {
+  max-width: 100%;
+}
+
+.checkpoint-handoff .checkpoint-note {
+  flex-basis: 100%;
+}
+
 /* The approval card.
 
    Above the activity stream for the same reason the checkpoint panel is: while

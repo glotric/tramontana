@@ -43,6 +43,7 @@ async fn authorize(tool: &str, root: &Path) -> AuthorizedToolRequest {
         ),
         persistable: true,
         details: Vec::new(),
+        site: None,
     };
     let (_, authorized) = manager
         .authorize(

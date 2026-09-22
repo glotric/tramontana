@@ -2,9 +2,7 @@
 use super::*;
 use crate::contracts::{EventEnvelope, MessagePart, TaskRecord};
 use crate::ports::{ReadOnlyLimits, ReadOnlyTurn, ToolAdmission};
-use crate::services::{
-    CanonicalModelHistory, ModelToolCatalogue, ToolInputSchema, prepare_model_context,
-};
+use crate::services::{CanonicalModelHistory, ModelToolCatalogue, ToolInputSchema};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -46,6 +44,7 @@ impl BrokeredHost {
         tools: &[String],
         admission: ToolAdmission,
         limits: &ReadOnlyLimits,
+        pinned: Option<&crate::contracts::RoutedModel>,
         cancel: &CancellationToken,
     ) -> Result<ReadOnlyTurn, ErrorEnvelope> {
         validate_limits(limits)?;
@@ -61,6 +60,12 @@ impl BrokeredHost {
         if events.len() > 100_000 {
             return Err(error(ErrorCode::LimitExceeded));
         }
+        // A session keeps the limits it was first charged under, so a task
+        // recorded before the defaults changed resumes with its own rather
+        // than being interrupted by, or granted, new ones (ADR 0047).
+        let recorded = recorded_limits(&events)?;
+        let limits = recorded.as_ref().unwrap_or(limits);
+        validate_limits(limits)?;
         let mut task = self.canonical_task(&events)?;
         task.last_sequence = events.len() as u64;
         let initial = self
@@ -188,6 +193,18 @@ impl BrokeredHost {
                 all
             } => AvailabilitySnapshot { snapshot_id: self.journal.next_id("availability"), models, taken_at: self.journal.now() },
         };
+        // A pinned worker's model, and no other (ADR 0048).
+        if let Some(pinned) = pinned
+            && !snapshot.models.iter().any(|model| {
+                model.provider_id == pinned.provider_id && model.model_id == pinned.model_id
+            })
+        {
+            return Err(ErrorEnvelope::new(
+                ErrorCode::ProviderUnavailable,
+                "The model this worker uses is not available",
+                crate::contracts::CorrelationId::new("reference-worker"),
+            ));
+        }
         // Explicit capability facts, never provider or model name heuristics.
         if !snapshot.models.iter().any(|model| {
             model
@@ -198,12 +215,13 @@ impl BrokeredHost {
         }) {
             return Err(error(ErrorCode::CapabilityUnsupported));
         }
-        let prepared = prepare_model_context(
+        let prepared = crate::services::prepare_model_context_on(
             input,
             self.journal.next_id("decision"),
             self.routing_mode,
             snapshot,
             self.journal.now(),
+            pinned,
         )?;
         let turn = self
             .dispatch_model(
@@ -338,7 +356,15 @@ impl BrokeredHost {
             next.output_bytes,
             next.output_tokens,
         ];
-        for event in events {
+        // Steps are numbered across the whole task, since a step's number is
+        // its identity; the budget is counted since the last handover.
+        let ordinal = 1 + events
+            .iter()
+            .filter(|event| {
+                matches!(&event.payload, EventPayload::DiagnosticRecorded { code, .. } if code == BUDGET)
+            })
+            .count() as u64;
+        for event in since_handover(events) {
             if let EventPayload::DiagnosticRecorded { code, summary } = &event.payload {
                 if code != BUDGET {
                     continue;
@@ -409,7 +435,7 @@ impl BrokeredHost {
                 serde_json::to_string(&next).map_err(|_| error(ErrorCode::Internal))?,
             ))
             .await?;
-        Ok(totals[0])
+        Ok(ordinal)
     }
 
     async fn turn_tool(
@@ -498,6 +524,51 @@ fn error(code: ErrorCode) -> ErrorEnvelope {
         crate::contracts::CorrelationId::new("reference-worker"),
     )
 }
+/// What the task's model was last allowed to be offered, from its budget
+/// records: what a resumed or receiving worker must offer, no more and no
+/// less. `None` when it was never charged.
+pub(crate) fn recorded_admission(events: &[EventEnvelope]) -> Option<ToolAdmission> {
+    events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::DiagnosticRecorded { code, summary } if code == BUDGET => {
+            serde_json::from_str::<Reservation>(summary)
+                .ok()
+                .map(|reservation| reservation.admission)
+        }
+        _ => None,
+    })
+}
+
+/// The events of the current worker's session: those since the task was
+/// last handed to another worker, who starts with a budget of its own
+/// (ADR 0048). A resume by the same worker is not a handover, so it never
+/// replenishes a budget.
+fn since_handover(events: &[EventEnvelope]) -> &[EventEnvelope] {
+    let start = events
+        .iter()
+        .rposition(|event| {
+            matches!(&event.payload, EventPayload::TaskStateChanged { reason_code, .. }
+                if reason_code == crate::services::HANDED_OVER)
+        })
+        .map_or(0, |index| index + 1);
+    &events[start..]
+}
+
+/// The limits of the session's first budget record, if it has one.
+fn recorded_limits(events: &[EventEnvelope]) -> Result<Option<ReadOnlyLimits>, ErrorEnvelope> {
+    since_handover(events)
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::DiagnosticRecorded { code, summary } if code == BUDGET => Some(summary),
+            _ => None,
+        })
+        .map(|summary| {
+            serde_json::from_str::<Reservation>(summary)
+                .map(|prior| prior.limits)
+                .map_err(|_| error(ErrorCode::InterruptedUnsafe))
+        })
+        .transpose()
+}
+
 fn validate_limits(limits: &ReadOnlyLimits) -> Result<(), ErrorEnvelope> {
     let max = ReadOnlyLimits::default();
     if [
@@ -565,6 +636,32 @@ mod tests {
             let read: Reservation = serde_json::from_str(&recorded).unwrap();
             assert_eq!(read.admission, admission, "{recorded}");
         }
+    }
+
+    fn budget(reservation: &Reservation) -> EventEnvelope {
+        diagnostic(BUDGET, serde_json::to_string(reservation).unwrap()).into_envelope(
+            crate::contracts::EventId::new("e1"),
+            crate::contracts::TaskId::new("t1"),
+            None,
+            1,
+            crate::contracts::Timestamp::new("2026-09-22T12:00:00.000Z"),
+            crate::contracts::CorrelationId::new("c1"),
+        )
+    }
+
+    #[test]
+    fn a_session_keeps_the_limits_it_was_first_charged_under() {
+        // A task recorded under the old defaults resumes under them, neither
+        // interrupted by the new ones nor granted their larger budget.
+        let mut old = reservation(ToolAdmission::READ_ONLY);
+        old.limits = ReadOnlyLimits::before_adr_0047();
+        let events = [budget(&old), budget(&reservation(ToolAdmission::READ_ONLY))];
+        assert_eq!(
+            recorded_limits(&events).unwrap(),
+            Some(ReadOnlyLimits::before_adr_0047())
+        );
+        assert_eq!(recorded_limits(&[]).unwrap(), None);
+        assert!(validate_limits(&ReadOnlyLimits::before_adr_0047()).is_ok());
     }
 
     #[test]

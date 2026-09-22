@@ -1,0 +1,34 @@
+[package]
+name = "tramontana-adapters-browser"
+description = "The built-in browser: a window of the person's own Chrome, driven over the DevTools protocol. Acts only on authorized calls; decides nothing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+tramontana-core = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# Owning the browser's whole process tree, as the command broker does
+# (ADR 0024).
+process-wrap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["process", "net", "time", "rt", "sync", "macros"] }
+# The DevTools protocol's transport, to a port on this machine only: no TLS
+# (ADR 0047).
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+url = "2.5"
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "io-util", "net"] }
+
+[lints]
+workspace = true

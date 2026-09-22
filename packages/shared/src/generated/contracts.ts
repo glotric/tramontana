@@ -57,7 +57,7 @@ export interface AgentDescriptor {
 /**
  * What the user may choose when asked.
  */
-export type ApprovalDecisionKind = "allowOnce" | "allowProject" | "deny";
+export type ApprovalDecisionKind = "allowOnce" | "allowProject" | "allowSite" | "deny";
 
 /**
  * One labelled fact shown in an approval prompt.
@@ -1020,7 +1020,7 @@ export interface EventEnvelope {
         /**
          * How the authorization was obtained, when it was allowed.
          */
-        grantKind?: "implicitSafeDefault" | "once" | "project";
+        grantKind?: "implicitSafeDefault" | "once" | "project" | "site";
         /**
          * The invocation the decision covers.
          */
@@ -1321,7 +1321,7 @@ export type EventPayload =
       /**
        * How the authorization was obtained, when it was allowed.
        */
-      grantKind?: "implicitSafeDefault" | "once" | "project";
+      grantKind?: "implicitSafeDefault" | "once" | "project" | "site";
       /**
        * The invocation the decision covers.
        */
@@ -1598,7 +1598,7 @@ export type FileChangeKind = "created" | "modified" | "moved" | "deleted";
 /**
  * How long an authorization lasts.
  */
-export type GrantKind = "implicitSafeDefault" | "once" | "project";
+export type GrantKind = "implicitSafeDefault" | "once" | "project" | "site";
 
 /**
  * Everything a different worker needs to continue a task.
