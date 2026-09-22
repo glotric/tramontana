@@ -62,6 +62,7 @@ impl TaskService {
             scope: CapabilityScope::project(project.project_id.clone(), project.roots.clone()),
             persistable: false,
             details: Vec::new(),
+            site: None,
         };
         let invocation = InvocationId::new(self.ids.next("invocation"));
         let (_, authorized) = self.providers.permissions.authorize_person_read(

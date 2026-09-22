@@ -381,6 +381,12 @@ export interface TaskOptions {
    * only read (ADR 0036). Every call is still put to the person.
    */
   readonly apps: boolean;
+  /**
+   * Let the model browse the web in a window of its own (ADR 0047). The
+   * first visit to each site is put to the person, and every form
+   * submission.
+   */
+  readonly browse: boolean;
   /** Where this task's models may run. Kept if the task is resumed. */
   readonly routingMode: RoutingMode;
 }
@@ -406,7 +412,12 @@ export async function startTask(
     admission:
       options === undefined
         ? null
-        : { writes: options.writes, recipes: options.recipes, apps: options.apps },
+        : {
+            writes: options.writes,
+            recipes: options.recipes,
+            apps: options.apps,
+            browse: options.browse,
+          },
     routingMode: options?.routingMode ?? null,
     channel,
   });
@@ -541,7 +552,7 @@ export interface AppDecision {
   readonly toolId: string;
   readonly allowed: boolean;
   readonly reasonCode: string;
-  readonly grantKind?: "implicitSafeDefault" | "once" | "project";
+  readonly grantKind?: "implicitSafeDefault" | "once" | "project" | "site";
   readonly outcome?: "completed" | "failed";
   readonly decidedAt: string;
 }

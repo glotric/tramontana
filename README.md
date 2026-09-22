@@ -38,6 +38,11 @@ gates V1–V3 are closed; each left an evidence note in
 - **Built:** MCP Apps over stdio (M9). Added from the CLI
   (`tramontana app add`); seen, turned on and off, and their decisions read
   in the desktop's **Apps** view; allowed for a task with **May use Apps**.
+- **Built, beyond Beta 1's scope:** a built-in browser (ADR 0047). A task
+  allowed **May browse the web** opens pages in a window of your installed
+  Chrome, Edge or Chromium, with a throwaway profile of its own. The first
+  visit to each site is asked about, and every form it would submit. Tasks
+  run up to 40 steps in 30 minutes.
 - **Deferred from Beta 1:** an external coding worker (M10, ADR 0038), and
   the rest listed in the [draft release notes](docs/RELEASE_NOTES_BETA_1.md).
 
@@ -99,7 +104,8 @@ Declaring a recipe grants nothing; every run is still put to you. See
 
 **3. Start a task.** Add a conversation, then write the goal in the
 composer. By default a task may only read. Tick **May edit files**, **May
-run recipes** or **May use Apps** to let the model ask for more, and choose
+run recipes**, **May use Apps** or **May browse the web** to let the model
+ask for more, and choose
 where models may run: **Local only** keeps every model request on this
 device.
 
@@ -194,6 +200,7 @@ crates/persistence/ SQLite implementation of the local operational plane
 crates/platform/    Paths, clock, identifiers, profile lease, bundle files
 crates/adapters-tools/  Filesystem, Git and recipe tools, and the command broker
 crates/adapters-mcp/    MCP Apps over stdio, behind the tool port
+crates/adapters-browser/ The built-in browser: an installed Chrome, over DevTools
 crates/adapters-model/  Model provider adapters: chat-completions and Anthropic
 crates/adapters-local/  Supervised local model runtimes (llama.cpp)
 crates/composition/     Configured endpoints turned into live providers

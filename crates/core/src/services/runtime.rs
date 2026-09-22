@@ -284,6 +284,15 @@ impl TaskDriver {
         // already that one. Reading them from different places is how the
         // record and the execution come apart.
         let outcome = self.worker().run(request, &host, cancel.clone()).await;
+        // Whatever the ending, including an interruption: a resumed task
+        // opens what it needs again, and is asked about its sites again.
+        self.providers
+            .tools
+            .task_ended(self.journal.task_id())
+            .await;
+        self.providers
+            .permissions
+            .task_ended(self.journal.task_id());
         if self.interrupt.is_cancelled() {
             let _ = self
                 .change_state(state, TaskState::Interrupted, "user.checkpoint")

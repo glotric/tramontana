@@ -66,5 +66,8 @@ pub use routing::{
 };
 pub use task_export::ImportSummary;
 pub use task_service::{Providers, Repositories, StartTaskRequest, TaskService, WorkerChoice};
-pub use tool_registry::{APP_NAMESPACE, RegisteredTool, RegistryError, ToolRegistry, is_app_tool};
+pub use tool_registry::{
+    APP_NAMESPACE, BROWSER_PROVIDER, RegisteredTool, RegistryError, ToolRegistry, is_app_tool,
+    is_browser_tool,
+};
 pub use tool_schema::{TOOL_INPUT_BYTES, ToolInputSchema};

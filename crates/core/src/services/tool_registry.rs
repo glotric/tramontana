@@ -162,6 +162,22 @@ impl ToolRegistry {
         descriptors
     }
 
+    /// Tell every provider a task has ended, so what it held for the task,
+    /// such as a browser window, is let go (ADR 0047).
+    pub async fn task_ended(&self, task_id: &crate::contracts::TaskId) {
+        let mut told: Vec<&Arc<dyn ToolProvider>> = Vec::new();
+        for tool in self.tools.values() {
+            if told
+                .iter()
+                .any(|provider| Arc::ptr_eq(provider, &tool.provider))
+            {
+                continue;
+            }
+            told.push(&tool.provider);
+            tool.provider.task_ended(task_id).await;
+        }
+    }
+
     /// The capability and risk a tool declares, for policy evaluation.
     #[must_use]
     pub fn requirements(&self, tool_id: &str) -> Option<(Capability, RiskClass)> {
@@ -185,6 +201,23 @@ pub const APP_NAMESPACE: &str = "mcp.";
 #[must_use]
 pub fn is_app_tool(tool_id: &str) -> bool {
     tool_id.starts_with(APP_NAMESPACE)
+}
+
+/// The provider of the built-in browser's tools, and their namespace
+/// (ADR 0047).
+pub const BROWSER_PROVIDER: &str = "builtin.browser";
+
+/// Whether a tool is the built-in browser's.
+///
+/// Both halves are checked: the name alone could be claimed by any built-in
+/// provider, and only the browser's is admitted by `browse`.
+#[must_use]
+pub fn is_browser_tool(descriptor: &ToolDescriptor) -> bool {
+    descriptor.provider_id == BROWSER_PROVIDER
+        && descriptor
+            .tool_id
+            .strip_prefix(BROWSER_PROVIDER)
+            .is_some_and(|rest| rest.starts_with('.'))
 }
 
 /// Whether `tool_id` may come from `provider_id`: an App's provider only

@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
@@ -32,7 +33,15 @@ pub struct PermissionManager {
     approvals: Arc<dyn ApprovalStore>,
     approver: Arc<dyn Approver>,
     ids: Arc<dyn IdSource>,
+    /// The web sites each task was allowed (ADR 0047). In memory only: a
+    /// task resumed after a restart is asked again, which fails safe.
+    sites: Mutex<HashMap<TaskId, BTreeSet<String>>>,
 }
+
+/// How many sites one task may be allowed, and how many tasks' sites are
+/// kept. Past either, the oldest are forgotten and asked about again.
+const SITES_PER_TASK: usize = 256;
+const TASKS_WITH_SITES: usize = 1024;
 
 impl std::fmt::Debug for PermissionManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -52,6 +61,45 @@ impl PermissionManager {
             approvals,
             approver,
             ids,
+            sites: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Whether the person allowed this call's site for this task, and the
+    /// call is one such an allowance covers.
+    fn site_allowed(&self, query: &PermissionQuery, task_id: &TaskId) -> bool {
+        let Some(site) = query.site.as_ref().filter(|site| site.grantable) else {
+            return false;
+        };
+        self.sites
+            .lock()
+            .map(|sites| {
+                sites
+                    .get(task_id)
+                    .is_some_and(|allowed| allowed.contains(&site.origin))
+            })
+            .unwrap_or(false)
+    }
+
+    fn allow_site(&self, task_id: &TaskId, origin: &str) {
+        let Ok(mut sites) = self.sites.lock() else {
+            return;
+        };
+        if sites.len() >= TASKS_WITH_SITES && !sites.contains_key(task_id) {
+            // Forgetting only ever makes someone be asked again.
+            sites.clear();
+        }
+        let allowed = sites.entry(task_id.clone()).or_default();
+        if allowed.len() >= SITES_PER_TASK {
+            allowed.clear();
+        }
+        allowed.insert(origin.to_owned());
+    }
+
+    /// Forget the sites a task was allowed, once it has ended.
+    pub fn task_ended(&self, task_id: &TaskId) {
+        if let Ok(mut sites) = self.sites.lock() {
+            sites.remove(task_id);
         }
     }
 
@@ -86,6 +134,7 @@ impl PermissionManager {
         let grant_kind = match *reason_code {
             reason::SAFE_DEFAULT => GrantKind::ImplicitSafeDefault,
             reason::APPROVED_ONCE => GrantKind::Once,
+            reason::SITE_GRANT | reason::APPROVED_SITE => GrantKind::Site,
             _ => GrantKind::Project,
         };
 
@@ -101,6 +150,7 @@ impl PermissionManager {
                 scope: query.scope.clone(),
                 kind: grant_kind,
                 approval_id: approval_id.clone(),
+                site: query.site.as_ref().map(|site| site.origin.clone()),
             },
         );
 
@@ -125,6 +175,7 @@ impl PermissionManager {
         let quiet_read = query.risk_class == RiskClass::Read
             && query.scope.project_id.is_some()
             && !query.scope.releases_data
+            && query.site.is_none()
             && !is_app_tool(&query.tool_id);
         if !quiet_read {
             return (
@@ -146,6 +197,7 @@ impl PermissionManager {
                 scope: query.scope.clone(),
                 kind: GrantKind::ImplicitSafeDefault,
                 approval_id: None,
+                site: None,
             },
         );
         (
@@ -190,6 +242,11 @@ impl PermissionManager {
         if query.persistable && query.scope.project_id.is_some() {
             eligible.insert(1, ApprovalDecisionKind::AllowProject);
         }
+        // A site is offered for the task only where allowing it would cover
+        // this call: never for a form submission (ADR 0047).
+        if query.site.as_ref().is_some_and(|site| site.grantable) {
+            eligible.insert(1, ApprovalDecisionKind::AllowSite);
+        }
 
         let request = ApprovalRequest {
             schema_version: SCHEMA_VERSION,
@@ -200,7 +257,12 @@ impl PermissionManager {
             tool_id: query.tool_id.clone(),
             requested_scope: query.scope.clone(),
             risk_class: query.risk_class,
-            side_effect: side_effect_for(query.risk_class),
+            // A web page is outside this device whatever the risk says.
+            side_effect: if query.site.is_some() {
+                SideEffect::External
+            } else {
+                side_effect_for(query.risk_class)
+            },
             summary: format!("{} wants to {}", query.tool_id, query.capability),
             details: describe(query),
             eligible_decisions: eligible,
@@ -249,6 +311,19 @@ impl PermissionManager {
                         reason_code: reason::ONCE_ALREADY_CONSUMED,
                     })
                 }
+            }
+            ApprovalDecisionKind::AllowSite => {
+                // Only honored where it was offered.
+                let Some(site) = query.site.as_ref().filter(|site| site.grantable) else {
+                    return Ok(PermissionOutcome::Denied {
+                        reason_code: reason::USER_DENIED,
+                    });
+                };
+                self.allow_site(task_id, &site.origin);
+                Ok(PermissionOutcome::Allowed {
+                    reason_code: reason::APPROVED_SITE,
+                    approval_id: Some(approval_id),
+                })
             }
             ApprovalDecisionKind::AllowProject => {
                 // Guard against an approver returning a choice that was never
@@ -305,6 +380,14 @@ impl PermissionPolicy for PermissionManager {
             });
         }
 
+        // 5. The site allowed for this task, for a call it covers.
+        if self.site_allowed(query, task_id) {
+            return Ok(PermissionOutcome::Allowed {
+                reason_code: reason::SITE_GRANT,
+                approval_id: None,
+            });
+        }
+
         // 4. A live project grant.
         match self.covered_by_grant(query).await {
             Ok(true) => {
@@ -330,6 +413,8 @@ impl PermissionPolicy for PermissionManager {
             && !query.scope.releases_data
             // An App's claim to read only is its own (ADR 0035).
             && !is_app_tool(&query.tool_id)
+            // A page on the web is never read unasked (ADR 0047).
+            && query.site.is_none()
         {
             return Ok(PermissionOutcome::Allowed {
                 reason_code: reason::SAFE_DEFAULT,
@@ -406,7 +491,13 @@ fn describe(query: &PermissionQuery) -> Vec<ApprovalDetail> {
             .to_owned(),
         });
     }
-    if query.scope.releases_data {
+    if let Some(site) = &query.site {
+        details.push(ApprovalDetail {
+            label: "Site".to_owned(),
+            value: crate::services::redact(&site.origin).text,
+        });
+    }
+    if query.scope.releases_data || query.site.is_some() {
         details.push(ApprovalDetail {
             label: "Leaves this device".to_owned(),
             value: "yes".to_owned(),

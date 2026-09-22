@@ -66,6 +66,7 @@ fn put_question(
         .map(|decision| match decision {
             ApprovalDecisionKind::AllowOnce => ('o', *decision, "allow once"),
             ApprovalDecisionKind::AllowProject => ('p', *decision, "allow for this project"),
+            ApprovalDecisionKind::AllowSite => ('s', *decision, "allow this site for this task"),
             ApprovalDecisionKind::Deny => ('d', *decision, "deny"),
         })
         .collect();
@@ -302,6 +303,46 @@ mod tests {
         let screen = String::from_utf8_lossy(&person.screen);
         assert!(screen.contains("Approval required"), "{screen}");
         assert!(screen.contains("-> AllowProject"), "{screen}");
+    }
+
+    #[test]
+    fn a_site_can_be_allowed_for_the_task_only_where_offered() {
+        let site = || ApprovalRequest {
+            eligible_decisions: vec![
+                ApprovalDecisionKind::AllowOnce,
+                ApprovalDecisionKind::AllowSite,
+                ApprovalDecisionKind::Deny,
+            ],
+            ..request()
+        };
+        for (question, typed, expected) in [
+            (site(), &b"s\n"[..], ApprovalDecisionKind::AllowSite),
+            // Not offered, so "s" is not an answer, and anything else is no.
+            (request(), &b"s\n"[..], ApprovalDecisionKind::Deny),
+        ] {
+            let pty = pty();
+            let mut person = Person {
+                keyboard: &pty.keyboard,
+                answer: typed,
+                screen: Vec::new(),
+            };
+            let decision = put_question(
+                &question,
+                &pty.terminal,
+                &mut BufReader::new(&pty.terminal),
+                &mut person,
+            )
+            .expect("an answer");
+            assert_eq!(decision, expected);
+            let screen = String::from_utf8_lossy(&person.screen);
+            assert_eq!(
+                screen.contains("[s] allow this site for this task"),
+                question
+                    .eligible_decisions
+                    .contains(&ApprovalDecisionKind::AllowSite),
+                "{screen}"
+            );
+        }
     }
 
     #[test]

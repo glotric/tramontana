@@ -27,6 +27,7 @@ import { asErrorEnvelope, resolveApproval } from "./core.js";
 const DECISION_TEXT: Record<ApprovalDecisionKind, string> = {
   allowOnce: "Allow once",
   allowProject: "Allow in this project",
+  allowSite: "Allow this site for this task",
   deny: "Deny",
 };
 
@@ -36,6 +37,23 @@ const RISK_TEXT: Record<RiskClass, string> = {
   modify: "Changes files",
   dangerous: "Runs a command",
 };
+
+/**
+ * The browser's risk in its own words: its risk classes say how far an
+ * action reaches, and "runs a command" is not what a click does (ADR 0047).
+ */
+const BROWSER_RISK_TEXT: Record<RiskClass, string> = {
+  read: "Reads a web page",
+  modify: "Acts on a web page",
+  dangerous: "Acts on a web page",
+};
+
+/** How much a request could change, for this request. */
+function riskText(request: ApprovalRequest): string {
+  return request.capability.startsWith("browser.")
+    ? BROWSER_RISK_TEXT[request.riskClass]
+    : RISK_TEXT[request.riskClass];
+}
 
 /** What would be left behind by running it. */
 const EFFECT_TEXT: Record<SideEffect, string> = {
@@ -117,7 +135,7 @@ export function ApprovalCard({
 
       <dl className="approval-facts">
         <dt>Risk</dt>
-        <dd data-risk={request.riskClass}>{RISK_TEXT[request.riskClass]}</dd>
+        <dd data-risk={request.riskClass}>{riskText(request)}</dd>
 
         <dt>Effect</dt>
         <dd>{EFFECT_TEXT[request.sideEffect]}</dd>
@@ -149,6 +167,13 @@ export function ApprovalCard({
           </button>
         ))}
       </div>
+
+      {request.eligibleDecisions.includes("allowSite") && (
+        <p className="approval-note">
+          “{DECISION_TEXT.allowSite}” lets this task open, read, click and type on this site without
+          asking again. Submitting a form is still asked about every time.
+        </p>
+      )}
 
       {request.eligibleDecisions.includes("allowProject") && (
         <p className="approval-note">

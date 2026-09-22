@@ -111,6 +111,9 @@ pub enum GrantKind {
     Once,
     /// A persistent, revocable grant for this project and capability.
     Project,
+    /// The person allowed a web site for the rest of one task (ADR 0047).
+    /// Held in memory, so a task resumed after a restart asks again.
+    Site,
 }
 
 /// What the user may choose when asked.
@@ -121,6 +124,10 @@ pub enum ApprovalDecisionKind {
     AllowOnce,
     /// Allow this capability in this project until revoked.
     AllowProject,
+    /// Allow the web site this call acts on for the rest of the task:
+    /// opening its pages, reading, clicking and typing there, but never
+    /// submitting a form (ADR 0047).
+    AllowSite,
     /// Refuse.
     Deny,
 }
@@ -252,6 +259,8 @@ pub(crate) struct GrantedAuthority {
     pub(crate) kind: GrantKind,
     /// The approval that produced it, when a user was asked.
     pub(crate) approval_id: Option<ApprovalId>,
+    /// The web site it was allowed for, for the browser's tools.
+    pub(crate) site: Option<String>,
 }
 
 /// A tool request that has passed policy.
@@ -270,6 +279,7 @@ pub struct AuthorizedToolRequest {
     granted_scope: CapabilityScope,
     grant_kind: GrantKind,
     approval_id: Option<ApprovalId>,
+    site: Option<String>,
 }
 
 impl AuthorizedToolRequest {
@@ -285,6 +295,7 @@ impl AuthorizedToolRequest {
             granted_scope: grant.scope,
             grant_kind: grant.kind,
             approval_id: grant.approval_id,
+            site: grant.site,
         }
     }
 
@@ -335,6 +346,14 @@ impl AuthorizedToolRequest {
     #[must_use]
     pub fn approval_id(&self) -> Option<&ApprovalId> {
         self.approval_id.as_ref()
+    }
+
+    /// The web site the call was allowed on, for the browser's tools. A
+    /// provider must act on this site and no other: if the page moved on
+    /// since the question was asked, the call is refused (ADR 0047).
+    #[must_use]
+    pub fn site(&self) -> Option<&str> {
+        self.site.as_deref()
     }
 }
 

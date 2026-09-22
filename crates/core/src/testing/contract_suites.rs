@@ -729,6 +729,7 @@ pub async fn idempotent_tool_contract(
                 scope: CapabilityScope::project(ProjectId::new("project-contract"), roots.clone()),
                 kind: GrantKind::Once,
                 approval_id: None,
+                site: None,
             },
         )
     };

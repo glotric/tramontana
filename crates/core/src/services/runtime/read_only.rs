@@ -61,6 +61,12 @@ impl BrokeredHost {
         if events.len() > 100_000 {
             return Err(error(ErrorCode::LimitExceeded));
         }
+        // A session keeps the limits it was first charged under, so a task
+        // recorded before the defaults changed resumes with its own rather
+        // than being interrupted by, or granted, new ones (ADR 0047).
+        let recorded = recorded_limits(&events)?;
+        let limits = recorded.as_ref().unwrap_or(limits);
+        validate_limits(limits)?;
         let mut task = self.canonical_task(&events)?;
         task.last_sequence = events.len() as u64;
         let initial = self
@@ -498,6 +504,22 @@ fn error(code: ErrorCode) -> ErrorEnvelope {
         crate::contracts::CorrelationId::new("reference-worker"),
     )
 }
+/// The limits of the session's first budget record, if it has one.
+fn recorded_limits(events: &[EventEnvelope]) -> Result<Option<ReadOnlyLimits>, ErrorEnvelope> {
+    events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::DiagnosticRecorded { code, summary } if code == BUDGET => Some(summary),
+            _ => None,
+        })
+        .map(|summary| {
+            serde_json::from_str::<Reservation>(summary)
+                .map(|prior| prior.limits)
+                .map_err(|_| error(ErrorCode::InterruptedUnsafe))
+        })
+        .transpose()
+}
+
 fn validate_limits(limits: &ReadOnlyLimits) -> Result<(), ErrorEnvelope> {
     let max = ReadOnlyLimits::default();
     if [
@@ -565,6 +587,32 @@ mod tests {
             let read: Reservation = serde_json::from_str(&recorded).unwrap();
             assert_eq!(read.admission, admission, "{recorded}");
         }
+    }
+
+    fn budget(reservation: &Reservation) -> EventEnvelope {
+        diagnostic(BUDGET, serde_json::to_string(reservation).unwrap()).into_envelope(
+            crate::contracts::EventId::new("e1"),
+            crate::contracts::TaskId::new("t1"),
+            None,
+            1,
+            crate::contracts::Timestamp::new("2026-09-22T12:00:00.000Z"),
+            crate::contracts::CorrelationId::new("c1"),
+        )
+    }
+
+    #[test]
+    fn a_session_keeps_the_limits_it_was_first_charged_under() {
+        // A task recorded under the old defaults resumes under them, neither
+        // interrupted by the new ones nor granted their larger budget.
+        let mut old = reservation(ToolAdmission::READ_ONLY);
+        old.limits = ReadOnlyLimits::before_adr_0047();
+        let events = [budget(&old), budget(&reservation(ToolAdmission::READ_ONLY))];
+        assert_eq!(
+            recorded_limits(&events).unwrap(),
+            Some(ReadOnlyLimits::before_adr_0047())
+        );
+        assert_eq!(recorded_limits(&[]).unwrap(), None);
+        assert!(validate_limits(&ReadOnlyLimits::before_adr_0047()).is_ok());
     }
 
     #[test]

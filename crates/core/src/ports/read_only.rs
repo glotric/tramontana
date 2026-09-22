@@ -23,6 +23,11 @@ pub struct ToolAdmission {
     /// its own tool is not a permission (ADR 0035).
     #[serde(default)]
     pub apps: bool,
+    /// The built-in browser (ADR 0047): opening pages and acting on them in a
+    /// window of the task's own. The first visit to each site is asked
+    /// about, and submitting a form every time.
+    #[serde(default)]
+    pub browse: bool,
 }
 
 impl ToolAdmission {
@@ -31,6 +36,7 @@ impl ToolAdmission {
         writes: false,
         recipes: false,
         apps: false,
+        browse: false,
     };
 
     /// Reads, plus writes whose effect is local and reversible.
@@ -38,12 +44,22 @@ impl ToolAdmission {
         writes: true,
         recipes: false,
         apps: false,
+        browse: false,
     };
 
     /// This level, with the profile's Apps admitted as well.
     #[must_use]
     pub const fn with_apps(self) -> Self {
         Self { apps: true, ..self }
+    }
+
+    /// This level, with the built-in browser admitted as well.
+    #[must_use]
+    pub const fn with_browse(self) -> Self {
+        Self {
+            browse: true,
+            ..self
+        }
     }
 
     /// This level, with the project's recipes admitted as well.
@@ -58,7 +74,7 @@ impl ToolAdmission {
     /// Whether nothing beyond reads is admitted.
     #[must_use]
     pub fn is_read_only(&self) -> bool {
-        !self.writes && !self.recipes
+        !self.writes && !self.recipes && !self.browse
     }
 }
 
@@ -91,8 +107,11 @@ pub struct ReadOnlyLimits {
     pub turn_tokens: u32,
 }
 
-impl Default for ReadOnlyLimits {
-    fn default() -> Self {
+impl ReadOnlyLimits {
+    /// The limits every task had until ADR 0047: twelve steps in ten
+    /// minutes. A task recorded under them keeps them when it resumes.
+    #[must_use]
+    pub const fn before_adr_0047() -> Self {
         Self {
             steps: 12,
             tools: 12,
@@ -103,6 +122,26 @@ impl Default for ReadOnlyLimits {
             turn_ms: 30_000,
             turn_bytes: 65_536,
             turn_tokens: 1024,
+        }
+    }
+}
+
+/// Forty steps in thirty minutes (ADR 0047). Every other total is scaled so
+/// that the step limit, not an incidental one, is what a long task meets:
+/// each turn reserves 1 MiB of input, 320 KiB of output, 2,048 tokens and
+/// 45 seconds, and forty of each fit.
+impl Default for ReadOnlyLimits {
+    fn default() -> Self {
+        Self {
+            steps: 40,
+            tools: 40,
+            time_ms: 1_800_000,
+            input_bytes: 41_943_040,
+            output_bytes: 16_777_216,
+            output_tokens: 81_920,
+            turn_ms: 45_000,
+            turn_bytes: 65_536,
+            turn_tokens: 2048,
         }
     }
 }

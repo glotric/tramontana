@@ -232,6 +232,7 @@ fn a_person_is_never_given_an_apps_read_quietly() {
         scope: CapabilityScope::project(ProjectId::new("project-1"), vec!["/synthetic".into()]),
         persistable: false,
         details: Vec::new(),
+        site: None,
     };
     let (outcome, authorized) = fixture.permissions.authorize_person_read(
         &query,
@@ -254,6 +255,7 @@ fn the_permission_manager_gives_a_person_only_a_quiet_read() {
         scope,
         persistable: false,
         details: Vec::new(),
+        site: None,
     };
 
     let (allowed, authorized) = fixture.permissions.authorize_person_read(

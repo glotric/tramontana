@@ -71,6 +71,11 @@
           "type": "string"
         },
         {
+          "const": "allowSite",
+          "description": "Allow the web site this call acts on for the rest of the task:\nopening its pages, reading, clicking and typing there, but never\nsubmitting a form (ADR 0047).",
+          "type": "string"
+        },
+        {
           "const": "deny",
           "description": "Refuse.",
           "type": "string"
@@ -1991,6 +1996,11 @@
         {
           "const": "project",
           "description": "A persistent, revocable grant for this project and capability.",
+          "type": "string"
+        },
+        {
+          "const": "site",
+          "description": "The person allowed a web site for the rest of one task (ADR 0047).\nHeld in memory, so a task resumed after a restart asks again.",
           "type": "string"
         }
       ]

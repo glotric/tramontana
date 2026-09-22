@@ -106,7 +106,7 @@ impl ModelProvider for Model {
             sender
                 .send(ModelEvent::Usage {
                     usage: Usage {
-                        output_tokens: Some(1025),
+                        output_tokens: Some(u64::from(ReadOnlyLimits::default().turn_tokens) + 1),
                         input_tokens: None,
                         estimated: false,
                     },
@@ -453,7 +453,13 @@ async fn malformed_unoffered_and_failed_model_turns_cannot_run_tools() {
     ] {
         let model = Arc::new(Model::new(scenario));
         let tool = Arc::new(Tool::new());
-        let h = harness(model, tool.clone(), ReadOnlyLimits::default());
+        // A silent model is waited for a whole turn; a short one keeps the
+        // test from waiting the default's 45 seconds.
+        let limits = ReadOnlyLimits {
+            turn_ms: 2_000,
+            ..ReadOnlyLimits::default()
+        };
+        let h = harness(model, tool.clone(), limits);
         let service = h.service(RoutingMode::LocalOnly);
         let task = start(&service, true).await;
         let events = finished(&service, &task).await;
@@ -600,6 +606,45 @@ async fn checkpoint_reopen_retries_only_the_pending_read_with_fresh_permission()
             .count(),
         2
     );
+}
+
+#[tokio::test]
+async fn a_task_resumed_after_the_defaults_change_keeps_its_recorded_limits() {
+    // Started under a two-step budget, reopened by a build whose worker asks
+    // for the new defaults: it is neither interrupted nor given more room.
+    let model = Arc::new(Model::new(Scenario::Answer));
+    model.pause_after_read.store(true, Ordering::SeqCst);
+    let tool = Arc::new(Tool::new());
+    let limits = ReadOnlyLimits {
+        steps: 2,
+        ..ReadOnlyLimits::before_adr_0047()
+    };
+    let mut h = harness(model.clone(), tool.clone(), limits);
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start(&service, true).await;
+    timeout(Duration::from_secs(2), async {
+        while model.requests.lock().unwrap().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let cp = service.create_checkpoint(&task).await.unwrap();
+    drop(service);
+    model.pause_after_read.store(false, Ordering::SeqCst);
+    h.providers.worker = Arc::new(ReferenceWorker::new(
+        vec!["fake.tool.echo".into()],
+        ReadOnlyLimits::default(),
+    ));
+    let reopened = h.service(RoutingMode::LocalOnly);
+    reopened.recover().await.unwrap();
+    reopened
+        .resume_task(&task, &cp.checkpoint_id)
+        .await
+        .unwrap();
+    let events = finished(&reopened, &task).await;
+    fail(&events, ErrorCode::LimitExceeded);
+    assert_eq!(model.requests.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]

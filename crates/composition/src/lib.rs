@@ -21,6 +21,7 @@ mod apps;
 use std::sync::Arc;
 
 pub use apps::{AppFailure, AppPlane, app_folder, offerable, start_app, start_apps};
+pub use tramontana_adapters_browser::BrowserProvider;
 use tramontana_adapters_local::{LlamaServerSpec, SupervisedLlamaServer};
 use tramontana_adapters_model::{AnthropicProvider, OpenAiCompatibleProvider, ProviderAuth};
 use tramontana_core::contracts::{
@@ -92,6 +93,13 @@ pub fn offered_tools(admission: ToolAdmission, app_tools: &[String]) -> Vec<Stri
     if admission.recipes {
         tools.push(tramontana_core::services::RECIPE_TOOL_ID.to_owned());
     }
+    if admission.browse {
+        tools.extend(
+            tramontana_adapters_browser::TOOLS
+                .into_iter()
+                .map(str::to_owned),
+        );
+    }
     if admission.apps {
         // Tramontana's own tools first: the catalogue refuses a whole
         // selection of more than `MAX_OFFERED_TOOLS`, so an App with a
@@ -140,6 +148,38 @@ pub fn recovery_store(profile: &std::path::Path) -> std::path::PathBuf {
         .map_or_else(|| std::ffi::OsString::from("profile"), ToOwned::to_owned);
     name.push(".recovery");
     profile.with_file_name(name)
+}
+
+/// Where a profile's browser keeps its throwaway profiles: beside the
+/// profile, named after it (ADR 0047).
+#[must_use]
+pub fn browser_profiles(profile: &std::path::Path) -> std::path::PathBuf {
+    let mut name = profile
+        .file_name()
+        .map_or_else(|| std::ffi::OsString::from("profile"), ToOwned::to_owned);
+    name.push(".browser");
+    profile.with_file_name(name)
+}
+
+/// The built-in browser for a profile: the person's installed Chrome, Edge
+/// or Chromium, in a visible window, started when a task first opens a page
+/// (ADR 0047).
+#[must_use]
+pub fn browser(profile: &std::path::Path) -> Arc<BrowserProvider> {
+    Arc::new(BrowserProvider::new(
+        tramontana_adapters_browser::LaunchOptions {
+            executable: None,
+            profiles: browser_profiles(profile),
+            headless: false,
+        },
+    ))
+}
+
+/// Delete throwaway browser profiles a previous process on this profile
+/// left behind. Call only while holding the profile's lease, as for
+/// [`reap_runtimes`].
+pub fn reap_browser_profiles(profile: &std::path::Path) {
+    tramontana_adapters_browser::remove_leftover_profiles(&browser_profiles(profile));
 }
 
 /// Where a profile records the model runtimes running for it: beside the

@@ -47,6 +47,7 @@ async fn authorize(root: &Path, arguments: serde_json::Value) -> AuthorizedToolR
         ),
         persistable: false,
         details: Vec::new(),
+        site: None,
     };
     let (_, authorized) = manager
         .authorize(

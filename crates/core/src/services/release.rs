@@ -381,7 +381,9 @@ impl ReleaseManager {
 
         match answer {
             ApprovalDecisionKind::AllowOnce | ApprovalDecisionKind::AllowProject => {}
-            ApprovalDecisionKind::Deny => {
+            // A site is never offered for a release: an answer that was not
+            // offered is not consent.
+            ApprovalDecisionKind::Deny | ApprovalDecisionKind::AllowSite => {
                 return Err(ReleaseError::Denied {
                     reason_code: release_reason::USER_DENIED,
                 });

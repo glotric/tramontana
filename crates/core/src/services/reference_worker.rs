@@ -39,7 +39,18 @@ impl ReferenceWorker {
         self.admission = admission;
         self
     }
+
+    /// The worker reaches the network only through the browser, whose every
+    /// site passes the host (ADR 0047).
+    fn network_control(&self) -> NetworkControl {
+        if self.admission.browse {
+            NetworkControl::Brokered
+        } else {
+            NetworkControl::Denied
+        }
+    }
 }
+
 #[async_trait]
 impl AgentProvider for ReferenceWorker {
     fn describe(&self) -> AgentDescriptor {
@@ -56,11 +67,11 @@ impl AgentProvider for ReferenceWorker {
             integration_mode: IntegrationMode::Embedded,
             model_control: ModelControl::TramontanaBrokered,
             tool_control: ToolControl::TramontanaBrokered,
-            network_control: NetworkControl::Denied,
+            network_control: self.network_control(),
             checkpoint_support: CheckpointSupport::Portable,
             local_only_eligible: AgentDescriptor::compute_local_only_eligibility(
                 ModelControl::TramontanaBrokered,
-                NetworkControl::Denied,
+                self.network_control(),
             ),
             unavailable_reason: None,
         }

@@ -45,6 +45,7 @@ const GRANT_TEXT: Record<NonNullable<AppHistory["decisions"][number]["grantKind"
   implicitSafeDefault: "allowed without asking",
   once: "allowed once",
   project: "allowed in this project",
+  site: "allowed on this site for the task",
 };
 
 function History({ appId }: { readonly appId: string }): React.JSX.Element {

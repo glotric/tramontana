@@ -143,6 +143,12 @@ fn admits(admission: ToolAdmission, descriptor: &ToolDescriptor) -> bool {
     if descriptor.tool_id == RECIPE_TOOL_ID && descriptor.provider_id == "builtin" {
         return admission.recipes;
     }
+    if super::is_browser_tool(descriptor) {
+        // The browser reaches the web and acts on it, so it is offered only
+        // when a person asked for it; each site and each form submission is
+        // still asked about (ADR 0047).
+        return admission.browse;
+    }
     if super::is_app_tool(&descriptor.tool_id) {
         // An App's tool reaches a model only in a task that admits Apps, and
         // only where the App says it only reads. The claim is the App's own,

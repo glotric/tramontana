@@ -137,6 +137,9 @@ async fn open_with(
         Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
         // The project's own commands, run only as the core resolved them.
         Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
+        // The browser, started only when a task under `--browse` first opens
+        // a page (ADR 0047).
+        tramontana_composition::browser(path) as Arc<dyn ToolProvider>,
     ];
     providers.extend(apps.providers());
     let (registry, permissions, releases) = assemble_tool_plane(
@@ -163,6 +166,7 @@ async fn open_with(
         for note in tramontana_composition::reap_runtimes(path).await {
             eprintln!("note: {note}");
         }
+        tramontana_composition::reap_browser_profiles(path);
     }
     let records = lease
         .is_some()

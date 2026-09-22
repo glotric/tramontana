@@ -25,7 +25,7 @@ pub use ids::IdSource;
 pub use model::ModelProvider;
 pub use permission::{
     ApprovalStore, Approver, PermissionError, PermissionOutcome, PermissionPolicy, PermissionQuery,
-    reason,
+    SiteAccess, reason,
 };
 pub use read_only::{ReadOnlyLimits, ReadOnlyTurn, TOOL_RUN_LIMIT, ToolAdmission};
 pub use repository::{
@@ -33,5 +33,5 @@ pub use repository::{
     ProjectRepository, ProviderSettingsRepository, RepositoryError, TaskRepository,
 };
 pub use secret::{SecretResolver, SecretVault};
-pub use tool::{ToolInvocation, ToolOutcome, ToolProvider};
+pub use tool::{ToolInvocation, ToolOutcome, ToolProvider, ToolTarget};
 pub use worker::{AgentProvider, WorkerHost, WorkerOutcome, WorkerRequest};
