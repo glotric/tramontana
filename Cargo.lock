@@ -5155,6 +5155,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tracing",
  "tramontana-adapters-local",
  "tramontana-adapters-mcp",

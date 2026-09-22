@@ -73,6 +73,9 @@ pub struct OpenAiCompatibleProvider {
     descriptor: ModelDescriptor,
     auth: ProviderAuth,
     client: reqwest::Client,
+    /// What to put in a request's `model` field, when the server needs
+    /// something other than the model's own identifier.
+    wire_model: Option<String>,
 }
 
 impl std::fmt::Debug for OpenAiCompatibleProvider {
@@ -125,7 +128,20 @@ impl OpenAiCompatibleProvider {
             descriptor,
             auth,
             client,
+            wire_model: None,
         })
+    }
+
+    /// Name the model to the server as `name` rather than by its identifier.
+    ///
+    /// `mlx_lm.server` loads whatever a request's `model` field names, from
+    /// Hugging Face when it is not a local path; `default_model` is its name
+    /// for the model it was started with. Routing and records keep using the
+    /// model's own identifier.
+    #[must_use]
+    pub fn with_wire_model(mut self, name: impl Into<String>) -> Self {
+        self.wire_model = Some(name.into());
+        self
     }
 
     /// A descriptor for a model on this device.
@@ -178,7 +194,11 @@ impl ModelProvider for OpenAiCompatibleProvider {
         let request = authorized.request();
         tramontana_core::services::validate_model_capabilities(request, &self.descriptor)?;
         let names = crate::request::WireNames::new(request);
-        let body = crate::request::openai_body(request, &self.descriptor.model_id, &names)?;
+        let model = self
+            .wire_model
+            .as_deref()
+            .unwrap_or(&self.descriptor.model_id);
+        let body = crate::request::openai_body(request, model, &names)?;
         let mut builder = self
             .client
             .post(self.completions_url())

@@ -573,3 +573,35 @@ async fn a_runtime_reports_the_accelerators_it_can_use() {
     assert_eq!(server.accelerators(), ["Stand-in GPU (FAKE0, 1 GB)"]);
     server.shutdown().await;
 }
+
+/// `mlx_lm.server` downloads whatever a request names from Hugging Face,
+/// unless the library is told it is offline. Checked against mlx-lm 0.31.3:
+/// offline, a request naming another model is refused with "outgoing traffic
+/// has been disabled", and `default_model` is served.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[tokio::test]
+async fn an_mlx_runtime_cannot_reach_the_network_for_a_model() {
+    let directory = tempfile::tempdir().unwrap();
+    let records = directory.path().join("runtimes");
+    let mut spec = mlx_spec(&directory);
+    spec.records = Some(records.clone());
+    let mut server = start_in_mode(&spec, "ready", 0).await.unwrap();
+    assert_eq!(server.wire_model(), Some("default_model"));
+    let pid = records_in(&records)[0]["pid"].as_u64().unwrap();
+    // `ps -E` shows a process's environment on macOS, to its own user.
+    let output = std::process::Command::new("ps")
+        .args(["-wwE", "-o", "command=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    let environment = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(environment.contains("HF_HUB_OFFLINE=1"), "{environment}");
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_llama_server_is_asked_for_its_model_by_its_own_name() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut server = start_in_mode(&spec(&directory), "ready", 0).await.unwrap();
+    assert_eq!(server.wire_model(), None);
+    server.shutdown().await;
+}

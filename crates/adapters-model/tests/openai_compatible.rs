@@ -444,3 +444,26 @@ async fn an_unreachable_endpoint_is_a_provider_failure_without_echoing_the_url()
         other => panic!("expected a provider failure, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn a_server_that_needs_another_name_for_the_model_is_sent_that_name() {
+    // `mlx_lm.server` loads whatever `model` names — from the network when
+    // it is not a local path — and calls the model it was started with
+    // `default_model`. The model keeps its own identifier everywhere else.
+    let endpoint = FakeEndpoint::start(Behavior::Streams(vec!["ok".into()])).await;
+    let provider = provider(&endpoint, ProviderAuth::None).with_wire_model("default_model");
+    drain(&provider, CancellationToken::new()).await;
+    let body: serde_json::Value = serde_json::from_str(&endpoint.received()[0].body).unwrap();
+    assert_eq!(body["model"], "default_model");
+    assert_eq!(provider.list_models().await[0].model_id, "test-model");
+
+    // Without it, the model's own identifier.
+    let endpoint = FakeEndpoint::start(Behavior::Streams(vec!["ok".into()])).await;
+    drain(&provider_of(&endpoint), CancellationToken::new()).await;
+    let body: serde_json::Value = serde_json::from_str(&endpoint.received()[0].body).unwrap();
+    assert_eq!(body["model"], "test-model");
+}
+
+fn provider_of(endpoint: &FakeEndpoint) -> OpenAiCompatibleProvider {
+    provider(endpoint, ProviderAuth::None)
+}
