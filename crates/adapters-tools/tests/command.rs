@@ -46,6 +46,10 @@ fn lines(bytes: &[u8]) -> Vec<String> {
 
 /// The ids of processes that recorded themselves in `dir`, once there are
 /// `count` of them.
+///
+/// Every test that watches a process tree this way is Unix-only, where a
+/// process group is what gets killed; on Windows this would be unused.
+#[cfg(unix)]
 async fn recorded(dir: &Path, count: usize) -> Vec<i32> {
     let started = Instant::now();
     loop {
