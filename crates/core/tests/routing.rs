@@ -554,3 +554,59 @@ async fn a_task_with_no_eligible_model_fails_with_the_reason() {
         failure.message
     );
 }
+
+// --- A worker pinned to one model (ADR 0048) --------------------------------
+
+#[test]
+fn a_required_model_is_the_only_one_chosen_and_nothing_else_stands_in_for_it() {
+    let mut pinned = input(RoutingMode::Automatic, local_and_cloud());
+    pinned.required = Some(RoutedModel {
+        provider_id: "local".into(),
+        model_id: "llama".into(),
+    });
+    let decision = route("decision-1", &pinned).unwrap();
+    assert_eq!(decision.model.model_id, "llama");
+    assert!(
+        decision
+            .reason_codes
+            .contains(&routing_reason::USER_SELECTED.to_owned())
+    );
+    assert!(
+        decision.fallback_order.is_empty(),
+        "{:?}",
+        decision.fallback_order
+    );
+
+    // Unavailable, it is not replaced by another.
+    pinned.required = Some(RoutedModel {
+        provider_id: "local".into(),
+        model_id: "missing".into(),
+    });
+    assert!(route("decision-2", &pinned).is_err());
+}
+
+#[test]
+fn a_person_may_pin_a_cloud_model_under_automatic_but_never_under_local_only() {
+    let cloud = RoutedModel {
+        provider_id: "openai".into(),
+        model_id: "gpt-x".into(),
+    };
+    let mut automatic = input(RoutingMode::Automatic, local_and_cloud());
+    automatic.carries_private_data = true;
+    automatic.required = Some(cloud.clone());
+    let decision = route("decision-1", &automatic).unwrap();
+    assert_eq!(decision.model, cloud);
+
+    // Without the pin, Automatic keeps private data on the device.
+    automatic.required = None;
+    assert_ne!(route("decision-2", &automatic).unwrap().model, cloud);
+
+    let mut local_only = input(RoutingMode::LocalOnly, local_and_cloud());
+    local_only.required = Some(cloud);
+    let refusal = route("decision-3", &local_only).unwrap_err();
+    assert!(
+        refusal
+            .reason_codes
+            .contains(&routing_reason::LOCAL_ONLY_REQUIRED.to_owned())
+    );
+}

@@ -118,6 +118,21 @@ function describeChoices(
   return `${MODE_TEXT[mode]} ${access}${commands}${browsing}`;
 }
 
+/**
+ * Why a task's worker stopped, if the latest stop was the worker's rather
+ * than a person's (ADR 0048).
+ */
+function stoppedBecause(events: readonly EventEnvelope[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const payload = events[index]?.payload;
+    if (payload?.kind === "taskStateChanged" && payload.current !== "interrupted") return undefined;
+    if (payload?.kind === "diagnosticRecorded" && payload.code.startsWith("worker.stopped.")) {
+      return payload.summary;
+    }
+  }
+  return undefined;
+}
+
 /** M2 desktop surface over the same durable service and profile as the CLI. */
 export function App(): React.JSX.Element {
   const [status, setStatus] = useState<CoreStatus>({ kind: "connecting" });
@@ -711,6 +726,7 @@ export function App(): React.JSX.Element {
                   <CheckpointPanel
                     key={selectedTaskId}
                     taskId={selectedTaskId}
+                    stoppedBecause={stoppedBecause(events)}
                     onChanged={() => {
                       if (selectedConversationId !== undefined) {
                         void selectConversation(selectedConversationId);

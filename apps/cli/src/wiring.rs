@@ -239,7 +239,23 @@ async fn open_with(
         Arc::new(UuidIdSource::new()),
     );
 
-    let service = service.with_execution_guard(lease);
+    // The built-in worker pinned to each configured model, which a task can
+    // be handed to by name (ADR 0048).
+    let pinnable = if has_configured {
+        tramontana_composition::pinnable_models(&plane.providers).await
+    } else {
+        Vec::new()
+    };
+    let service = service
+        .with_worker_choice(tramontana_composition::worker_choice(
+            has_configured,
+            app_tools.clone(),
+        ))
+        .with_pinned_workers(
+            pinnable,
+            tramontana_composition::pinned_worker_choice(app_tools.clone()),
+        )
+        .with_execution_guard(lease);
 
     // A process that died between appending an event and updating a task's
     // cached row leaves the two disagreeing. The events are the record, so the

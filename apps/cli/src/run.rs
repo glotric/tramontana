@@ -137,7 +137,9 @@ struct HandoffArgs {
     #[arg(long, requires = "to")]
     checkpoint_id: Option<String>,
 
-    /// Worker to hand the task to.
+    /// Worker to hand the task to: `builtin.reference` for the model the
+    /// routing mode chooses, or `builtin.reference@<endpoint>/<model>` for
+    /// one configured model. An unknown name lists what is offered.
     #[arg(long, value_name = "AGENT_ID", default_value = "fake.receiving")]
     to: String,
 
@@ -614,19 +616,31 @@ async fn handoff(args: HandoffArgs) -> ExitCode {
         };
     };
 
-    let Some(receiving) = wiring::worker_named(&args.to) else {
-        eprintln!(
-            "error: unknown worker {:?}; available: {}",
-            args.to,
-            wiring::available_workers().join(", ")
-        );
+    let checkpoint_id = CheckpointId::new(checkpoint_id);
+    let offered = service.workers();
+    let handed = if offered.iter().any(|worker| worker.agent_id == args.to) {
+        // The built-in worker, as the router runs it or pinned to a model,
+        // offered what the task was allowed (ADR 0048).
+        service
+            .hand_off_to(&task_id, &checkpoint_id, &args.to)
+            .await
+    } else if let Some(receiving) = wiring::worker_named(&args.to) {
+        service
+            .hand_off_task(&task_id, &checkpoint_id, receiving)
+            .await
+    } else {
+        eprintln!("error: unknown worker {:?}; available:", args.to);
+        for worker in &offered {
+            eprintln!("  {}  {}", worker.agent_id, worker.display_name);
+        }
+        for name in wiring::available_workers() {
+            if !offered.iter().any(|worker| worker.agent_id == name) {
+                eprintln!("  {name}");
+            }
+        }
         return ExitCode::FAILURE;
     };
-
-    let handed = match service
-        .hand_off_task(&task_id, &CheckpointId::new(checkpoint_id), receiving)
-        .await
-    {
+    let handed = match handed {
         Ok(handed) => handed,
         Err(error) => return render::application_error(&error),
     };

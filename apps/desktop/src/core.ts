@@ -509,6 +509,34 @@ export async function discardCheckpoint(taskId: string): Promise<void> {
   return invoke("discard_checkpoint", { taskId });
 }
 
+/** A worker a stopped task can be handed to (ADR 0048). */
+export interface WorkerView {
+  /** The name a handoff uses. */
+  readonly agentId: string;
+  /** What a person calls it. */
+  readonly displayName: string;
+  /** Whether its model runs off this device; absent when the mode chooses. */
+  readonly cloud?: boolean;
+}
+
+/** The workers a stopped task can be handed to. */
+export async function listWorkers(): Promise<readonly WorkerView[]> {
+  return invoke<WorkerView[]>("list_workers");
+}
+
+/**
+ * Hand the checkpoint on screen to another worker, which continues the task
+ * from its record with a budget of its own. Like resuming, it names the
+ * checkpoint the person inspected.
+ */
+export async function handOffTask(
+  taskId: string,
+  checkpointId: string,
+  agentId: string,
+): Promise<void> {
+  return invoke("hand_off_task", { taskId, checkpointId, agentId });
+}
+
 /** Where an App stands in this window (ADR 0040). */
 export type AppStatus =
   | { readonly kind: "running" }

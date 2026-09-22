@@ -10,10 +10,19 @@ type CoreModule = typeof CoreModuleShape;
 const latestCheckpoint = vi.hoisted(() => vi.fn());
 const resumeTask = vi.hoisted(() => vi.fn());
 const discardCheckpoint = vi.hoisted(() => vi.fn());
+const listWorkers = vi.hoisted(() => vi.fn());
+const handOffTask = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
-  return { ...actual, latestCheckpoint, resumeTask, discardCheckpoint };
+  return {
+    ...actual,
+    latestCheckpoint,
+    resumeTask,
+    discardCheckpoint,
+    listWorkers,
+    handOffTask,
+  };
 });
 
 const { CheckpointPanel } = await import("./CheckpointPanel.js");
@@ -57,6 +66,72 @@ describe("the checkpoint inspector", () => {
     vi.clearAllMocks();
     resumeTask.mockResolvedValue(undefined);
     discardCheckpoint.mockResolvedValue(undefined);
+    handOffTask.mockResolvedValue(undefined);
+    listWorkers.mockResolvedValue([]);
+  });
+
+  it("says why the worker stopped and hands the task to another, never back to itself", async () => {
+    const onChanged = vi.fn();
+    const user = userEvent.setup();
+    latestCheckpoint.mockResolvedValue({
+      ...checkpoint(),
+      resume: { eligible: true, mode: "canonicalHandoff" },
+      worker: {
+        descriptor: {
+          agentId: "builtin.reference@local/qwen",
+          agentProviderId: "builtin",
+          checkpointSupport: "portable",
+          displayName: "Embedded read-only worker on Qwen",
+          integrationMode: "embedded",
+          localOnlyEligible: true,
+          modelControl: "tramontanaBrokered",
+          networkControl: "denied",
+          toolControl: "tramontanaBrokered",
+        },
+      },
+    } satisfies TaskCheckpoint);
+    listWorkers.mockResolvedValue([
+      { agentId: "builtin.reference", displayName: "Automatic" },
+      { agentId: "builtin.reference@local/qwen", displayName: "Qwen", cloud: false },
+      { agentId: "builtin.reference@cloud/claude", displayName: "Claude", cloud: true },
+    ]);
+    render(
+      <CheckpointPanel
+        taskId="task-1"
+        stoppedBecause="The worker used up its budget before finishing."
+        onChanged={onChanged}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Stopped: the worker could not go on" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/used up its budget/)).toBeInTheDocument();
+    const choice = await screen.findByRole("combobox", { name: "Hand over to" });
+    const offered = [...(choice as HTMLSelectElement).options].map((option) => option.text);
+    expect(offered).toEqual(["Automatic", "Claude (off this device)"]);
+
+    await user.selectOptions(choice, "builtin.reference@cloud/claude");
+    await user.click(screen.getByRole("button", { name: "Hand over" }));
+    await waitFor(() => {
+      expect(handOffTask).toHaveBeenCalledWith(
+        "task-1",
+        "checkpoint-1",
+        "builtin.reference@cloud/claude",
+      );
+    });
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("offers no handoff when there is nobody else to hand to", async () => {
+    latestCheckpoint.mockResolvedValue(checkpoint());
+    render(<CheckpointPanel taskId="task-1" onChanged={vi.fn()} />);
+    expect(await screen.findByText("checkpoint-1")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Interrupted" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(listWorkers).toHaveBeenCalled();
+    });
+    expect(screen.queryByRole("button", { name: "Hand over" })).not.toBeInTheDocument();
   });
 
   it("shows what was in flight and how safe repeating it is", async () => {

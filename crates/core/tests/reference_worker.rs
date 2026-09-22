@@ -358,6 +358,16 @@ async fn finished_within(
     .await
     .unwrap()
 }
+/// Whether the task was stopped for another worker and has its checkpoint.
+fn paused(events: &[EventEnvelope]) -> bool {
+    events
+        .last()
+        .is_some_and(|event| event.kind == TaskEventKind::CheckpointSaved)
+        && events.iter().any(|event| {
+            matches!(&event.payload,
+            EventPayload::TaskStateChanged { reason_code, .. } if reason_code == "worker.stopped")
+        })
+}
 async fn finished(service: &TaskService, task: &TaskId) -> Vec<EventEnvelope> {
     timeout(Duration::from_secs(35), async {
         loop {
@@ -368,7 +378,7 @@ async fn finished(service: &TaskService, task: &TaskId) -> Vec<EventEnvelope> {
                     TaskEventKind::TaskCompleted
                         | TaskEventKind::TaskFailed
                         | TaskEventKind::TaskCancelled
-                )
+                ) || paused(&events)
             }) {
                 return events;
             }
@@ -384,6 +394,26 @@ fn fail(events: &[EventEnvelope], code: ErrorCode) {
             |event| matches!(&event.payload,EventPayload::TaskFailed {error} if error.code==code)
         ),
         "expected {code:?}: {events:?}"
+    );
+}
+/// The worker could not go on, so the task was kept for another: stopped
+/// with the reason and a checkpoint rather than failed (ADR 0048).
+fn stopped(events: &[EventEnvelope], code: ErrorCode) {
+    let name = serde_json::to_value(code).unwrap();
+    let expected = format!("worker.stopped.{}", name.as_str().unwrap());
+    assert!(
+        events.iter().any(|event| matches!(&event.payload,
+            EventPayload::DiagnosticRecorded { code, .. } if *code == expected)),
+        "expected {expected}: {events:?}"
+    );
+    assert!(events.iter().any(|event| matches!(&event.payload,
+        EventPayload::TaskStateChanged { current: TaskState::Interrupted, reason_code, .. }
+            if reason_code == "worker.stopped")));
+    assert_eq!(events.last().unwrap().kind, TaskEventKind::CheckpointSaved);
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.kind == TaskEventKind::TaskFailed)
     );
 }
 fn harness(model: Arc<Model>, tool: Arc<Tool>, limits: ReadOnlyLimits) -> Harness {
@@ -463,7 +493,16 @@ async fn malformed_unoffered_and_failed_model_turns_cannot_run_tools() {
         let service = h.service(RoutingMode::LocalOnly);
         let task = start(&service, true).await;
         let events = finished(&service, &task).await;
-        fail(&events, code);
+        // A model that cannot be used stops the worker; one that asks for
+        // something it may not have ends the task.
+        if matches!(
+            code,
+            ErrorCode::InvalidRequest | ErrorCode::PermissionDenied
+        ) {
+            fail(&events, code);
+        } else {
+            stopped(&events, code);
+        }
         assert_eq!(tool.calls.load(Ordering::SeqCst), 0);
         assert!(
             !serde_json::to_string(&events)
@@ -526,17 +565,17 @@ async fn each_cumulative_budget_stops_before_an_extra_dispatch() {
         let service = h.service(RoutingMode::LocalOnly);
         let task = start(&service, true).await;
         let events = finished(&service, &task).await;
-        fail(&events, ErrorCode::LimitExceeded);
+        stopped(&events, ErrorCode::LimitExceeded);
         // Said in words a person can act on, whatever the task was allowed
         // to do: the worker is not always a read-only one.
         assert!(
-            matches!(
-                &events.last().unwrap().payload,
-                EventPayload::TaskFailed { error }
-                    if error.message.starts_with("The worker used up its budget")
-            ),
-            "{dimension}: {:?}",
-            events.last().map(|event| &event.payload)
+            events.iter().any(|event| matches!(
+                &event.payload,
+                EventPayload::DiagnosticRecorded { code, summary }
+                    if code == "worker.stopped.limitExceeded"
+                        && summary.starts_with("The worker used up its budget")
+            )),
+            "{dimension}: {events:?}"
         );
         assert!(model.requests.lock().unwrap().len() <= 1);
         assert!(tool.calls.load(Ordering::SeqCst) <= 1);
@@ -555,7 +594,11 @@ async fn unsupported_models_local_only_and_projectless_tools_fail_closed() {
         let service = h.service(RoutingMode::LocalOnly);
         let task = start(&service, case != "projectless").await;
         let events = finished(&service, &task).await;
-        assert_eq!(events.last().unwrap().kind, TaskEventKind::TaskFailed);
+        // No model could serve it: stopped for another worker, never run.
+        assert!(
+            paused(&events) || events.last().unwrap().kind == TaskEventKind::TaskFailed,
+            "{case}: {events:?}"
+        );
         assert_eq!(tool.calls.load(Ordering::SeqCst), 0);
         if case != "projectless" {
             assert!(model.requests.lock().unwrap().is_empty());
@@ -643,7 +686,7 @@ async fn a_task_resumed_after_the_defaults_change_keeps_its_recorded_limits() {
         .await
         .unwrap();
     let events = finished(&reopened, &task).await;
-    fail(&events, ErrorCode::LimitExceeded);
+    stopped(&events, ErrorCode::LimitExceeded);
     assert_eq!(model.requests.lock().unwrap().len(), 2);
 }
 
@@ -678,7 +721,7 @@ async fn completed_observations_survive_reopen_without_replaying_tools_or_resett
         .await
         .unwrap();
     let events = finished(&reopened, &task).await;
-    fail(&events, ErrorCode::LimitExceeded);
+    stopped(&events, ErrorCode::LimitExceeded);
     assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
     assert_eq!(model.requests.lock().unwrap().len(), 2);
 }
@@ -1342,10 +1385,12 @@ async fn a_task_that_stopped_half_way_still_says_what_it_changed() {
     let service = h.service(RoutingMode::LocalOnly);
     let task = start(&service, true).await;
     let events = finished(&service, &task).await;
-    fail(&events, ErrorCode::ProviderUnavailable);
-    let artifacts = recorded(&events);
-    assert_eq!(artifacts.len(), 1, "{events:?}");
-    assert_eq!(artifacts[0].summary(), "1 file change(s): created greeting");
+    // Kept for another worker, its checkpoint says the write is done; the
+    // summary of changes waits for the task's real ending.
+    stopped(&events, ErrorCode::ProviderUnavailable);
+    let checkpoint = service.latest_checkpoint(&task).await.unwrap().unwrap();
+    assert_eq!(checkpoint.completed_step_ids.len(), 1, "{checkpoint:?}");
+    assert!(checkpoint.resume.eligible, "{checkpoint:?}");
 
     // It was cancelled after the write.
     let model = Arc::new(Model::new(Scenario::Write));
@@ -1459,7 +1504,7 @@ async fn a_read_only_worker_is_never_offered_a_write() {
     );
     let service = h.service(RoutingMode::LocalOnly);
     let task = start(&service, true).await;
-    fail(
+    stopped(
         &finished(&service, &task).await,
         ErrorCode::CapabilityUnsupported,
     );

@@ -57,6 +57,14 @@ pub struct RoutingInput {
     pub preferred: Option<RoutedModel>,
     /// Models already tried and failed, which must not be chosen again.
     pub exhausted: Vec<RoutedModel>,
+    /// The only model this request may use: the one a worker was pinned to
+    /// when a person chose that worker (ADR 0048).
+    ///
+    /// Stricter than `preferred`, which falls back to other models. Local
+    /// Only still forbids a cloud model. Automatic's rule that it does not
+    /// send private data off the device *on its own* yields to it, because a
+    /// person chose it, and every release to it is still put to them.
+    pub required: Option<RoutedModel>,
 }
 
 impl RoutingInput {
@@ -76,6 +84,7 @@ impl RoutingInput {
             context_tokens: None,
             preferred: None,
             exhausted: Vec::new(),
+            required: None,
         }
     }
 }
@@ -149,11 +158,8 @@ pub fn route(
     });
 
     let mut reasons = Vec::new();
-    let chosen = match input
-        .preferred
-        .as_ref()
-        .and_then(|wanted| position_of(&eligible, wanted))
-    {
+    let wanted = input.required.as_ref().or(input.preferred.as_ref());
+    let chosen = match wanted.and_then(|wanted| position_of(&eligible, wanted)) {
         Some(index) => {
             reasons.push(routing_reason::USER_SELECTED.to_owned());
             eligible.remove(index)
@@ -232,13 +238,24 @@ pub fn route_after_failure(
 /// Local Only reports that rather than an incidental capability gap.
 fn exclusion(model: &ModelDescriptor, input: &RoutingInput) -> Option<&'static str> {
     let is_cloud = model.location == ModelLocation::Cloud;
+    let is_required = input.required.as_ref().is_some_and(|required| {
+        required.provider_id == model.provider_id && required.model_id == model.model_id
+    });
 
     // A hard egress prohibition, checked before anything that could be read as
     // a preference (`SECURITY_AND_PERMISSIONS.md` §8).
     if is_cloud && input.mode == RoutingMode::LocalOnly {
         return Some(routing_reason::LOCAL_ONLY_REQUIRED);
     }
-    if is_cloud && input.carries_private_data && input.mode == RoutingMode::Automatic {
+    // A worker pinned to one model uses that model or none (ADR 0048).
+    if input.required.is_some() && !is_required {
+        return Some(routing_reason::MODEL_UNAVAILABLE);
+    }
+    if is_cloud
+        && input.carries_private_data
+        && input.mode == RoutingMode::Automatic
+        && !is_required
+    {
         // Automatic does not send a user's project off the device on its own.
         // Choosing that is what Cloud Preferred means.
         return Some(routing_reason::SENSITIVITY_BLOCKED);

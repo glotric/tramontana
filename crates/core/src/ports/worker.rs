@@ -83,6 +83,25 @@ pub trait WorkerHost: Send + Sync {
         }
     }
 
+    /// [`Self::governed_turn`] on one model only: the one a person chose
+    /// when they chose this worker (ADR 0048). A host that cannot hold a
+    /// turn to one model refuses rather than letting the router choose
+    /// another.
+    async fn pinned_turn(
+        &self,
+        _tools: &[String],
+        _admission: super::ToolAdmission,
+        _limits: &super::ReadOnlyLimits,
+        _model: &crate::contracts::RoutedModel,
+        _cancel: &CancellationToken,
+    ) -> Result<super::ReadOnlyTurn, ErrorEnvelope> {
+        Err(ErrorEnvelope::new(
+            crate::contracts::ErrorCode::CapabilityUnsupported,
+            "This host cannot hold a turn to one model",
+            crate::contracts::CorrelationId::new("worker-host"),
+        ))
+    }
+
     /// Append a durable event to the task's stream.
     ///
     /// # Errors
@@ -136,6 +155,13 @@ pub trait AgentProvider: Send + Sync {
     /// The core recomputes eligibility from these facts rather than taking the
     /// worker's word for it (`CORE_CONTRACTS.md` §7.2).
     fn describe(&self) -> AgentDescriptor;
+
+    /// The one model this worker uses, when a person chose it (ADR 0048).
+    /// The task's routing decision is made for it, so the record names the
+    /// model the worker will actually use.
+    fn pinned_model(&self) -> Option<crate::contracts::RoutedModel> {
+        None
+    }
 
     /// Run a task to completion or cancellation.
     ///

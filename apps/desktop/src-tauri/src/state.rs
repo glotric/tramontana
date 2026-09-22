@@ -213,11 +213,22 @@ impl AppState {
             Arc::new(SystemClock::new()),
             Arc::new(UuidIdSource::new()),
         );
+        // The built-in worker pinned to each configured model a task can be
+        // handed to (ADR 0048). None on a profile with no endpoint.
+        let pinnable = if has_configured {
+            tramontana_composition::pinnable_models(&plane.providers).await
+        } else {
+            Vec::new()
+        };
         let service = service
             .with_worker_choice(tramontana_composition::worker_choice(
                 has_configured,
-                app_tools,
+                app_tools.clone(),
             ))
+            .with_pinned_workers(
+                pinnable,
+                tramontana_composition::pinned_worker_choice(app_tools),
+            )
             .with_execution_guard(lease);
         service
             .recover()

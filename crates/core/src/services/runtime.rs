@@ -4,6 +4,8 @@ mod model;
 mod read_only;
 mod tool;
 
+pub(crate) use read_only::recorded_admission;
+
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
@@ -64,6 +66,38 @@ pub(crate) struct TaskDriver {
     worker: Option<Arc<dyn AgentProvider>>,
     resume: ResumePlan,
     interrupt: CancellationToken,
+    /// Where a task the worker could not finish saves its checkpoint, so it
+    /// can be handed to another worker (ADR 0048).
+    checkpoints: Option<Arc<dyn crate::ports::CheckpointRepository>>,
+}
+
+/// Why a task stopped because its worker could not go on, rather than
+/// failed: another worker can take it from where it stopped (ADR 0048).
+pub(crate) const WORKER_STOPPED: &str = "worker.stopped";
+
+/// Whether a worker's error means the worker cannot go on, rather than that
+/// the task went wrong: its budget is spent, or its model is unavailable,
+/// too slow, or answered in a way that cannot be used. A refusal, a
+/// cancellation or an unsafe history still ends the task.
+fn stops_the_worker(code: ErrorCode) -> bool {
+    matches!(
+        code,
+        ErrorCode::LimitExceeded
+            | ErrorCode::ProviderUnavailable
+            | ErrorCode::Timeout
+            | ErrorCode::ProtocolError
+            | ErrorCode::CapabilityUnsupported
+    )
+}
+
+/// Whether another worker could take this one's task: the built-in worker,
+/// in any of its configurations, whose tasks are portable (ADR 0048).
+fn can_be_handed_on(descriptor: &crate::contracts::AgentDescriptor) -> bool {
+    descriptor.checkpoint_support == crate::contracts::CheckpointSupport::Portable
+        && descriptor
+            .agent_id
+            .strip_prefix(crate::services::REFERENCE_AGENT_ID)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('@'))
 }
 
 impl TaskDriver {
@@ -86,7 +120,18 @@ impl TaskDriver {
             worker: None,
             resume: ResumePlan::default(),
             interrupt: CancellationToken::new(),
+            checkpoints: None,
         }
+    }
+
+    /// Save a checkpoint here when the worker stops without finishing, so
+    /// the task can be handed on. Without it such a task fails.
+    pub(crate) fn with_checkpoints(
+        mut self,
+        checkpoints: Arc<dyn crate::ports::CheckpointRepository>,
+    ) -> Self {
+        self.checkpoints = Some(checkpoints);
+        self
     }
 
     /// Run this task under `mode`.
@@ -217,6 +262,9 @@ impl TaskDriver {
             if let Err(error) = recorded {
                 if cancel.is_cancelled() {
                     self.finish_cancelled(state).await;
+                } else if self.can_pause(&error) {
+                    // No model for this worker now: kept for another.
+                    self.pause(state, error).await;
                 } else {
                     self.finish_failed(state, error).await;
                 }
@@ -312,7 +360,74 @@ impl TaskDriver {
             Err(error) if cancel.is_cancelled() && error.code == ErrorCode::Cancelled => {
                 self.finish_cancelled(state).await;
             }
+            Err(error) if self.can_pause(&error) => self.pause(state, error).await,
             Err(error) => self.finish_failed(state, error).await,
+        }
+    }
+
+    /// Whether this error stops the worker rather than the task, and the
+    /// task can be kept for another worker.
+    fn can_pause(&self, error: &ErrorEnvelope) -> bool {
+        stops_the_worker(error.code)
+            && self.checkpoints.is_some()
+            && can_be_handed_on(&self.worker().describe())
+    }
+
+    /// Stop a task its worker could not finish, keeping it for another
+    /// worker: interrupted, with the reason and a checkpoint (ADR 0048).
+    async fn pause(&self, from: TaskState, error: ErrorEnvelope) {
+        let Some(checkpoints) = &self.checkpoints else {
+            return self.finish_failed(from, error).await;
+        };
+        // The reason first: whoever stops reading at the state change has it.
+        let _ = self
+            .record(EventDraft::user(
+                TaskEventKind::DiagnosticRecorded,
+                EventPayload::DiagnosticRecorded {
+                    // Which error, as its contract name: `worker.stopped.limitExceeded`.
+                    code: format!(
+                        "{WORKER_STOPPED}.{}",
+                        serde_json::to_value(error.code)
+                            .ok()
+                            .and_then(|code| code.as_str().map(str::to_owned))
+                            .unwrap_or_default()
+                    ),
+                    summary: error.message,
+                },
+            ))
+            .await;
+        if self
+            .change_state(from, TaskState::Interrupted, WORKER_STOPPED)
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let Ok(events) = self.journal.replay().await else {
+            return;
+        };
+        let checkpoint = crate::services::checkpoint::derive_checkpoint(
+            crate::contracts::CheckpointId::new(self.journal.next_id("checkpoint")),
+            self.journal.task_id().clone(),
+            &events,
+            self.configuration
+                .as_ref()
+                .map(|configuration| configuration.manifest_hash.clone()),
+            self.journal.now(),
+        );
+        if checkpoints.save(&checkpoint).await.is_ok() {
+            let _ = self
+                .record(EventDraft::user(
+                    TaskEventKind::CheckpointSaved,
+                    EventPayload::CheckpointSaved {
+                        checkpoint_id: checkpoint.checkpoint_id.clone(),
+                        event_sequence: checkpoint.event_sequence,
+                        completed_step_count: checkpoint.completed_step_ids.len() as u64,
+                        pending_action: checkpoint.pending_action.clone(),
+                        resume: checkpoint.resume.clone(),
+                    },
+                ))
+                .await;
         }
     }
 
@@ -384,6 +499,7 @@ impl TaskDriver {
                 .iter()
                 .any(|class| *class != DataClass::Public)
         });
+        input.required = self.worker().pinned_model();
 
         let decision = route(self.journal.next_id("decision"), &input).map_err(|refusal| {
             ErrorEnvelope::new(
@@ -637,6 +753,7 @@ impl WorkerHost for BrokeredHost {
             tools,
             crate::ports::ToolAdmission::READ_ONLY,
             limits,
+            None,
             cancel,
         )
         .await
@@ -648,7 +765,18 @@ impl WorkerHost for BrokeredHost {
         limits: &crate::ports::ReadOnlyLimits,
         cancel: &CancellationToken,
     ) -> Result<crate::ports::ReadOnlyTurn, ErrorEnvelope> {
-        self.run_turn(tools, admission, limits, cancel).await
+        self.run_turn(tools, admission, limits, None, cancel).await
+    }
+    async fn pinned_turn(
+        &self,
+        tools: &[String],
+        admission: crate::ports::ToolAdmission,
+        limits: &crate::ports::ReadOnlyLimits,
+        model: &crate::contracts::RoutedModel,
+        cancel: &CancellationToken,
+    ) -> Result<crate::ports::ReadOnlyTurn, ErrorEnvelope> {
+        self.run_turn(tools, admission, limits, Some(model), cancel)
+            .await
     }
     async fn emit(&self, draft: EventDraft) -> Result<(), ErrorEnvelope> {
         if matches!(&draft.payload, EventPayload::DiagnosticRecorded { code, .. } if code.starts_with("reference."))

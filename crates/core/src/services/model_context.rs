@@ -66,11 +66,29 @@ impl std::fmt::Debug for PreparedModelContext {
 /// Secret-shaped content is refused, never silently edited after validation.
 /// The host must assign fresh request/context/decision IDs for every turn.
 pub fn prepare_model_context(
+    input: ModelContextInput,
+    decision_id: impl Into<String>,
+    mode: RoutingMode,
+    snapshot: AvailabilitySnapshot,
+    now: Timestamp,
+) -> Result<PreparedModelContext, ErrorEnvelope> {
+    prepare_model_context_on(input, decision_id, mode, snapshot, now, None)
+}
+
+/// [`prepare_model_context`] for a worker pinned to one model, which may use
+/// that model or none (ADR 0048).
+///
+/// # Errors
+///
+/// As [`prepare_model_context`], and [`ErrorCode::ProviderUnavailable`] when
+/// the required model cannot serve the request.
+pub fn prepare_model_context_on(
     mut input: ModelContextInput,
     decision_id: impl Into<String>,
     mode: RoutingMode,
     snapshot: AvailabilitySnapshot,
     now: Timestamp,
+    required: Option<&crate::contracts::RoutedModel>,
 ) -> Result<PreparedModelContext, ErrorEnvelope> {
     let correlation = CorrelationId::new("model-context");
     let invalid = || {
@@ -202,6 +220,7 @@ pub fn prepare_model_context(
     routing.required_capabilities =
         super::model_input::required_model_capabilities(&input.request)?;
     routing.carries_private_data = input.request.carries_private_data();
+    routing.required = required.cloned();
     let decision = route(decision_id, &routing).map_err(|refusal| {
         let code = if refusal
             .reason_codes

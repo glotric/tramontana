@@ -121,6 +121,49 @@ pub fn worker_choice(
     Arc::new(move |admission| assemble_worker(configured, admission, &app_tools))
 }
 
+/// The built-in worker pinned to a model, for a service that lets a person
+/// hand a task to it (ADR 0048). Offered what [`assemble_worker`] offers at
+/// the same admission, with the same limits.
+#[must_use]
+pub fn pinned_worker_choice(
+    app_tools: Vec<String>,
+) -> tramontana_core::services::PinnedWorkerChoice {
+    Arc::new(move |admission, model| {
+        Arc::new(
+            tramontana_core::services::ReferenceWorker::new(
+                offered_tools(admission, &app_tools),
+                tramontana_core::ports::ReadOnlyLimits::default(),
+            )
+            .admitting(admission)
+            .pinned(model.clone()),
+        )
+    })
+}
+
+/// The models a person may pin the built-in worker to: every model a
+/// configured endpoint offers whose tool calls are verified, since the
+/// worker cannot run on any other (ADR 0048).
+pub async fn pinnable_models(
+    providers: &[Arc<dyn ModelProvider>],
+) -> Vec<tramontana_core::services::PinnedModel> {
+    let mut models = Vec::new();
+    for provider in providers {
+        for model in provider.list_models().await {
+            if model.capabilities.contains(&ModelCapability::ToolCalls) {
+                models.push(tramontana_core::services::PinnedModel {
+                    model: tramontana_core::contracts::RoutedModel {
+                        provider_id: model.provider_id,
+                        model_id: model.model_id,
+                    },
+                    display_name: model.display_name,
+                    location: model.location,
+                });
+            }
+        }
+    }
+    models
+}
+
 /// The most tools one task's model may be offered.
 ///
 /// The catalogue's own limit: a selection naming more is refused whole

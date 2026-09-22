@@ -2,9 +2,7 @@
 use super::*;
 use crate::contracts::{EventEnvelope, MessagePart, TaskRecord};
 use crate::ports::{ReadOnlyLimits, ReadOnlyTurn, ToolAdmission};
-use crate::services::{
-    CanonicalModelHistory, ModelToolCatalogue, ToolInputSchema, prepare_model_context,
-};
+use crate::services::{CanonicalModelHistory, ModelToolCatalogue, ToolInputSchema};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -46,6 +44,7 @@ impl BrokeredHost {
         tools: &[String],
         admission: ToolAdmission,
         limits: &ReadOnlyLimits,
+        pinned: Option<&crate::contracts::RoutedModel>,
         cancel: &CancellationToken,
     ) -> Result<ReadOnlyTurn, ErrorEnvelope> {
         validate_limits(limits)?;
@@ -194,6 +193,18 @@ impl BrokeredHost {
                 all
             } => AvailabilitySnapshot { snapshot_id: self.journal.next_id("availability"), models, taken_at: self.journal.now() },
         };
+        // A pinned worker's model, and no other (ADR 0048).
+        if let Some(pinned) = pinned
+            && !snapshot.models.iter().any(|model| {
+                model.provider_id == pinned.provider_id && model.model_id == pinned.model_id
+            })
+        {
+            return Err(ErrorEnvelope::new(
+                ErrorCode::ProviderUnavailable,
+                "The model this worker uses is not available",
+                crate::contracts::CorrelationId::new("reference-worker"),
+            ));
+        }
         // Explicit capability facts, never provider or model name heuristics.
         if !snapshot.models.iter().any(|model| {
             model
@@ -204,12 +215,13 @@ impl BrokeredHost {
         }) {
             return Err(error(ErrorCode::CapabilityUnsupported));
         }
-        let prepared = prepare_model_context(
+        let prepared = crate::services::prepare_model_context_on(
             input,
             self.journal.next_id("decision"),
             self.routing_mode,
             snapshot,
             self.journal.now(),
+            pinned,
         )?;
         let turn = self
             .dispatch_model(
@@ -344,7 +356,15 @@ impl BrokeredHost {
             next.output_bytes,
             next.output_tokens,
         ];
-        for event in events {
+        // Steps are numbered across the whole task, since a step's number is
+        // its identity; the budget is counted since the last handover.
+        let ordinal = 1 + events
+            .iter()
+            .filter(|event| {
+                matches!(&event.payload, EventPayload::DiagnosticRecorded { code, .. } if code == BUDGET)
+            })
+            .count() as u64;
+        for event in since_handover(events) {
             if let EventPayload::DiagnosticRecorded { code, summary } = &event.payload {
                 if code != BUDGET {
                     continue;
@@ -415,7 +435,7 @@ impl BrokeredHost {
                 serde_json::to_string(&next).map_err(|_| error(ErrorCode::Internal))?,
             ))
             .await?;
-        Ok(totals[0])
+        Ok(ordinal)
     }
 
     async fn turn_tool(
@@ -504,9 +524,38 @@ fn error(code: ErrorCode) -> ErrorEnvelope {
         crate::contracts::CorrelationId::new("reference-worker"),
     )
 }
+/// What the task's model was last allowed to be offered, from its budget
+/// records: what a resumed or receiving worker must offer, no more and no
+/// less. `None` when it was never charged.
+pub(crate) fn recorded_admission(events: &[EventEnvelope]) -> Option<ToolAdmission> {
+    events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::DiagnosticRecorded { code, summary } if code == BUDGET => {
+            serde_json::from_str::<Reservation>(summary)
+                .ok()
+                .map(|reservation| reservation.admission)
+        }
+        _ => None,
+    })
+}
+
+/// The events of the current worker's session: those since the task was
+/// last handed to another worker, who starts with a budget of its own
+/// (ADR 0048). A resume by the same worker is not a handover, so it never
+/// replenishes a budget.
+fn since_handover(events: &[EventEnvelope]) -> &[EventEnvelope] {
+    let start = events
+        .iter()
+        .rposition(|event| {
+            matches!(&event.payload, EventPayload::TaskStateChanged { reason_code, .. }
+                if reason_code == crate::services::HANDED_OVER)
+        })
+        .map_or(0, |index| index + 1);
+    &events[start..]
+}
+
 /// The limits of the session's first budget record, if it has one.
 fn recorded_limits(events: &[EventEnvelope]) -> Result<Option<ReadOnlyLimits>, ErrorEnvelope> {
-    events
+    since_handover(events)
         .iter()
         .find_map(|event| match &event.payload {
             EventPayload::DiagnosticRecorded { code, summary } if code == BUDGET => Some(summary),
