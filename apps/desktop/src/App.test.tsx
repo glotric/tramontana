@@ -34,6 +34,7 @@ const listConfiguredEndpoints = vi.hoisted(() => vi.fn());
 const listModelEndpoints = vi.hoisted(() => vi.fn());
 const listProjectGrants = vi.hoisted(() => vi.fn());
 const watchTask = vi.hoisted(() => vi.fn());
+const listApps = vi.hoisted(() => vi.fn());
 const latestCheckpoint = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
@@ -59,6 +60,7 @@ vi.mock("./core.js", async () => {
     listProjectGrants,
     watchTask,
     latestCheckpoint,
+    listApps,
   };
 });
 
@@ -163,6 +165,62 @@ async function renderLoaded(): Promise<void> {
   await screen.findByRole("heading", { name: "M2 Conversation" });
 }
 
+/**
+ * The name a screen reader announces for a control, the ways this window
+ * gives one: `aria-labelledby`, `aria-label`, an associated `<label>`, or the
+ * control's own text.
+ */
+function accessibleName(element: HTMLElement): string {
+  const labelledBy = element.getAttribute("aria-labelledby");
+  if (labelledBy !== null) {
+    return labelledBy
+      .split(/\s+/)
+      .map((id) => document.getElementById(id)?.textContent ?? "")
+      .join(" ")
+      .trim();
+  }
+  const label = element.getAttribute("aria-label");
+  if (label !== null) return label.trim();
+  if (
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLTextAreaElement ||
+    element instanceof HTMLSelectElement
+  ) {
+    const labels = [...(element.labels ?? [])].map((each) => each.textContent);
+    if (labels.join("").trim() !== "") return labels.join(" ").trim();
+  }
+  return element.textContent.trim();
+}
+
+/** Every control on screen that a screen reader could not name. */
+function unnamedControls(): string[] {
+  const roles = [
+    "button",
+    "checkbox",
+    "radio",
+    "textbox",
+    "combobox",
+    "link",
+    "tab",
+    "switch",
+  ] as const;
+  return roles.flatMap((role) =>
+    screen
+      .queryAllByRole(role)
+      .filter((element) => accessibleName(element) === "")
+      .map((element) => `${role}: ${element.outerHTML.slice(0, 120)}`),
+  );
+}
+
+/** Ids used more than once, which break every label that points at one. */
+function duplicateIds(): string[] {
+  const seen = new Map<string, number>();
+  for (const element of document.querySelectorAll("[id]")) {
+    seen.set(element.id, (seen.get(element.id) ?? 0) + 1);
+  }
+  return [...seen].filter(([, count]) => count > 1).map(([id]) => id);
+}
+
 describe("M2 durable desktop surface", () => {
   beforeEach(() => {
     for (const mock of [
@@ -185,11 +243,13 @@ describe("M2 durable desktop surface", () => {
       listProjectGrants,
       watchTask,
       latestCheckpoint,
+      listApps,
     ]) {
       mock.mockReset();
     }
     watchTask.mockResolvedValue(undefined);
     latestCheckpoint.mockResolvedValue(undefined);
+    listApps.mockResolvedValue([]);
     listProjectGrants.mockResolvedValue([]);
     listConfiguredEndpoints.mockResolvedValue([]);
     listModelEndpoints.mockResolvedValue([]);
@@ -727,6 +787,41 @@ describe("M2 durable desktop surface", () => {
     expect(panel).toHaveTextContent("Resume");
     expect(latestCheckpoint).toHaveBeenCalledWith(task.taskId);
     expect(watchTask).not.toHaveBeenCalled();
+  });
+
+  it("names every control a screen reader reaches, in every view, with no id used twice", async () => {
+    // A running task with a question waiting, so the busiest screen is the
+    // one checked; then each settings view.
+    listTasks.mockResolvedValue([{ ...task, state: "running" as const, lastSequence: 2 }]);
+    listPendingApprovals.mockResolvedValue([approval("approval-1")]);
+    listConfiguredEndpoints.mockResolvedValue([
+      {
+        endpointId: "llama",
+        displayName: "Local Qwen",
+        kind: "llamaServer",
+        modelId: "qwen",
+        leavesTheDevice: false,
+        enabled: true,
+        supportsToolCalls: true,
+        runtime: { executable: "llama-server", executableStatus: "held" },
+      },
+    ]);
+    const user = userEvent.setup();
+    await renderLoaded();
+    await screen.findByRole("heading", { name: "Approval needed" });
+
+    expect(unnamedControls()).toEqual([]);
+    expect(duplicateIds()).toEqual([]);
+
+    await user.click(screen.getByRole("button", { name: "Models and credentials" }));
+    await screen.findByRole("heading", { name: "Local Qwen" });
+    expect(unnamedControls()).toEqual([]);
+    expect(duplicateIds()).toEqual([]);
+
+    await user.click(screen.getByRole("button", { name: "Apps" }));
+    await screen.findByText(/No Apps are configured/);
+    expect(unnamedControls()).toEqual([]);
+    expect(duplicateIds()).toEqual([]);
   });
 
   it("lists each configuration diagnostic with its severity, file and message", async () => {
