@@ -8,7 +8,7 @@
 )]
 
 use tramontana_core::contracts::{
-    AppConfig, AppLaunch, AppSecret, AppVariable, SecretRef, SecretStore, Timestamp,
+    AppConfig, AppLaunch, AppRemote, AppSecret, AppVariable, SecretRef, SecretStore, Timestamp,
 };
 use tramontana_core::ports::AppSettingsRepository;
 use tramontana_persistence::{Database, SqliteAppSettingsRepository};
@@ -51,6 +51,28 @@ async fn an_app_comes_back_as_it_was_configured() {
 
     apps.save(&notes()).await.unwrap();
     assert_eq!(apps.list().await.unwrap(), vec![notes()]);
+}
+
+#[tokio::test]
+async fn a_remote_app_comes_back_as_it_was_configured_beside_one_that_runs_here() {
+    // ADR 0050: kept in the same column, read back apart from launch settings.
+    let directory = tempfile::tempdir().unwrap();
+    let apps = repository(&directory).await;
+    let remote = AppConfig::remote(
+        "search",
+        "Search",
+        AppRemote {
+            url: "https://mcp.example.com/mcp".to_owned(),
+            token: Some(SecretRef {
+                key: "search.token".to_owned(),
+                store: SecretStore::Platform,
+            }),
+        },
+        Timestamp::new("2026-01-02T00:00:00.000Z"),
+    );
+    apps.save(&notes()).await.unwrap();
+    apps.save(&remote).await.unwrap();
+    assert_eq!(apps.list().await.unwrap(), vec![notes(), remote]);
 }
 
 #[tokio::test]

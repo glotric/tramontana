@@ -51,6 +51,7 @@ async fn only_the_tools_an_app_says_only_read_are_offered_to_a_model() {
             environment: Vec::new(),
             secrets: Vec::new(),
         },
+        remote: None,
         created_at: Timestamp::new("2026-01-01T00:00:00.000Z"),
     };
     let resolver = Arc::new(InMemorySecretVault::new()) as Arc<dyn SecretResolver>;

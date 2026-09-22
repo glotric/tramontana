@@ -5126,10 +5126,13 @@ name = "tramontana-adapters-mcp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures-util",
  "process-wrap",
+ "reqwest",
  "rmcp",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tracing",
@@ -5198,6 +5201,7 @@ dependencies = [
  "tramontana-adapters-local",
  "tramontana-adapters-mcp",
  "tramontana-adapters-model",
+ "tramontana-adapters-tools",
  "tramontana-core",
 ]
 

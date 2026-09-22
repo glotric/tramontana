@@ -17,13 +17,18 @@ process-wrap = { workspace = true }
 # The official MCP SDK, client side over plain streams only (ADR 0034).
 rmcp = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
+# A remote App's transport (ADR 0050): the same client and TLS as the model
+# adapters (ADRs 0007 and 0009).
+reqwest = { version = "0.13.4", default-features = false, features = ["stream", "native-tls"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio = { workspace = true, features = ["process", "io-util", "time", "rt", "sync", "macros"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
 
 # A hostile stand-in for an MCP server, used by this crate's tests. It speaks
 # the protocol by hand so it can misbehave in ways a real SDK would not let

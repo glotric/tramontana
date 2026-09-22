@@ -561,8 +561,10 @@ export interface AppView {
   readonly displayName: string;
   readonly enabled: boolean;
   readonly status: AppStatus;
-  /** The program's file name only. */
+  /** The program's file name only; empty for a remote App. */
   readonly program: string;
+  /** A remote App's address (ADR 0050); absent for one that runs here. */
+  readonly address?: string;
   /** Names of the variables and secrets it is given; never their values. */
   readonly variables: readonly string[];
   readonly secrets: readonly string[];

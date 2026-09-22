@@ -218,7 +218,16 @@ export function AppsView({ onClose }: AppsViewProps): React.JSX.Element {
             <li key={app.appId} className="endpoint">
               <h2>{app.displayName}</h2>
               <p>
-                <code>{app.appId}</code> · runs <code>{app.program}</code>
+                <code>{app.appId}</code> ·{" "}
+                {app.address === undefined ? (
+                  <>
+                    runs <code>{app.program}</code>
+                  </>
+                ) : (
+                  <>
+                    reached at <code>{app.address}</code>
+                  </>
+                )}
                 {app.protocolVersion !== undefined && <> · MCP {app.protocolVersion}</>}
               </p>
               <p className="endpoint-use">{describeStatus(app.status)}</p>

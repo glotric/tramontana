@@ -205,6 +205,8 @@ struct Tool {
     calls: AtomicUsize,
     hold: AtomicBool,
     secret: bool,
+    /// Answer with this many bytes, as a long file or page would.
+    big: usize,
     entered: Notify,
 }
 impl Tool {
@@ -213,6 +215,7 @@ impl Tool {
             calls: AtomicUsize::new(0),
             hold: AtomicBool::new(false),
             secret: false,
+            big: 0,
             entered: Notify::new(),
         }
     }
@@ -238,6 +241,9 @@ impl ToolProvider for Tool {
         let mut outcome = FakeToolProvider::new().invoke(request, cancel).await?;
         if self.secret {
             outcome.content = serde_json::json!({"text":"API_KEY=fixture-secret"});
+        }
+        if self.big > 0 {
+            outcome.content = serde_json::json!({"text": "fact ".repeat(self.big / 5)});
         }
         Ok(outcome)
     }
@@ -423,6 +429,84 @@ fn harness(model: Arc<Model>, tool: Arc<Tool>, limits: ReadOnlyLimits) -> Harnes
         limits,
         Arc::new(ScriptedApprover::unavailable()),
     )
+}
+
+#[tokio::test]
+async fn a_long_task_sends_its_model_the_newest_results_and_keeps_every_one() {
+    // ADR 0049: 30 KB a step would pass a small model's reach within a few
+    // steps and the 1 MiB input cap within forty.
+    let model = Arc::new(Model::new(Scenario::Loop));
+    let mut tool = Tool::new();
+    tool.big = 30_000;
+    let limits = ReadOnlyLimits {
+        steps: 8,
+        tools: 8,
+        ..ReadOnlyLimits::default()
+    };
+    let h = harness(model.clone(), Arc::new(tool), limits);
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start(&service, true).await;
+    let events = finished(&service, &task).await;
+    stopped(&events, ErrorCode::LimitExceeded);
+
+    let requests = model.requests.lock().unwrap();
+    let last = &requests.last().unwrap().request().messages;
+    let results: Vec<&serde_json::Value> = last
+        .iter()
+        .flat_map(|message| &message.parts)
+        .filter_map(|part| match part {
+            MessagePart::ToolResult { content, .. } => Some(content),
+            _ => None,
+        })
+        .collect();
+    assert!(results.len() >= 6, "{}", results.len());
+    let left_out = results
+        .iter()
+        .filter(|content| content.as_str() == Some(RESULT_LEFT_OUT))
+        .count();
+    assert_eq!(
+        left_out,
+        results.len() - 2,
+        "only the newest two fit in 64 KiB"
+    );
+    assert_ne!(results.last().unwrap().as_str(), Some(RESULT_LEFT_OUT));
+    assert!(serde_json::to_string(last).unwrap().len() < 100_000);
+
+    // The record keeps every result whole.
+    let recorded = events
+        .iter()
+        .filter(|event| {
+            matches!(&event.payload, EventPayload::MessageCommitted { message }
+            if message.parts.iter().any(|part| matches!(part,
+                MessagePart::ToolResult { content, .. } if content.to_string().len() > 29_000)))
+        })
+        .count();
+    assert!(recorded >= results.len(), "{recorded}");
+}
+
+#[tokio::test]
+async fn the_model_is_told_how_the_worker_works_before_the_goal() {
+    // ADR 0049: Tramontana's own instructions, first, on every turn.
+    let model = Arc::new(Model::new(Scenario::Answer));
+    let h = harness(
+        model.clone(),
+        Arc::new(Tool::new()),
+        ReadOnlyLimits::default(),
+    );
+    let service = h.service(RoutingMode::LocalOnly);
+    let task = start(&service, true).await;
+    finished(&service, &task).await;
+    let requests = model.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests.iter() {
+        let messages = &request.request().messages;
+        assert_eq!(messages[0].role, MessageRole::System);
+        assert!(matches!(
+            messages[0].parts.as_slice(),
+            [MessagePart::Text { text }] if text == WORKER_INSTRUCTIONS
+        ));
+        assert_eq!(messages[1].role, MessageRole::User);
+    }
 }
 
 #[tokio::test]

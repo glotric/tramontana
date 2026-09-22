@@ -1,4 +1,4 @@
-//! MCP Apps over stdio.
+//! MCP Apps, over stdio or Streamable HTTP.
 //!
 //! An App is an MCP server Tramontana starts on the person's configuration.
 //! This crate owns that process and speaks its protocol through rmcp
@@ -13,13 +13,14 @@
 //! restricted schema compiler or the tool is refused; each line it writes is
 //! bounded before rmcp reads it; and its results are cut to a limit.
 //!
-//! Only stdio is supported. Streamable HTTP and OAuth are deferred by a
-//! recorded exception (ADR 0034), which is a limit of this adapter, not of
-//! the port.
+//! Over stdio, or to a remote App over Streamable HTTP with a token from the
+//! credential store (ADR 0050), through a transport of this crate's own that
+//! bounds what it reads. OAuth sign-in is not supported.
 
 mod app;
 mod bounded;
 mod descriptor;
+mod http;
 
-pub use app::{AppHealth, McpApp, McpLimits, McpServerSpec, StartError};
+pub use app::{AppHealth, McpApp, McpLimits, McpRemoteSpec, McpServerSpec, StartError};
 pub use descriptor::Refusal;
