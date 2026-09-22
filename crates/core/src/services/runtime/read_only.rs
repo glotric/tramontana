@@ -167,7 +167,7 @@ impl BrokeredHost {
         }
 
         let history = CanonicalModelHistory::select(&task, initial, &events, &selected)?;
-        let mut input = history.into_input(
+        let mut input = history.into_worker_input(
             self.journal.next_id("stream"),
             self.journal.next_id("context"),
             catalogue,

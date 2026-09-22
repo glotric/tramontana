@@ -48,7 +48,9 @@ pub use model_context::{
     ModelContentProvenance, ModelContextInput, PreparedModelContext, prepare_model_context,
     prepare_model_context_on,
 };
-pub use model_history::CanonicalModelHistory;
+pub use model_history::{
+    CanonicalModelHistory, HISTORY_RESULT_BYTES, RESULT_LEFT_OUT, WORKER_INSTRUCTIONS,
+};
 pub use model_input::{
     MODEL_INPUT_BYTES, model_input_content, validate_model_capabilities, validate_model_input,
 };

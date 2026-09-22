@@ -5198,6 +5198,7 @@ dependencies = [
  "tramontana-adapters-local",
  "tramontana-adapters-mcp",
  "tramontana-adapters-model",
+ "tramontana-adapters-tools",
  "tramontana-core",
 ]
 
