@@ -98,3 +98,11 @@ dbg_macro = "warn"
 strip = true
 lto = "thin"
 codegen-units = 1
+
+# Code that runs only while building — procedural macros and build scripts —
+# is not stripped. `strip = true` reaches them too, and on macOS 27 Apple's
+# `strip` leaves a proc-macro library its own loader then refuses ("mis-aligned
+# LINKEDIT string pool"), so `sqlx`'s macros could not load and no release
+# built. What ships is still stripped.
+[profile.release.build-override]
+strip = false
