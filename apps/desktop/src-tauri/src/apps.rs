@@ -69,6 +69,9 @@ pub(crate) struct AppView {
     /// The program's file name. Its full path names a folder, and usually a
     /// person.
     pub program: String,
+    /// A remote App's address (ADR 0050); absent for one that runs here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
     /// The names of the variables it is given; never their values.
     pub variables: Vec<String>,
     /// The names of the secrets it is given; never their values.
@@ -162,6 +165,7 @@ async fn view(state: &AppState, config: AppConfig) -> AppView {
 
     AppView {
         program: file_name(&config.launch.program),
+        address: config.remote.as_ref().map(|remote| remote.url.clone()),
         variables: config
             .launch
             .environment

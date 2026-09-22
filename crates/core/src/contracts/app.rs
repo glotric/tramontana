@@ -78,6 +78,18 @@ pub struct AppLaunch {
     pub secrets: Vec<AppSecret>,
 }
 
+/// Where a remote App is, and how Tramontana signs in to it (ADR 0050).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AppRemote {
+    /// Its address: `https://`, or `http://` on this computer only.
+    pub url: String,
+    /// The token sent to it as a bearer credential, by reference to the
+    /// credential store. Absent for an App that needs none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<SecretRef>,
+}
+
 /// One configured App.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -93,8 +105,12 @@ pub struct AppConfig {
     /// Separate from removing it, as for a model endpoint: turning an App off
     /// for a while should not cost its configuration.
     pub enabled: bool,
-    /// How to start it.
+    /// How to start it, for an App that runs on this computer over stdio.
+    /// Empty for a remote one.
     pub launch: AppLaunch,
+    /// Where it is, for an App reached over HTTP instead (ADR 0050).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<AppRemote>,
     /// When it was configured.
     pub created_at: Timestamp,
 }
@@ -114,7 +130,33 @@ impl AppConfig {
             display_name: display_name.into(),
             enabled: true,
             launch,
+            remote: None,
             created_at,
+        }
+    }
+
+    /// Configure a remote App, enabled (ADR 0050).
+    #[must_use]
+    pub fn remote(
+        app_id: impl Into<String>,
+        display_name: impl Into<String>,
+        remote: AppRemote,
+        created_at: Timestamp,
+    ) -> Self {
+        Self {
+            remote: Some(remote),
+            ..Self::new(
+                app_id,
+                display_name,
+                AppLaunch {
+                    program: String::new(),
+                    arguments: Vec::new(),
+                    working_directory: None,
+                    environment: Vec::new(),
+                    secrets: Vec::new(),
+                },
+                created_at,
+            )
         }
     }
 }

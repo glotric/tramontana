@@ -129,6 +129,28 @@ pub async fn start_app(
     if !is_valid_app_id(&config.app_id) {
         return Err(format!("`{}` is not a valid App identifier", config.app_id));
     }
+    // A remote App is reached, not started: no folder, no process
+    // (ADR 0050). Its token is read now and sent only to its address.
+    if let Some(remote) = &config.remote {
+        let token = match &remote.token {
+            Some(reference) => Some(
+                resolver
+                    .resolve(reference)
+                    .await
+                    .map_err(|error| format!("its token could not be read: {}", error.message))?,
+            ),
+            None => None,
+        };
+        return McpApp::connect(tramontana_adapters_mcp::McpRemoteSpec {
+            app_id: config.app_id.clone(),
+            display_name: config.display_name.clone(),
+            url: remote.url.clone(),
+            token,
+            limits: McpLimits::default(),
+        })
+        .await
+        .map_err(|error| error.to_string());
+    }
     let folder = match &config.launch.working_directory {
         Some(path) => PathBuf::from(path),
         None => {

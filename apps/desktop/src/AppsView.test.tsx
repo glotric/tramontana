@@ -61,6 +61,22 @@ describe("the Apps screen", () => {
     );
   });
 
+  it("says where a remote App is reached, rather than a program", async () => {
+    listApps.mockResolvedValue([
+      {
+        ...running,
+        program: "",
+        address: "https://mcp.example.com/mcp",
+        variables: [],
+        secrets: [],
+      },
+    ]);
+    render(<AppsView onClose={() => undefined} />);
+    const app = within(await screen.findByRole("list", { name: "Configured Apps" }));
+    expect(app.getByText("https://mcp.example.com/mcp")).toBeInTheDocument();
+    expect(app.queryByText(/runs/)).not.toBeInTheDocument();
+  });
+
   it("names what an App is given, never the values", async () => {
     render(<AppsView onClose={() => undefined} />);
     expect(

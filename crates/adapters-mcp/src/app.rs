@@ -163,21 +163,55 @@ impl Drop for OwnedServer {
 
 /// A started App: its connection, its process and the tools it offered.
 pub struct McpApp {
-    spec: McpServerSpec,
+    app_id: String,
+    limits: McpLimits,
+    /// The site a remote App is reached at, such as `https://mcp.example.com`.
+    /// `None` for an App running on this computer as a process of ours.
+    remote: Option<String>,
     peer: Peer<RoleClient>,
     service: Mutex<Option<RunningService<RoleClient, ()>>>,
-    server: Mutex<OwnedServer>,
+    /// The process tree of an App over stdio.
+    server: Mutex<Option<OwnedServer>>,
     tools: Vec<AppTool>,
     refused: Vec<Refusal>,
     protocol_version: String,
     stderr: StderrTail,
     oversized: Arc<AtomicBool>,
+    /// The last HTTP failure of a remote App, in words.
+    failure: crate::http::LastFailure,
+}
+
+/// A remote App, reached over MCP's Streamable HTTP (ADR 0050).
+#[derive(Clone)]
+pub struct McpRemoteSpec {
+    /// The App's identifier, which namespaces its tools as `mcp.<app_id>.`.
+    pub app_id: String,
+    /// What to call it.
+    pub display_name: String,
+    /// Its one address: `https://`, or `http://` on this computer only.
+    pub url: String,
+    /// The token sent to it as a bearer credential, from the credential
+    /// store. Never sent anywhere else: redirects are not followed.
+    pub token: Option<String>,
+    /// Its limits.
+    pub limits: McpLimits,
+}
+
+impl std::fmt::Debug for McpRemoteSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpRemoteSpec")
+            .field("app_id", &self.app_id)
+            .field("url", &self.url)
+            .field("token", &self.token.as_ref().map(|_| "(set)"))
+            .finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for McpApp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpApp")
-            .field("app_id", &self.spec.app_id)
+            .field("app_id", &self.app_id)
+            .field("remote", &self.remote)
             .field("tools", &self.tools.len())
             .field("refused", &self.refused.len())
             .field("protocol_version", &self.protocol_version)
@@ -246,23 +280,104 @@ impl McpApp {
                     ));
                 }
             };
+        Self::finish(
+            spec.app_id,
+            spec.limits,
+            None,
+            service,
+            Some(server),
+            stderr,
+            oversized,
+            Arc::new(std::sync::Mutex::new(None)),
+        )
+        .await
+    }
+
+    /// Reach a remote App over MCP's Streamable HTTP, complete initialize,
+    /// and list its tools (ADR 0050).
+    ///
+    /// # Errors
+    ///
+    /// [`StartError`] when the configuration is not allowed, or the App does
+    /// not initialize or list its tools in time. Nothing is left open.
+    pub async fn connect(spec: McpRemoteSpec) -> Result<Self, StartError> {
+        let url = validate_remote(&spec)?;
+        let origin = url.origin().ascii_serialization();
+        let oversized = Arc::new(AtomicBool::new(false));
+        let failure: crate::http::LastFailure = Arc::new(std::sync::Mutex::new(None));
+        let transport = crate::http::HttpTransport::new(
+            url,
+            spec.token.clone(),
+            spec.limits.max_line,
+            spec.limits.call_timeout.max(spec.limits.start_timeout),
+            Arc::clone(&oversized),
+            Arc::clone(&failure),
+        )
+        .map_err(|error| StartError::Initialize(error.0))?;
+        let service =
+            match tokio::time::timeout(spec.limits.start_timeout, ().serve(transport)).await {
+                Ok(Ok(service)) => service,
+                Ok(Err(error)) => {
+                    let why = failure
+                        .lock()
+                        .ok()
+                        .and_then(|failure| failure.clone())
+                        .unwrap_or_else(|| shown(&error.to_string(), 200));
+                    return Err(StartError::Initialize(why));
+                }
+                Err(_) => {
+                    return Err(StartError::Initialize(
+                        "it did not answer in time".to_owned(),
+                    ));
+                }
+            };
+        Self::finish(
+            spec.app_id,
+            spec.limits,
+            Some(origin),
+            service,
+            None,
+            StderrTail::default(),
+            oversized,
+            failure,
+        )
+        .await
+    }
+
+    /// What starting and connecting share: listing the tools, bounded.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the parts of an App that either way of reaching it provides"
+    )]
+    async fn finish(
+        app_id: String,
+        limits: McpLimits,
+        remote: Option<String>,
+        service: RunningService<RoleClient, ()>,
+        mut server: Option<OwnedServer>,
+        stderr: StderrTail,
+        oversized: Arc<AtomicBool>,
+        failure: crate::http::LastFailure,
+    ) -> Result<Self, StartError> {
         let protocol_version = service
             .peer_info()
             .map(|info| info.protocol_version.to_string())
             .unwrap_or_default();
         let peer = service.peer().clone();
 
-        let listed = match list_tools(&peer, &spec.limits).await {
+        let listed = match list_tools(&peer, &limits).await {
             Ok(listed) => listed,
             Err(error) => {
                 let _ = service.cancel().await;
-                server.stop().await;
+                if let Some(server) = server.as_mut() {
+                    server.stop().await;
+                }
                 return Err(StartError::ListTools(error));
             }
         };
-        let mut discovered = discover(&spec.app_id, listed);
-        if discovered.tools.len() > spec.limits.max_tools {
-            for tool in discovered.tools.drain(spec.limits.max_tools..) {
+        let mut discovered = discover(&app_id, listed);
+        if discovered.tools.len() > limits.max_tools {
+            for tool in discovered.tools.drain(limits.max_tools..) {
                 discovered.refused.push(Refusal {
                     name: shown(&tool.name, crate::descriptor::MAX_NAME),
                     reason: "the App offered more tools than the limit",
@@ -271,7 +386,9 @@ impl McpApp {
         }
 
         Ok(Self {
-            spec,
+            app_id,
+            limits,
+            remote,
             peer,
             service: Mutex::new(Some(service)),
             server: Mutex::new(server),
@@ -280,13 +397,20 @@ impl McpApp {
             protocol_version,
             stderr,
             oversized,
+            failure,
         })
     }
 
     /// The App's identifier.
     #[must_use]
     pub fn app_id(&self) -> &str {
-        &self.spec.app_id
+        &self.app_id
+    }
+
+    /// The site a remote App is reached at; `None` for one on this computer.
+    #[must_use]
+    pub fn remote(&self) -> Option<&str> {
+        self.remote.as_deref()
     }
 
     /// The MCP protocol version the App answered with.
@@ -304,7 +428,7 @@ impl McpApp {
     /// The last of what the App wrote to stderr, redacted.
     #[must_use]
     pub fn diagnostics(&self) -> String {
-        shown(&self.stderr.text(), self.spec.limits.stderr_tail)
+        shown(&self.stderr.text(), self.limits.stderr_tail)
     }
 
     /// Whether the App is still running and connected.
@@ -315,6 +439,21 @@ impl McpApp {
             };
         }
         let mut server = self.server.lock().await;
+        let Some(server) = server.as_mut() else {
+            // A remote App: there is no process, only the connection.
+            return if self.peer.is_transport_closed() {
+                AppHealth::Stopped {
+                    reason: self
+                        .failure
+                        .lock()
+                        .ok()
+                        .and_then(|failure| failure.clone())
+                        .unwrap_or_else(|| "the App's connection closed".to_owned()),
+                }
+            } else {
+                AppHealth::Running
+            };
+        };
         match server.child.try_wait() {
             Ok(None) if !server.stopped && !self.peer.is_transport_closed() => AppHealth::Running,
             Ok(Some(status)) => AppHealth::Stopped {
@@ -331,14 +470,16 @@ impl McpApp {
         if let Some(service) = self.service.lock().await.take() {
             let _ = tokio::time::timeout(Duration::from_secs(2), service.cancel()).await;
         }
-        self.server.lock().await.stop().await;
+        if let Some(server) = self.server.lock().await.as_mut() {
+            server.stop().await;
+        }
     }
 
     fn error(&self, code: ErrorCode, message: impl Into<String>) -> ErrorEnvelope {
         ErrorEnvelope::new(
             code,
             message,
-            CorrelationId::new(format!("mcp.{}", self.spec.app_id)),
+            CorrelationId::new(format!("mcp.{}", self.app_id)),
         )
     }
 
@@ -355,7 +496,14 @@ impl McpApp {
                 "The App did not answer in time; the call was cancelled",
             ),
             ServiceError::TransportClosed | ServiceError::TransportSend(_) => {
-                self.error(ErrorCode::ToolFailed, "The App stopped during the call")
+                match self.failure.lock().ok().and_then(|failure| failure.clone()) {
+                    // A remote App's own words: a refused token, a timeout.
+                    Some(why) if self.remote.is_some() => self.error(
+                        ErrorCode::ToolFailed,
+                        format!("The call to the App failed: {why}"),
+                    ),
+                    _ => self.error(ErrorCode::ToolFailed, "The App stopped during the call"),
+                }
             }
             ServiceError::McpError(data) => self.error(
                 ErrorCode::ToolFailed,
@@ -375,7 +523,7 @@ impl McpApp {
         tool: &AppTool,
         result: CallToolResult,
     ) -> Result<ToolOutcome, ErrorEnvelope> {
-        let limit = self.spec.limits.max_result_text;
+        let limit = self.limits.max_result_text;
         let mut text = String::new();
         let mut omitted = 0_usize;
         for block in &result.content {
@@ -464,6 +612,34 @@ async fn list_tools(
     Ok(tools)
 }
 
+/// Whether a remote App's address may be used, and the address.
+///
+/// `https://` anywhere, or `http://` on this computer only, as for model
+/// endpoints (ADR 0009); no name or password in the address, which would
+/// travel with every request and could not be kept in the credential store.
+fn validate_remote(spec: &McpRemoteSpec) -> Result<reqwest::Url, StartError> {
+    if !tramontana_core::contracts::is_valid_app_id(&spec.app_id) {
+        return Err(StartError::Invalid(
+            "an App's identifier is lowercase letters, digits, `_` and `-`, at most 32",
+        ));
+    }
+    let url = reqwest::Url::parse(&spec.url)
+        .map_err(|_| StartError::Invalid("an App's address is not a web address"))?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(StartError::Invalid(
+            "an App's address may not carry a name or password; store a token instead",
+        ));
+    }
+    match url.scheme() {
+        "https" => Ok(url),
+        "http" if tramontana_core::contracts::is_loopback_url(url.as_str()) => Ok(url),
+        "http" => Err(StartError::Invalid(
+            "an App off this computer is reached over https only",
+        )),
+        _ => Err(StartError::Invalid("an App's address is http or https")),
+    }
+}
+
 fn validate(spec: &McpServerSpec) -> Result<(), StartError> {
     // One definition of what an App may be called, shared with the contract
     // that persists it and the folder named after it (ADR 0036).
@@ -497,7 +673,7 @@ fn validate(spec: &McpServerSpec) -> Result<(), StartError> {
 #[async_trait]
 impl ToolProvider for McpApp {
     fn id(&self) -> ProviderId {
-        ProviderId::new(format!("mcp.{}", self.spec.app_id))
+        ProviderId::new(format!("mcp.{}", self.app_id))
     }
 
     fn list_tools(&self) -> Vec<ToolDescriptor> {
@@ -505,6 +681,38 @@ impl ToolProvider for McpApp {
             .iter()
             .map(|tool| tool.descriptor.clone())
             .collect()
+    }
+
+    /// A remote App's calls go to its site, which every question names: the
+    /// call's arguments leave this device (ADR 0050). Every call is still
+    /// asked about, so the site is never allowed for the task.
+    async fn target(
+        &self,
+        _task_id: &tramontana_core::contracts::TaskId,
+        _tool_id: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<tramontana_core::ports::ToolTarget, ErrorEnvelope> {
+        Ok(tramontana_core::ports::ToolTarget {
+            site: self
+                .remote
+                .as_ref()
+                .map(|origin| tramontana_core::ports::SiteAccess {
+                    origin: origin.clone(),
+                    grantable: false,
+                }),
+            details: self
+                .remote
+                .iter()
+                .map(|origin| tramontana_core::contracts::ApprovalDetail {
+                    label: "Sends to".to_owned(),
+                    value: origin.clone(),
+                })
+                .collect(),
+        })
+    }
+
+    fn remote_site(&self) -> Option<String> {
+        self.remote.clone()
     }
 
     async fn invoke(
@@ -530,7 +738,7 @@ impl ToolProvider for McpApp {
         }
 
         let mut options = PeerRequestOptions::no_options();
-        options.timeout = Some(self.spec.limits.call_timeout);
+        options.timeout = Some(self.limits.call_timeout);
         let handle = self
             .peer
             .send_request_with_option(

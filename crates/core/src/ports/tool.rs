@@ -104,6 +104,13 @@ pub trait ToolProvider: Send + Sync {
         Ok(ToolTarget::default())
     }
 
+    /// The site this provider sends every call to, when it is not on this
+    /// computer: a remote App's (ADR 0050). A task that runs Local Only is
+    /// not offered its tools, and refused them if it asks.
+    fn remote_site(&self) -> Option<String> {
+        None
+    }
+
     /// A task has ended, however it ended, or was interrupted. A provider
     /// that holds something for the task, such as a browser window, lets it
     /// go. Nothing by default.

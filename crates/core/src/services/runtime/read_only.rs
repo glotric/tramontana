@@ -75,7 +75,13 @@ impl BrokeredHost {
         // Validate the whole canonical prefix even when resuming an incomplete
         // exchange, for which selecting all message parts would be premature.
         CanonicalModelHistory::select(&task, initial, &events, &[])?;
-        let names: Vec<_> = tools.iter().map(String::as_str).collect();
+        // Under Local Only, an App that is not on this computer is not
+        // offered: its every call sends the task's data to it (ADR 0050).
+        let names: Vec<_> = tools
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !self.reaches_off_device_under_local_only(name))
+            .collect();
         let catalogue = ModelToolCatalogue::select(&self.tools.registry, &names, admission)?;
         if names.is_empty() {
             return Err(error(ErrorCode::CapabilityUnsupported));

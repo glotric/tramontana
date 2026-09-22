@@ -1,4 +1,5 @@
-//! Configuring Apps: MCP servers Tramontana starts (ADR 0036).
+//! Configuring Apps: MCP servers Tramontana starts (ADR 0036), or reaches
+//! over HTTP (ADR 0050).
 //!
 //! Apps are profile-scoped, as model endpoints are. A secret is never given
 //! here: `--secret NAME=KEY` names a key in the operating system store, put
@@ -10,8 +11,8 @@ use std::sync::Arc;
 
 use clap::{Args, Subcommand};
 use tramontana_core::contracts::{
-    AppConfig, AppLaunch, AppSecret, AppVariable, RiskClass, SecretRef, SecretStore,
-    is_valid_app_id,
+    AppConfig, AppLaunch, AppRemote, AppSecret, AppVariable, RiskClass, SecretRef, SecretStore,
+    is_loopback_url, is_valid_app_id,
 };
 use tramontana_core::ports::{AppSettingsRepository, Clock, SecretResolver, ToolProvider};
 use tramontana_persistence::{Database, SqliteAppSettingsRepository};
@@ -37,6 +38,8 @@ pub(crate) struct AppArgs {
 enum AppCommand {
     /// Configure an MCP server Tramontana starts over stdio.
     Add(AddArgs),
+    /// Configure a remote MCP server reached over HTTP (ADR 0050).
+    AddRemote(AddRemoteArgs),
     /// List configured Apps.
     List(ProfileOnly),
     /// Turn an App on or off without losing its configuration.
@@ -77,6 +80,26 @@ struct AddArgs {
 }
 
 #[derive(Debug, Args)]
+struct AddRemoteArgs {
+    /// Identifier: lowercase letters, digits, `_` and `-`. Its tools become
+    /// `mcp.<ID>.<tool>`.
+    #[arg(value_name = "ID")]
+    id: String,
+    /// Its address: `https://`, or `http://` on this computer only.
+    #[arg(long, value_name = "URL")]
+    url: String,
+    /// The key of its token in the OS credential store, put there by
+    /// `tramontana secret set`. Sent to this address only, as a bearer token.
+    #[arg(long, value_name = "KEY")]
+    token_secret: Option<String>,
+    /// Display name. Defaults to the identifier.
+    #[arg(long, value_name = "NAME")]
+    name: Option<String>,
+    #[command(flatten)]
+    profile: ProfileArgs,
+}
+
+#[derive(Debug, Args)]
 struct ProfileOnly {
     #[command(flatten)]
     profile: ProfileArgs,
@@ -107,6 +130,7 @@ struct IdArgs {
 pub(crate) async fn execute(args: AppArgs) -> ExitCode {
     let result = match args.command {
         AppCommand::Add(args) => add(args).await,
+        AppCommand::AddRemote(args) => add_remote(args).await,
         AppCommand::List(args) => list(args.profile).await,
         AppCommand::Enable(args) => toggle(args).await,
         AppCommand::Remove(args) => remove(args).await,
@@ -211,6 +235,54 @@ async fn add(args: AddArgs) -> Result<(), String> {
     Ok(())
 }
 
+async fn add_remote(args: AddRemoteArgs) -> Result<(), String> {
+    if !is_valid_app_id(&args.id) {
+        return Err(format!(
+            "`{}` is not a valid App identifier: lowercase letters, digits, `_` and `-`",
+            args.id
+        ));
+    }
+    let local = is_loopback_url(&args.url);
+    if !(args.url.starts_with("https://") || args.url.starts_with("http://") && local) {
+        return Err("--url must be https://, or http:// on this computer".to_owned());
+    }
+    let settings = settings(args.profile).await?;
+    let config = AppConfig::remote(
+        &args.id,
+        args.name.clone().unwrap_or_else(|| args.id.clone()),
+        AppRemote {
+            url: args.url.clone(),
+            token: args.token_secret.clone().map(|key| SecretRef {
+                key,
+                store: SecretStore::Platform,
+            }),
+        },
+        SystemClock::new().now(),
+    );
+    settings
+        .save(&config)
+        .await
+        .map_err(|error| format!("could not save the App: {error}"))?;
+    println!(
+        "configured {} -> {} (its tools become mcp.{}.<tool>)",
+        config.app_id, args.url, config.app_id
+    );
+    if let Some(key) = &args.token_secret {
+        println!(
+            "  its token from the credential store (set it with `tramontana secret set {key}`)"
+        );
+    }
+    if local {
+        println!("  on this computer: offered under Local Only too");
+    } else {
+        println!(
+            "  off this computer: never offered under Local Only, and every call says where it goes"
+        );
+    }
+    println!("  a task is offered its tools only with --apps, and each call is asked about");
+    Ok(())
+}
+
 async fn list(profile: ProfileArgs) -> Result<(), String> {
     let apps = settings(profile)
         .await?
@@ -226,7 +298,9 @@ async fn list(profile: ProfileArgs) -> Result<(), String> {
             "{:<20} {:<8} {}",
             app.app_id,
             if app.enabled { "enabled" } else { "disabled" },
-            app.launch.program,
+            app.remote
+                .as_ref()
+                .map_or(app.launch.program.as_str(), |remote| remote.url.as_str()),
         );
     }
     Ok(())

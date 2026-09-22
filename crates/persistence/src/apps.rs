@@ -42,6 +42,9 @@ impl AppSettingsRepository for SqliteAppSettingsRepository {
         for row in rows {
             let config: String = row.try_get("config").map_err(|e| unavailable(&e))?;
             let schema_version: i64 = row.try_get("schema_version").map_err(|e| unavailable(&e))?;
+            // A remote App's column holds `{"remote": ...}` (ADR 0050); any
+            // other holds the launch settings, as every row did before.
+            let stored: Stored = parse_json(&config, "App configuration")?;
             apps.push(AppConfig {
                 schema_version: u32::try_from(schema_version).unwrap_or(SCHEMA_VERSION),
                 app_id: row.try_get("app_id").map_err(|e| unavailable(&e))?,
@@ -49,7 +52,8 @@ impl AppSettingsRepository for SqliteAppSettingsRepository {
                 enabled: row
                     .try_get::<bool, _>("enabled")
                     .map_err(|e| unavailable(&e))?,
-                launch: parse_json(&config, "App configuration")?,
+                launch: stored.launch,
+                remote: stored.remote,
                 created_at: Timestamp::new(
                     row.try_get::<String, _>("created_at")
                         .map_err(|e| unavailable(&e))?,
@@ -74,7 +78,13 @@ impl AppSettingsRepository for SqliteAppSettingsRepository {
         .bind(&app.app_id)
         .bind(&app.display_name)
         .bind(app.enabled)
-        .bind(to_json(&app.launch, "App configuration")?)
+        .bind(match &app.remote {
+            Some(remote) => to_json(
+                &serde_json::json!({ "remote": remote }),
+                "App configuration",
+            )?,
+            None => to_json(&app.launch, "App configuration")?,
+        })
         .bind(app.created_at.as_str())
         .bind(i64::from(app.schema_version))
         .execute(self.database.pool())
@@ -90,5 +100,35 @@ impl AppSettingsRepository for SqliteAppSettingsRepository {
             .await
             .map_err(|error| unavailable(&error))?;
         Ok(result.rows_affected() > 0)
+    }
+}
+
+/// What the `config` column holds: launch settings, or a remote address.
+struct Stored {
+    launch: tramontana_core::contracts::AppLaunch,
+    remote: Option<tramontana_core::contracts::AppRemote>,
+}
+
+impl<'de> serde::Deserialize<'de> for Stored {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value.get("remote") {
+            Some(remote) if value.get("program").is_none() => Ok(Self {
+                launch: tramontana_core::contracts::AppLaunch {
+                    program: String::new(),
+                    arguments: Vec::new(),
+                    working_directory: None,
+                    environment: Vec::new(),
+                    secrets: Vec::new(),
+                },
+                remote: Some(
+                    serde_json::from_value(remote.clone()).map_err(serde::de::Error::custom)?,
+                ),
+            }),
+            _ => Ok(Self {
+                launch: serde_json::from_value(value).map_err(serde::de::Error::custom)?,
+                remote: None,
+            }),
+        }
     }
 }

@@ -173,7 +173,7 @@ impl ProviderConfig {
             // proxy in front of it is still a route off this device.
             Self::Anthropic { .. } => ModelLocation::Cloud,
             Self::OpenAiCompatible { base_url, .. } => {
-                if is_loopback(base_url) {
+                if is_loopback_url(base_url) {
                     ModelLocation::Local
                 } else {
                     ModelLocation::Cloud
@@ -188,8 +188,9 @@ impl ProviderConfig {
 /// Parsed rather than searched: a URL merely *containing* `localhost` — in a
 /// path, a query, or userinfo before an `@` — addresses whatever host follows
 /// it. Getting this wrong would mark a third-party endpoint as local and
-/// exempt it from disclosure.
-fn is_loopback(base_url: &str) -> bool {
+/// exempt it from disclosure. Shared with remote Apps (ADR 0050).
+#[must_use]
+pub fn is_loopback_url(base_url: &str) -> bool {
     let Some(rest) = base_url
         .strip_prefix("http://")
         .or_else(|| base_url.strip_prefix("https://"))

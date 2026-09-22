@@ -35,9 +35,11 @@ gates V1–V3 are closed; each left an evidence note in
 - **In progress:** gate V4, whether someone other than the author can operate
   the desktop from this README. Its automated checks pass; its
   demonstration has not run.
-- **Built:** MCP Apps over stdio (M9). Added from the CLI
-  (`tramontana app add`); seen, turned on and off, and their decisions read
-  in the desktop's **Apps** view; allowed for a task with **May use Apps**.
+- **Built:** MCP Apps over stdio (M9), and remote ones over Streamable HTTP
+  with a token kept in the Keychain (ADR 0050). Added from the CLI
+  (`tramontana app add`, `tramontana app add-remote`); seen, turned on and
+  off, and their decisions read in the desktop's **Apps** view; allowed for a
+  task with **May use Apps**. A remote App is never used under Local Only.
 - **Built, beyond Beta 1's scope:** a built-in browser (ADR 0047). A task
   allowed **May browse the web** opens pages in a window of your installed
   Chrome, Edge or Chromium, with a throwaway profile of its own. The first
@@ -205,7 +207,7 @@ crates/core/        Provider-neutral Rust domain and application services
 crates/persistence/ SQLite implementation of the local operational plane
 crates/platform/    Paths, clock, identifiers, profile lease, bundle files
 crates/adapters-tools/  Filesystem, Git and recipe tools, and the command broker
-crates/adapters-mcp/    MCP Apps over stdio, behind the tool port
+crates/adapters-mcp/    MCP Apps over stdio or HTTP, behind the tool port
 crates/adapters-browser/ The built-in browser: an installed Chrome, over DevTools
 crates/adapters-model/  Model provider adapters: chat-completions and Anthropic
 crates/adapters-local/  Supervised local model runtimes (llama.cpp)

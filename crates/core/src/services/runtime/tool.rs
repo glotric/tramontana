@@ -254,6 +254,15 @@ impl BrokeredHost {
             let details = Self::named_paths(&arguments);
             (arguments, details)
         };
+        // Defense in depth: never offered under Local Only, and refused if
+        // asked for anyway (ADR 0050).
+        if self.reaches_off_device_under_local_only(&descriptor.tool_id) {
+            return Err(ErrorEnvelope::new(
+                ErrorCode::PermissionDenied,
+                "This task runs Local Only, and this App is not on this computer",
+                self.journal.correlation_id().clone(),
+            ));
+        }
         // What the call acts on, where only its provider knows: the site of
         // the page a browser click lands on (ADR 0047). Resolved before
         // anyone is asked, and a call that cannot be resolved is refused
@@ -346,6 +355,18 @@ impl BrokeredHost {
             result = registered.provider.invoke(authorized, run.clone()) => result,
             () = tokio::time::sleep(crate::ports::TOOL_RUN_LIMIT) => Err(self.tool_error(ErrorCode::Timeout)),
         }
+    }
+
+    /// Whether `tool_id` belongs to a provider off this computer, in a task
+    /// that runs Local Only (ADR 0050).
+    pub(super) fn reaches_off_device_under_local_only(&self, tool_id: &str) -> bool {
+        self.routing_mode == RoutingMode::LocalOnly
+            && self
+                .tools
+                .registry
+                .get(tool_id)
+                .and_then(|tool| tool.provider.remote_site())
+                .is_some_and(|site| !crate::contracts::is_loopback_url(&site))
     }
 
     /// The files a request names, for its approval prompt.

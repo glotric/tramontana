@@ -35,7 +35,9 @@ mod routing;
 mod task;
 mod time;
 
-pub use app::{AppConfig, AppLaunch, AppSecret, AppVariable, MAX_APP_ID, is_valid_app_id};
+pub use app::{
+    AppConfig, AppLaunch, AppRemote, AppSecret, AppVariable, MAX_APP_ID, is_valid_app_id,
+};
 pub use artifact::{
     ArtifactContent, ArtifactProducer, ArtifactRecord, ArtifactRelation, CHANGED_FILES_MEDIA_TYPE,
     FileChange, FileChangeKind,
@@ -85,7 +87,7 @@ pub use primitives::{
     DataClass, ExecutionLocation, RiskClass, RoutingMode, SecretRef, SecretStore, SideEffect,
     Visibility,
 };
-pub use provider::{ProviderConfig, ProviderEndpoint, RuntimeProvenance};
+pub use provider::{ProviderConfig, ProviderEndpoint, RuntimeProvenance, is_loopback_url};
 pub use records::{ConversationRecord, ProjectRecord, TaskRecord};
 pub use release::{
     ContextReleasePlan, ReleaseAuthorization, ReleaseExclusion, ReleasedCategory,

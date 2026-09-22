@@ -582,6 +582,7 @@ async fn the_apps_screen_shows_an_app_its_tools_its_decisions_and_nothing_secret
                     }],
                     secrets: Vec::new(),
                 },
+                remote: None,
                 created_at: tramontana_core::contracts::Timestamp::new("2026-01-01T00:00:00.000Z"),
             },
         )
