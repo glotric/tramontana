@@ -599,6 +599,19 @@ button:disabled {
   font-size: 11px;
 }
 
+/* Which worker a task runs on (ADR 0048). Beside the toggles, since it is
+   the same kind of choice: what this task may use. */
+.composer-worker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.composer-worker select {
+  max-width: 260px;
+}
+
 /* Handing the task to another worker: a second decision, set apart from
    resume and discard (ADR 0048). */
 .checkpoint-handoff {

@@ -389,6 +389,11 @@ export interface TaskOptions {
   readonly browse: boolean;
   /** Where this task's models may run. Kept if the task is resumed. */
   readonly routingMode: RoutingMode;
+  /**
+   * The worker to run it, from {@link listWorkers} (ADR 0048). Absent is
+   * the built-in worker on the model the routing mode chooses.
+   */
+  readonly worker?: string;
 }
 
 /**
@@ -419,6 +424,7 @@ export async function startTask(
             browse: options.browse,
           },
     routingMode: options?.routingMode ?? null,
+    worker: options?.worker ?? null,
     channel,
   });
 }

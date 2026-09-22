@@ -523,6 +523,7 @@ async fn start(state: &AppState, conversation: &ConversationId) -> TaskId {
         Some(conversation.clone()),
         Some(ToolAdmission::READ_WRITE.with_recipes()),
         None,
+        None,
         |_| true,
     )
     .await
@@ -638,6 +639,7 @@ async fn the_apps_screen_shows_an_app_its_tools_its_decisions_and_nothing_secret
         "Ask the App to greet Ada.".to_owned(),
         Some(conversation.conversation_id.clone()),
         Some(ToolAdmission::READ_ONLY.with_apps()),
+        None,
         None,
         |_| true,
     )

@@ -36,6 +36,7 @@ const listProjectGrants = vi.hoisted(() => vi.fn());
 const watchTask = vi.hoisted(() => vi.fn());
 const listApps = vi.hoisted(() => vi.fn());
 const latestCheckpoint = vi.hoisted(() => vi.fn());
+const listWorkers = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -61,6 +62,7 @@ vi.mock("./core.js", async () => {
     watchTask,
     latestCheckpoint,
     listApps,
+    listWorkers,
   };
 });
 
@@ -250,6 +252,7 @@ describe("M2 durable desktop surface", () => {
     watchTask.mockResolvedValue(undefined);
     latestCheckpoint.mockResolvedValue(undefined);
     listApps.mockResolvedValue([]);
+    listWorkers.mockResolvedValue([]);
     listProjectGrants.mockResolvedValue([]);
     listConfiguredEndpoints.mockResolvedValue([]);
     listModelEndpoints.mockResolvedValue([]);
@@ -474,6 +477,46 @@ describe("M2 durable desktop surface", () => {
         expect.any(Function),
         conversation.conversationId,
         { writes: false, recipes: false, apps: true, browse: false, routingMode: "automatic" },
+      );
+    });
+  });
+
+  it("runs a task on the worker the person picked, and offers no cloud one under Local only", async () => {
+    listWorkers.mockResolvedValue([
+      { agentId: "builtin.reference", displayName: "Automatic" },
+      { agentId: "builtin.reference@local/qwen", displayName: "Qwen", cloud: false },
+      { agentId: "builtin.reference@cloud/claude", displayName: "Claude", cloud: true },
+    ]);
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    const choice = await screen.findByRole("combobox", { name: "Worker" });
+    await user.selectOptions(choice, "builtin.reference@cloud/claude");
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalledWith(
+        "Say hello",
+        expect.any(Function),
+        conversation.conversationId,
+        expect.objectContaining({ worker: "builtin.reference@cloud/claude" }),
+      );
+    });
+
+    // Local only cannot reach it, so it is not offered, and the task falls
+    // back to a worker that can run.
+    await user.click(screen.getByRole("radio", { name: "Local only" }));
+    expect(
+      [...screen.getByRole<HTMLSelectElement>("combobox", { name: "Worker" }).options].map(
+        (option) => option.text,
+      ),
+    ).toEqual(["Automatic", "Qwen"]);
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenLastCalledWith(
+        "Say hello",
+        expect.any(Function),
+        conversation.conversationId,
+        expect.objectContaining({ worker: "builtin.reference", routingMode: "localOnly" }),
       );
     });
   });

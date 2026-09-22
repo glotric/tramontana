@@ -146,9 +146,17 @@ export function CheckpointPanel({
   const pending = checkpoint.pendingAction;
   const replayable = pending === undefined || pending.replaySafety === "safe";
   const resumable = checkpoint.resume.eligible && replayable;
-  // Not the worker that already has the task: that is a resume.
+  // Not the worker that already has the task: that is a resume. What is
+  // suggested first is another model on this device, then the one the mode
+  // chooses, then a model off this device: a different model is likelier to
+  // get further than the same one, and work leaves the device last
+  // (ADR 0048).
   const previous = checkpoint.worker?.descriptor.agentId;
-  const others = workers.filter((worker) => worker.agentId !== previous);
+  const rank = (worker: WorkerView): number =>
+    worker.cloud === true ? 2 : worker.cloud === false ? 0 : 1;
+  const others = workers
+    .filter((worker) => worker.agentId !== previous)
+    .sort((left, right) => rank(left) - rank(right));
   const chosen = others.find((worker) => worker.agentId === receiving) ?? others[0];
 
   return (
@@ -163,9 +171,9 @@ export function CheckpointPanel({
       {stoppedBecause !== undefined && (
         <p className="notice" role="note">
           {stoppedBecause}{" "}
-          {others.length > 0
-            ? "Another worker can continue it from here, with a budget of its own."
-            : "Configure another model to hand it to, or resume it once this one can go on."}
+          {chosen === undefined
+            ? "Configure another model to hand it to, or resume it once this one can go on."
+            : `Hand it to ${chosen.displayName} to continue from here, with a budget of its own.`}
         </p>
       )}
 

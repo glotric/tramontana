@@ -95,6 +95,13 @@ pub(crate) struct TaskArgs {
     #[arg(long, value_enum, value_name = "MODE")]
     mode: Option<ModeArg>,
 
+    /// Run it on one model rather than the one the mode chooses:
+    /// `builtin.reference@<endpoint>/<model>` (ADR 0048). An unknown name
+    /// lists what is offered. A model off this device is refused under
+    /// Local Only.
+    #[arg(long, value_name = "WORKER")]
+    worker: Option<String>,
+
     /// Emit each event as a JSON line instead of a formatted table.
     #[arg(long)]
     json: bool,
@@ -317,6 +324,7 @@ async fn run(args: TaskArgs) -> ExitCode {
             conversation_id,
             goal: args.goal,
             routing_mode: args.mode.map(Into::into),
+            worker: args.worker.clone(),
             ..Default::default()
         })
         .await
@@ -324,11 +332,18 @@ async fn run(args: TaskArgs) -> ExitCode {
         Ok(task_id) => task_id,
         Err(error) => {
             eprintln!("error: {:?}: {}", error.code, error.message);
+            if error.code == tramontana_core::contracts::ErrorCode::NotFound {
+                eprintln!("workers:");
+                for worker in service.workers() {
+                    eprintln!("  {}  {}", worker.agent_id, worker.display_name);
+                }
+            }
             return ExitCode::FAILURE;
         }
     };
 
     let outcome = stream_task(service, task_id, args.json, args.cancel_after_ms, 0).await;
+
     // The graceful path. Every early return above drops the plane instead,
     // which stops the same runtimes without the grace period — correct, and
     // the reason cleanup lives in `Drop` as well as in a method.

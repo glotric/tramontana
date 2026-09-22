@@ -19,6 +19,7 @@ import { ChangesPanel } from "./ChangesPanel.js";
 import { GrantsPanel } from "./GrantsPanel.js";
 import { AppsView } from "./AppsView.js";
 import { ModelsView } from "./ModelsView.js";
+import type { WorkerView } from "./core.js";
 import { foldFrame } from "./stream.js";
 import type { LiveStream } from "./stream.js";
 import { TaskHeader } from "./TaskHeader.js";
@@ -33,6 +34,7 @@ import {
   listPendingApprovals,
   listProjects,
   listTasks,
+  listWorkers,
   onApprovalRequested,
   openProject,
   replayTaskEvents,
@@ -151,6 +153,8 @@ export function App(): React.JSX.Element {
   const [mayRunRecipes, setMayRunRecipes] = useState(false);
   const [mayUseApps, setMayUseApps] = useState(false);
   const [mayBrowse, setMayBrowse] = useState(false);
+  const [workers, setWorkers] = useState<readonly WorkerView[]>([]);
+  const [worker, setWorker] = useState<string>("");
   const [conversationTitle, setConversationTitle] = useState("");
   const [approvals, setApprovals] = useState<readonly ApprovalRequest[]>([]);
   // Moves on whenever a task ends, so the Changes panel reads the tree again.
@@ -302,6 +306,21 @@ export function App(): React.JSX.Element {
     [selectConversation],
   );
 
+  // The workers a task can run on (ADR 0048). Without any, the composer
+  // shows no choice and every task runs the built-in worker.
+  useEffect(() => {
+    let active = true;
+    void listWorkers().then(
+      (found) => {
+        if (active) setWorkers(found);
+      },
+      () => undefined,
+    );
+    return () => {
+      active = false;
+    };
+  }, []);
+
   useEffect(() => {
     let active = true;
     void fetchCoreInfo().then(
@@ -394,6 +413,16 @@ export function App(): React.JSX.Element {
     setGoal(retried);
     goalInput.current?.focus();
   }, []);
+  // A task runs on the worker the person picked. Under Local Only a model
+  // off this device is not offered, because the core would refuse it
+  // (ADR 0048).
+  const offeredWorkers = useMemo(
+    () => workers.filter((choice) => !(routingMode === "localOnly" && choice.cloud === true)),
+    [routingMode, workers],
+  );
+  const chosenWorker =
+    offeredWorkers.find((choice) => choice.agentId === worker) ?? offeredWorkers[0];
+
   const running = selectedTaskId !== undefined && taskState !== undefined && !isTerminal(taskState);
   const configuration = inspection?.configuration ?? undefined;
 
@@ -464,6 +493,7 @@ export function App(): React.JSX.Element {
       apps: mayUseApps,
       browse: mayBrowse,
       routingMode,
+      ...(chosenWorker === undefined ? {} : { worker: chosenWorker.agentId }),
     }).then(
       (id) => {
         setSelectedTaskId(id);
@@ -475,6 +505,7 @@ export function App(): React.JSX.Element {
     );
   }, [
     goal,
+    chosenWorker,
     handleUpdate,
     mayBrowse,
     mayRunRecipes,
@@ -819,6 +850,24 @@ export function App(): React.JSX.Element {
                         </label>
                       ))}
                     </fieldset>
+                    {offeredWorkers.length > 1 && (
+                      <label className="composer-worker">
+                        Worker
+                        <select
+                          value={chosenWorker?.agentId ?? ""}
+                          onChange={(changed) => {
+                            setWorker(changed.target.value);
+                          }}
+                        >
+                          {offeredWorkers.map((choice) => (
+                            <option key={choice.agentId} value={choice.agentId}>
+                              {choice.displayName}
+                              {choice.cloud === true ? " (off this device)" : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
                     <label className="composer-toggle">
                       <input
                         type="checkbox"

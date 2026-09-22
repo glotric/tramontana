@@ -93,6 +93,7 @@ describe("the checkpoint inspector", () => {
     listWorkers.mockResolvedValue([
       { agentId: "builtin.reference", displayName: "Automatic" },
       { agentId: "builtin.reference@local/qwen", displayName: "Qwen", cloud: false },
+      { agentId: "builtin.reference@local/qwen7", displayName: "Qwen 7B", cloud: false },
       { agentId: "builtin.reference@cloud/claude", displayName: "Claude", cloud: true },
     ]);
     render(
@@ -109,7 +110,10 @@ describe("the checkpoint inspector", () => {
     expect(screen.getByText(/used up its budget/)).toBeInTheDocument();
     const choice = await screen.findByRole("combobox", { name: "Hand over to" });
     const offered = [...(choice as HTMLSelectElement).options].map((option) => option.text);
-    expect(offered).toEqual(["Automatic", "Claude (off this device)"]);
+    // Another model on this device first, then the mode's choice, then one
+    // off this device.
+    expect(offered).toEqual(["Qwen 7B", "Automatic", "Claude (off this device)"]);
+    expect(screen.getByText(/Hand it to Qwen 7B to continue from here/)).toBeVisible();
 
     await user.selectOptions(choice, "builtin.reference@cloud/claude");
     await user.click(screen.getByRole("button", { name: "Hand over" }));
