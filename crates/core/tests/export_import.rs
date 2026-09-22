@@ -655,3 +655,68 @@ fn a_bundle_declares_every_file_it_contains() {
         assert_eq!(entry.sha256.len(), 64);
     }
 }
+
+/// xorshift64*: seeded, so a failure reproduces.
+fn next(state: &mut u64) -> u64 {
+    *state ^= *state >> 12;
+    *state ^= *state << 25;
+    *state ^= *state >> 27;
+    state.wrapping_mul(0x2545_f491_4f6c_dd1d)
+}
+
+/// A bundle is hostile input (`TESTING_STRATEGY.md` §5): whatever is in it,
+/// importing reads it or refuses it, and never crashes. Each file is damaged
+/// and resealed, so the damage reaches the parsers rather than stopping at
+/// the checksum.
+#[test]
+fn a_damaged_bundle_is_imported_or_refused_never_a_crash() {
+    let original = build_export(revealing_request());
+    let paths: Vec<String> = original.files.keys().cloned().collect();
+    let spice = [
+        "{",
+        "}",
+        "[",
+        "]",
+        "\"",
+        ",",
+        ":",
+        "null",
+        "\n",
+        "\\u0000",
+        "1e999",
+        "-1",
+        "\"sequence\":",
+        "\"kind\":\"taskCompleted\"",
+        "\"schemaVersion\":99",
+        "é",
+    ];
+    let mut state = 0x5eed_0fb0_d1e5_u64;
+    let mut imported = 0;
+    for _ in 0..1500 {
+        let mut bundle = original.clone();
+        let path = &paths[usize::try_from(next(&mut state) % paths.len() as u64).unwrap()];
+        let mut text: Vec<char> = bundle.files[path].chars().collect();
+        for _ in 0..=next(&mut state) % 3 {
+            let at = usize::try_from(next(&mut state) % (text.len() as u64 + 1)).unwrap();
+            match next(&mut state) % 4 {
+                0 if !text.is_empty() => {
+                    let end =
+                        (at + 1 + usize::try_from(next(&mut state) % 30).unwrap()).min(text.len());
+                    text.drain(at.min(end)..end);
+                }
+                1 => text.truncate(at),
+                _ => {
+                    let insert =
+                        spice[usize::try_from(next(&mut state) % spice.len() as u64).unwrap()];
+                    text.splice(at..at, insert.chars());
+                }
+            }
+        }
+        reseal(&mut bundle, path, text.into_iter().collect());
+        if validate_import(&bundle, ImportLimits::default()).is_ok() {
+            imported += 1;
+        }
+    }
+    // Some damage is harmless, most is not; both kinds were reached.
+    assert!(imported < 1500, "no damage was ever refused");
+}
