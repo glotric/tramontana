@@ -18,6 +18,9 @@ use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
+// Every test that reads or reaps a runtime record starts a real process
+// group, which is Unix-only here; on Windows this would be unused.
+#[cfg(unix)]
 use tramontana_adapters_local::runtime_records::{self, Reaped, RuntimeRecord};
 use tramontana_adapters_local::{
     LlamaServerSpec, MINIMUM_BUILD, StartError, SupervisedLlamaServer, probe_version,
@@ -223,6 +226,7 @@ async fn stopping_a_runtime_takes_its_children_with_it() {
 }
 
 /// The records in `directory`, as written.
+#[cfg(unix)]
 fn records_in(directory: &Path) -> Vec<serde_json::Value> {
     std::fs::read_dir(directory)
         .map(|entries| {
