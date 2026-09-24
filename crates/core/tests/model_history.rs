@@ -20,6 +20,7 @@ fn fixture() -> (TaskRecord, ContextManifest, Vec<EventEnvelope>) {
         &task.goal_summary,
         vec![],
         None,
+        None,
         at(),
     );
     let mut call = NormalizedMessage::text(
@@ -393,6 +394,7 @@ fn history_does_not_reoffer_old_tools_and_keeps_goal_redaction_provenance() {
         task.task_id.clone(),
         &task.goal_summary,
         vec![redaction_reason::CREDENTIAL_ASSIGNMENT.into()],
+        None,
         None,
         initial.created_at,
     );

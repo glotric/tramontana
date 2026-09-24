@@ -57,6 +57,12 @@ what that demonstration finds may still revise them.
   from the task's record. It suggests another model on this device first, the
   cloud last. Nothing moves without your click, and a Local Only task is
   never run on, or handed to, a model off this device.
+- **Built:** a task runs under the project's own instructions (ADR 0052). Its
+  `AGENTS.md`, `CLAUDE.md` and `.tramontana/rules` are read as the task starts
+  and given to the model, strongest first, up to 16 KiB a turn; anything that
+  does not fit is named rather than cut. A credential is removed before they
+  are recorded, so it is removed before they are sent, and the task's record
+  says which files travelled. Nothing in them grants a permission.
 - **Deferred from Beta 1:** an external coding worker (M10, ADR 0038), and
   the rest listed in the [draft release notes](docs/RELEASE_NOTES_BETA_1.md).
 
@@ -115,6 +121,10 @@ recipes:
 
 Declaring a recipe grants nothing; every run is still put to you. See
 [configuration](docs/CONFIGURATION.md) for the rest of that file.
+
+A task is also given the project's own instructions — its `AGENTS.md`,
+`CLAUDE.md` and any `.tramontana/rules` — so what the repository asks for is
+what the model works to. They cannot grant it anything.
 
 **3. Start a task.** Add a conversation, then write the goal in the
 composer. By default a task may only read. Tick **May edit files**, **May

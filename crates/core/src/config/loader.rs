@@ -7,6 +7,7 @@ use crate::contracts::{
     ConfigurationDiagnostic, ConfigurationKind, ConfigurationSource, DiagnosticSeverity,
     EffectiveConfiguration, Recipe, Timestamp,
 };
+use crate::services::{InstructionSource, ProjectInstructions};
 
 /// A file an adapter discovered, before it has been interpreted.
 ///
@@ -61,25 +62,72 @@ pub fn resolve_with_selection(
     selection: &ConfigurationSelection,
     resolved_at: Timestamp,
 ) -> EffectiveConfiguration {
+    resolve_with_bodies(sources, selection, resolved_at).0
+}
+
+/// Interpret discovered files, and keep the text of the active ones.
+///
+/// The manifest names a source by path and hash and never by its body,
+/// because it is displayed, persisted and exported. A worker's model, on the
+/// other hand, needs the words. Both come from one pass, so the text that is
+/// sent is the text that was hashed — the same redacted bytes, never the
+/// original file (ADR 0052).
+#[must_use]
+pub fn resolve_with_bodies(
+    sources: Vec<RawSource>,
+    selection: &ConfigurationSelection,
+    resolved_at: Timestamp,
+) -> (EffectiveConfiguration, ProjectInstructions) {
     let mut resolved = Vec::with_capacity(sources.len());
     let mut diagnostics = Vec::new();
+    let mut bodies: HashMap<String, String> = HashMap::new();
 
     for raw in sources {
-        resolved.push(interpret(raw, &mut diagnostics));
+        let (source, body) = interpret(raw, &mut diagnostics);
+        if let Some(body) = body {
+            bodies.insert(source.relative_path.clone(), body);
+        }
+        resolved.push(source);
     }
 
     disable_duplicate_ids(&mut resolved, &mut diagnostics);
     apply_selection(&mut resolved, selection, &mut diagnostics);
     order(&mut resolved);
 
-    EffectiveConfiguration::new(resolved, diagnostics, resolved_at)
+    // After ordering, so the worker reads them strongest first, and only the
+    // active ones: an inventory is not a decision to send.
+    let instructions = ProjectInstructions::new(
+        resolved
+            .iter()
+            .filter(|source| source.active)
+            .filter_map(|source| {
+                let text = bodies.get(&source.relative_path)?;
+                (!text.is_empty()).then(|| InstructionSource {
+                    source_id: source.source_id.clone(),
+                    kind: source.kind,
+                    text: text.clone(),
+                    redactions: source.redactions.clone(),
+                })
+            })
+            .collect(),
+    );
+
+    (
+        EffectiveConfiguration::new(resolved, diagnostics, resolved_at),
+        instructions,
+    )
 }
 
-/// Interpret one file.
+/// Interpret one file, and return its body when there is one to send.
+///
+/// The body is the redacted Markdown after any front matter — the text a
+/// model would be given, never the raw file. A source that is disabled for
+/// any reason returns none: a file Tramontana would not act on is not one it
+/// should quote to a model either.
 fn interpret(
     raw: RawSource,
     diagnostics: &mut Vec<ConfigurationDiagnostic>,
-) -> ConfigurationSource {
+) -> (ConfigurationSource, Option<String>) {
     // Redacted before it is hashed or measured, so every record downstream
     // names content that may actually be released. A file with no credential
     // in it is byte-identical and hashes the same as it always did.
@@ -122,7 +170,7 @@ fn interpret(
             "file exceeds the 1 MiB size limit",
         ));
         source.enabled = false;
-        return source;
+        return (source, None);
     }
 
     // Instruction files are text. Invalid UTF-8 means the file is not what it
@@ -130,14 +178,16 @@ fn interpret(
     let Some(redacted) = redacted else {
         diagnostics.push(error(&raw.relative_path, "file is not valid UTF-8"));
         source.enabled = false;
-        return source;
+        return (source, None);
     };
 
     // Front matter is parsed from the redacted text, which is what any later
     // reader will see. Parsing the original would let a declared id or scope
     // differ from the one in the file that actually gets used.
+    let mut body = None;
     match split_front_matter(&redacted.text) {
-        Ok((matter, _body)) => {
+        Ok((matter, rest)) => {
+            body = Some(rest.trim().to_owned());
             source.declared_id = matter.id.clone();
             source.declared_name = matter.name.clone();
             source.scopes = if raw.kind == ConfigurationKind::ScopedAgents {
@@ -191,7 +241,12 @@ fn interpret(
         }
     }
 
-    source
+    // A disabled source contributes nothing, whether front matter turned it
+    // off or a validation error did.
+    if !source.enabled {
+        body = None;
+    }
+    (source, body)
 }
 
 /// Decide which valid inventory items contribute to this task.
@@ -530,6 +585,121 @@ mod tests {
 
     fn at() -> Timestamp {
         Timestamp::new("2026-01-01T00:00:00.000Z")
+    }
+
+    /// The sources whose text a worker would be given.
+    fn sent(sources: Vec<RawSource>) -> Vec<String> {
+        let (_, instructions) =
+            resolve_with_bodies(sources, &ConfigurationSelection::default(), at());
+        instructions
+            .compose(crate::services::PROJECT_INSTRUCTION_BYTES)
+            .map(|composed| composed.included)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_body_is_the_markdown_without_its_front_matter() {
+        let (_, instructions) = resolve_with_bodies(
+            vec![raw(
+                "AGENTS.md",
+                ConfigurationKind::RootAgents,
+                "---\nid: fixture\n---\n# Instructions\n\nRun the tests.\n",
+            )],
+            &ConfigurationSelection::default(),
+            at(),
+        );
+        let composed = instructions
+            .compose(crate::services::PROJECT_INSTRUCTION_BYTES)
+            .unwrap();
+
+        assert!(composed.text.contains("# Instructions"));
+        assert!(composed.text.contains("Run the tests."));
+        assert!(
+            !composed.text.contains("id: fixture"),
+            "front matter is metadata; sending it would spend a turn on nothing"
+        );
+    }
+
+    #[test]
+    fn a_disabled_source_gives_a_worker_nothing_to_read() {
+        // Each of these disables its source for a different reason, and a
+        // file Tramontana will not act on must not be quoted to a model.
+        for source in [
+            raw(
+                "AGENTS.md",
+                ConfigurationKind::RootAgents,
+                "---\nenabled: false\n---\nDo not follow this.",
+            ),
+            raw(
+                "CLAUDE.md",
+                ConfigurationKind::Claude,
+                "---\nid: [unterminated\nDo not follow this either.",
+            ),
+        ] {
+            let path = source.relative_path.clone();
+            assert!(
+                sent(vec![source]).is_empty(),
+                "{path} is disabled and must send nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_source_the_task_did_not_activate_sends_nothing() {
+        // A skill is in the inventory always, and in a task only when chosen.
+        let (configuration, instructions) = resolve_with_bodies(
+            vec![raw(
+                ".tramontana/skills/review.md",
+                ConfigurationKind::Skill,
+                "---\nid: review\n---\nReview for unsafe code.",
+            )],
+            &ConfigurationSelection::default(),
+            at(),
+        );
+
+        assert!(configuration.sources[0].enabled);
+        assert!(!configuration.sources[0].active);
+        assert!(instructions.is_empty());
+
+        let (_, chosen) = resolve_with_bodies(
+            vec![raw(
+                ".tramontana/skills/review.md",
+                ConfigurationKind::Skill,
+                "---\nid: review\n---\nReview for unsafe code.",
+            )],
+            &ConfigurationSelection {
+                skill_ids: vec!["review".to_owned()],
+                ..ConfigurationSelection::default()
+            },
+            at(),
+        );
+        assert!(
+            chosen
+                .compose(crate::services::PROJECT_INSTRUCTION_BYTES)
+                .unwrap()
+                .text
+                .contains("Review for unsafe code.")
+        );
+    }
+
+    #[test]
+    fn a_body_is_the_redacted_text_the_hash_covers() {
+        let (configuration, instructions) = resolve_with_bodies(
+            vec![raw(
+                "AGENTS.md",
+                ConfigurationKind::RootAgents,
+                "Deploy with API_KEY=sk-live-0123456789abcdefghij.",
+            )],
+            &ConfigurationSelection::default(),
+            at(),
+        );
+        let composed = instructions
+            .compose(crate::services::PROJECT_INSTRUCTION_BYTES)
+            .unwrap();
+
+        assert!(!composed.text.contains("sk-live-0123456789abcdefghij"));
+        assert_eq!(composed.redactions, configuration.sources[0].redactions);
+        assert!(!composed.redactions.is_empty());
     }
 
     #[test]

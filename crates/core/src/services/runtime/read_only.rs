@@ -177,6 +177,7 @@ impl BrokeredHost {
             self.journal.next_id("stream"),
             self.journal.next_id("context"),
             catalogue,
+            self.instructions.as_deref(),
         )?;
         input.request.limits.max_output_tokens = Some(u64::from(limits.turn_tokens));
         input.request.limits.deadline_ms = limits.turn_ms;

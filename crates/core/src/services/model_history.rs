@@ -227,19 +227,47 @@ impl CanonicalModelHistory {
         request_id: impl Into<String>,
         context_manifest_id: impl Into<String>,
         catalogue: ModelToolCatalogue,
+        project: Option<&crate::services::ComposedInstructions>,
     ) -> Result<ModelContextInput, ErrorEnvelope> {
+        let at = self.messages.first().map_or_else(
+            || crate::contracts::Timestamp::new(""),
+            |first| first.created_at.clone(),
+        );
+        bound_results(&mut self.messages, HISTORY_RESULT_BYTES);
+
+        // Second, so Tramontana's own words are read first: how to work comes
+        // before what this project wants, and a project's file cannot
+        // displace the boundary the first message sets (ADR 0052).
+        if let Some(project) = project {
+            let mut message = NormalizedMessage::text(
+                MessageId::new(format!("project-instructions-{}", self.task_id)),
+                None,
+                MessageRole::System,
+                at.clone(),
+                &project.text,
+            );
+            message.task_id = Some(self.task_id.clone());
+            self.messages.insert(0, message);
+            self.provenance.insert(
+                0,
+                ModelContentProvenance {
+                    source_id: crate::services::PROJECT_INSTRUCTIONS_SOURCE_ID.to_owned(),
+                    // The person's files. A release to a model off this device
+                    // is disclosed and approved like any other project content.
+                    data_class: DataClass::Project,
+                    redactions: project.redactions.clone(),
+                },
+            );
+        }
+
         let mut instructions = NormalizedMessage::text(
             MessageId::new(format!("instructions-{}", self.task_id)),
             None,
             MessageRole::System,
-            self.messages.first().map_or_else(
-                || crate::contracts::Timestamp::new(""),
-                |first| first.created_at.clone(),
-            ),
+            at,
             WORKER_INSTRUCTIONS,
         );
         instructions.task_id = Some(self.task_id.clone());
-        bound_results(&mut self.messages, HISTORY_RESULT_BYTES);
         self.messages.insert(0, instructions);
         self.provenance.insert(
             0,

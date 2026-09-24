@@ -13,9 +13,10 @@ use crate::contracts::{
 };
 use crate::ports::{
     AgentProvider, CheckpointRepository, Clock, ConfigurationRepository, ConversationRepository,
-    EventStore, IdSource, ModelProvider, ProjectRepository, RepositoryError, TaskRepository,
-    ToolAdmission,
+    EventStore, IdSource, ModelProvider, ProjectRepository, ProjectSourceReader, RepositoryError,
+    TaskRepository, ToolAdmission,
 };
+use crate::services::ProjectInstructions;
 use crate::services::journal::{JournalPorts, TaskJournal};
 use crate::services::projection::TaskProjectionWriter;
 use crate::services::runtime::TaskDriver;
@@ -166,6 +167,11 @@ pub struct TaskService {
     /// The models a person may pin the built-in worker to, and how to build
     /// it pinned (ADR 0048).
     pub(super) pinned: Option<(Vec<super::PinnedModel>, PinnedWorkerChoice)>,
+    /// How the project's own Markdown is read at the moment a task starts.
+    /// Absent in a service with no project files to read, such as a test
+    /// harness; a task then runs on the last inventory the project resolved,
+    /// without its text (ADR 0052).
+    pub(super) project_sources: Option<Arc<dyn ProjectSourceReader>>,
     pub(super) execution_allowed: bool,
     pub(super) execution_guard: Option<Arc<dyn Send + Sync>>,
 }
@@ -197,6 +203,7 @@ impl TaskService {
             routing_mode: Mutex::new(RoutingMode::Automatic),
             workers: None,
             pinned: None,
+            project_sources: None,
             execution_allowed: true,
             execution_guard: None,
         }
@@ -214,6 +221,14 @@ impl TaskService {
     #[must_use]
     pub fn with_worker_choice(mut self, workers: WorkerChoice) -> Self {
         self.workers = Some(workers);
+        self
+    }
+
+    /// Read the project's own instruction files with `reader` when a task
+    /// starts, so its worker is given them (ADR 0052).
+    #[must_use]
+    pub fn with_project_sources(mut self, reader: Arc<dyn ProjectSourceReader>) -> Self {
+        self.project_sources = Some(reader);
         self
     }
 
@@ -590,14 +605,47 @@ impl TaskService {
         let cancel = CancellationToken::new();
         let (updates, _) = broadcast::channel(UPDATE_BUFFER);
 
-        let configuration = match &project_id {
-            Some(project_id) => self
-                .repositories
-                .configuration
-                .latest(project_id)
-                .await
-                .map_err(|error| self.repository_error(&error))?,
-            None => None,
+        // Read now, not from the last inventory the project resolved: a task's
+        // record must describe the instructions it actually ran under, and the
+        // worker is about to be given their text (ADR 0052).
+        let (configuration, instructions) = match (&project_id, &self.project_sources) {
+            (Some(project_id), Some(reader)) => {
+                let (configuration, instructions) = crate::config::resolve_with_bodies(
+                    reader.read(project_id).await?,
+                    &ConfigurationSelection::default(),
+                    self.clock.now(),
+                );
+                // Saved only when it is new. A resume reads the manifest back
+                // by hash, so an unsaved one would lose the project's recipes;
+                // rewriting an identical one would move its `resolvedAt` every
+                // time a task started, and the configuration view would report
+                // a change that never happened.
+                let stored = self
+                    .repositories
+                    .configuration
+                    .latest(project_id)
+                    .await
+                    .map_err(|error| self.repository_error(&error))?;
+                if stored.as_ref().map(|stored| &stored.manifest_hash)
+                    != Some(&configuration.manifest_hash)
+                {
+                    self.repositories
+                        .configuration
+                        .save(project_id, &configuration)
+                        .await
+                        .map_err(|error| self.repository_error(&error))?;
+                }
+                (Some(configuration), instructions)
+            }
+            (Some(project_id), None) => (
+                self.repositories
+                    .configuration
+                    .latest(project_id)
+                    .await
+                    .map_err(|error| self.repository_error(&error))?,
+                ProjectInstructions::default(),
+            ),
+            (None, _) => (None, ProjectInstructions::default()),
         };
 
         // Every tool call this task makes inherits the project's approved
@@ -731,6 +779,7 @@ impl TaskService {
         .with_routing_mode(routing_mode)
         .with_worker(worker)
         .with_configuration(resolved_configuration)
+        .with_instructions(instructions)
         .with_goal_redactions(goal.reason_codes.clone())
         .with_checkpoints(Arc::clone(&self.repositories.checkpoints))
         .continuing(None, super::ResumePlan::default(), interrupt);

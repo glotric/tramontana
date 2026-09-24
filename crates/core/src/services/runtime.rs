@@ -21,6 +21,7 @@ use crate::ports::{Clock, PermissionQuery};
 use crate::services::PermissionManager;
 use crate::services::ToolRegistry;
 use crate::services::checkpoint::ResumePlan;
+use crate::services::instructions::{ComposedInstructions, ProjectInstructions};
 use crate::services::journal::TaskJournal;
 use crate::services::model_turn::{ModelTurnAccumulator, ModelTurnLimits};
 use crate::services::preparation::assemble_context;
@@ -50,6 +51,10 @@ pub(crate) struct TaskDriver {
     /// Held so the context manifest can name the instruction sources in force
     /// rather than only their combined hash.
     configuration: Option<EffectiveConfiguration>,
+    /// The text of the project-authored sources in force, when the adapter
+    /// could read them. Held apart from the configuration because the record
+    /// names sources and the model needs their words (ADR 0052).
+    instructions: ProjectInstructions,
     /// What was removed from the goal when the task was created.
     ///
     /// Carried rather than recomputed: the goal the driver receives is already
@@ -114,6 +119,7 @@ impl TaskDriver {
             clock,
             routing_mode: RoutingMode::Automatic,
             configuration: None,
+            instructions: ProjectInstructions::default(),
             goal_redactions: Vec::new(),
             checkpoint: None,
             handoff: None,
@@ -159,6 +165,12 @@ impl TaskDriver {
         configuration: Option<EffectiveConfiguration>,
     ) -> Self {
         self.configuration = configuration;
+        self
+    }
+
+    /// Attach the text of the project-authored sources in force.
+    pub(crate) fn with_instructions(mut self, instructions: ProjectInstructions) -> Self {
+        self.instructions = instructions;
         self
     }
 
@@ -208,6 +220,14 @@ impl TaskDriver {
         // describe a release that did not happen.
         let mut context: Option<ContextManifest> = None;
 
+        // Composed once, before the manifest that must describe it: the
+        // record says which of the project's files travelled, so the two
+        // cannot disagree (ADR 0052).
+        let instructions = self
+            .instructions
+            .compose(crate::services::PROJECT_INSTRUCTION_BYTES)
+            .map(Arc::new);
+
         // Each step checks cancellation first. A cancel that arrives before the
         // task really starts still produces a proper Cancelling -> Cancelled
         // pair rather than a task that never moved.
@@ -246,13 +266,15 @@ impl TaskDriver {
             }
 
             let recorded = match state {
-                TaskState::Preparing => match self.record_context(&goal).await {
-                    Ok(manifest) => {
-                        context = Some(manifest);
-                        Ok(())
+                TaskState::Preparing => {
+                    match self.record_context(&goal, instructions.as_deref()).await {
+                        Ok(manifest) => {
+                            context = Some(manifest);
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
                     }
-                    Err(error) => Err(error),
-                },
+                }
                 TaskState::Routing => match self.record_route(context.as_ref(), &cancel).await {
                     Ok(_) => Ok(()),
                     Err(error) => Err(error),
@@ -311,6 +333,7 @@ impl TaskDriver {
             // model host prepares and routes each actual call independently.
             context: context.clone(),
             model_gate: tokio::sync::Mutex::new(()),
+            instructions: instructions.clone(),
             routing_mode: self.routing_mode,
             scope: self.scope.clone(),
             tools: ToolBroker {
@@ -439,6 +462,7 @@ impl TaskDriver {
     async fn record_context(
         &self,
         goal: &str,
+        instructions: Option<&ComposedInstructions>,
     ) -> Result<crate::contracts::ContextManifest, ErrorEnvelope> {
         let manifest = assemble_context(
             self.journal.next_id("context"),
@@ -446,6 +470,7 @@ impl TaskDriver {
             goal,
             self.goal_redactions.clone(),
             self.configuration.as_ref(),
+            instructions,
             self.clock.now(),
         );
 
@@ -682,6 +707,8 @@ struct BrokeredHost {
     releases: Arc<ReleaseManager>,
     /// The context assembled for this task.
     context: Option<ContextManifest>,
+    /// The project's own instructions, as every turn will send them.
+    instructions: Option<Arc<ComposedInstructions>>,
     /// Serialize requests so approvals and model starts cannot overlap per host.
     model_gate: tokio::sync::Mutex<()>,
     /// The standing policy in force.

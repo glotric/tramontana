@@ -12,6 +12,7 @@
 mod checkpoint;
 mod export;
 mod handoff;
+mod instructions;
 mod journal;
 mod model_catalogue;
 mod model_context;
@@ -42,6 +43,10 @@ pub use export::{
     imported_project_id, is_safe_relative_path, validate_import,
 };
 pub use handoff::build_handoff;
+pub use instructions::{
+    ComposedInstructions, InstructionSource, NO_INSTRUCTION_TEXT, OVER_INSTRUCTION_BUDGET,
+    PROJECT_INSTRUCTION_BYTES, PROJECT_INSTRUCTIONS_SOURCE_ID, ProjectInstructions,
+};
 pub use journal::{JournalPorts, TaskJournal};
 pub use model_catalogue::ModelToolCatalogue;
 pub use model_context::{

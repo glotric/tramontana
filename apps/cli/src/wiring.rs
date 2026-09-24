@@ -224,7 +224,7 @@ async fn open_with(
             checkpoints: Arc::new(tramontana_persistence::SqliteCheckpointRepository::new(
                 database.clone(),
             )),
-            configuration: Arc::new(SqliteConfigurationRepository::new(database)),
+            configuration: Arc::new(SqliteConfigurationRepository::new(database.clone())),
         },
         Providers {
             models,
@@ -255,6 +255,11 @@ async fn open_with(
             pinnable,
             tramontana_composition::pinned_worker_choice(app_tools.clone()),
         )
+        // So a task is given the project's own instructions, read as it starts
+        // (ADR 0052).
+        .with_project_sources(Arc::new(tramontana_platform::ProjectFiles::new(Arc::new(
+            SqliteProjectRepository::new(database),
+        ))))
         .with_execution_guard(lease);
 
     // A process that died between appending an event and updating a task's
