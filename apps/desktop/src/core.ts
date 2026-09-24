@@ -539,6 +539,28 @@ export async function listWorkers(): Promise<readonly WorkerView[]> {
   return invoke<WorkerView[]>("list_workers");
 }
 
+/** What a stopped task can be handed to, in the order to offer it (ADR 0055). */
+export interface HandoffOffer {
+  /** The workers, best first; the first is the suggestion. */
+  readonly workers: readonly WorkerView[];
+  /**
+   * Whether the task stopped because the work was beyond its model, so the
+   * suggestion is to escalate rather than to try another model here.
+   */
+  readonly escalating: boolean;
+}
+
+/**
+ * What this interrupted task can be handed to, ordered by the core.
+ *
+ * The worker that already has it is left out, a Local Only task is offered
+ * nothing off this device, and a task whose model ran out is offered the
+ * cloud first. Nothing is handed anywhere without {@link handOffTask}.
+ */
+export async function handoffOptions(taskId: string): Promise<HandoffOffer> {
+  return invoke<HandoffOffer>("handoff_options", { taskId });
+}
+
 /** A skill a task can be given (ADR 0053). */
 export interface SkillView {
   /** The declared id a task names to select it. */

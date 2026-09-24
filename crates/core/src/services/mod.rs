@@ -77,11 +77,12 @@ pub use release::{RELEASE_CAPABILITY, ReleaseContext, ReleaseError, ReleaseManag
 pub use routing::{
     AvailabilitySnapshot, NoEligibleRoute, RoutingInput, route, route_after_failure,
 };
+pub use runtime::{beyond_the_model, stopped_on};
 pub use suggestion::suggested_skills;
 pub use task_export::ImportSummary;
 pub use task_service::{
-    PinnedWorkerChoice, Providers, Repositories, StartTaskRequest, TaskService, WorkerChoice,
-    WorkerOption,
+    HandoffOffer, PinnedWorkerChoice, Providers, Repositories, StartTaskRequest, TaskService,
+    WorkerChoice, WorkerOption,
 };
 pub use tool_registry::{
     APP_NAMESPACE, BROWSER_PROVIDER, RegisteredTool, RegistryError, ToolRegistry, is_app_tool,

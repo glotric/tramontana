@@ -10,7 +10,7 @@ type CoreModule = typeof CoreModuleShape;
 const latestCheckpoint = vi.hoisted(() => vi.fn());
 const resumeTask = vi.hoisted(() => vi.fn());
 const discardCheckpoint = vi.hoisted(() => vi.fn());
-const listWorkers = vi.hoisted(() => vi.fn());
+const handoffOptions = vi.hoisted(() => vi.fn());
 const handOffTask = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
@@ -20,7 +20,7 @@ vi.mock("./core.js", async () => {
     latestCheckpoint,
     resumeTask,
     discardCheckpoint,
-    listWorkers,
+    handoffOptions,
     handOffTask,
   };
 });
@@ -67,7 +67,7 @@ describe("the checkpoint inspector", () => {
     resumeTask.mockResolvedValue(undefined);
     discardCheckpoint.mockResolvedValue(undefined);
     handOffTask.mockResolvedValue(undefined);
-    listWorkers.mockResolvedValue([]);
+    handoffOptions.mockResolvedValue({ workers: [], escalating: false });
   });
 
   it("says why the worker stopped and hands the task to another, never back to itself", async () => {
@@ -90,12 +90,16 @@ describe("the checkpoint inspector", () => {
         },
       },
     } satisfies TaskCheckpoint);
-    listWorkers.mockResolvedValue([
-      { agentId: "builtin.reference", displayName: "Automatic" },
-      { agentId: "builtin.reference@local/qwen", displayName: "Qwen", cloud: false },
-      { agentId: "builtin.reference@local/qwen7", displayName: "Qwen 7B", cloud: false },
-      { agentId: "builtin.reference@cloud/claude", displayName: "Claude", cloud: true },
-    ]);
+    // Already ordered and filtered by the core: the worker that has the task
+    // is not among them (ADR 0055).
+    handoffOptions.mockResolvedValue({
+      workers: [
+        { agentId: "builtin.reference@local/qwen7", displayName: "Qwen 7B", cloud: false },
+        { agentId: "builtin.reference", displayName: "Automatic" },
+        { agentId: "builtin.reference@cloud/claude", displayName: "Claude", cloud: true },
+      ],
+      escalating: false,
+    });
     render(
       <CheckpointPanel
         taskId="task-1"
@@ -110,9 +114,9 @@ describe("the checkpoint inspector", () => {
     expect(screen.getByText(/used up its budget/)).toBeInTheDocument();
     const choice = await screen.findByRole("combobox", { name: "Hand over to" });
     const offered = [...(choice as HTMLSelectElement).options].map((option) => option.text);
-    // Another model on this device first, then the mode's choice, then one
-    // off this device.
+    // Rendered in the order the core gave, not one this component invented.
     expect(offered).toEqual(["Qwen 7B", "Automatic", "Claude (off this device)"]);
+    expect(handoffOptions).toHaveBeenCalledWith("task-1");
     expect(screen.getByText(/Hand it to Qwen 7B to continue from here/)).toBeVisible();
 
     await user.selectOptions(choice, "builtin.reference@cloud/claude");
@@ -133,9 +137,61 @@ describe("the checkpoint inspector", () => {
     expect(await screen.findByText("checkpoint-1")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Interrupted" })).toBeInTheDocument();
     await waitFor(() => {
-      expect(listWorkers).toHaveBeenCalled();
+      expect(handoffOptions).toHaveBeenCalled();
     });
     expect(screen.queryByRole("button", { name: "Hand over" })).not.toBeInTheDocument();
+  });
+
+  it("says why the cloud is offered first, and what handing it there would send", async () => {
+    latestCheckpoint.mockResolvedValue({
+      ...checkpoint(),
+      resume: { eligible: true, mode: "canonicalHandoff" },
+    } satisfies TaskCheckpoint);
+    handoffOptions.mockResolvedValue({
+      workers: [
+        { agentId: "builtin.reference@cloud/claude", displayName: "Claude", cloud: true },
+        { agentId: "builtin.reference@local/qwen7", displayName: "Qwen 7B", cloud: false },
+      ],
+      escalating: true,
+    });
+    render(
+      <CheckpointPanel
+        taskId="task-1"
+        stoppedBecause="The worker used up its budget before finishing."
+        onChanged={vi.fn()}
+      />,
+    );
+
+    const choice = await screen.findByRole("combobox", { name: "Hand over to" });
+    expect([...(choice as HTMLSelectElement).options][0]?.text).toBe("Claude (off this device)");
+    // The reason and the cost, before the button rather than after it.
+    expect(screen.getByText(/ran out of what its model could do/)).toBeVisible();
+    expect(screen.getByText(/sends the task.s record/)).toBeVisible();
+    expect(screen.getByText(/nothing moves until you click/)).toBeVisible();
+  });
+
+  it("does not offer to escalate a task that merely lost its provider", async () => {
+    latestCheckpoint.mockResolvedValue({
+      ...checkpoint(),
+      resume: { eligible: true, mode: "canonicalHandoff" },
+    } satisfies TaskCheckpoint);
+    handoffOptions.mockResolvedValue({
+      workers: [
+        { agentId: "builtin.reference@local/qwen7", displayName: "Qwen 7B", cloud: false },
+        { agentId: "builtin.reference@cloud/claude", displayName: "Claude", cloud: true },
+      ],
+      escalating: false,
+    });
+    render(
+      <CheckpointPanel
+        taskId="task-1"
+        stoppedBecause="The model endpoint could not be reached."
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole("combobox", { name: "Hand over to" });
+    expect(screen.queryByText(/ran out of what its model could do/)).toBeNull();
   });
 
   it("shows what was in flight and how safe repeating it is", async () => {

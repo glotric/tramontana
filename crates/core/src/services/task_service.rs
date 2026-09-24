@@ -141,6 +141,25 @@ pub type WorkerChoice = Arc<dyn Fn(ToolAdmission) -> Arc<dyn AgentProvider> + Se
 pub type PinnedWorkerChoice =
     Arc<dyn Fn(ToolAdmission, &super::PinnedModel) -> Arc<dyn AgentProvider> + Send + Sync>;
 
+/// What an interrupted task can be handed to, in the order to offer it.
+///
+/// Built by [`TaskService::handoff_options`], which owns the ordering: an
+/// application renders what it is given rather than deciding for itself which
+/// model a stopped task should try next (ADR 0055).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandoffOffer {
+    /// The workers, best first. Empty when none can take the task.
+    pub workers: Vec<WorkerOption>,
+    /// Whether the task stopped because the work was beyond the model it ran
+    /// on, rather than because something around the model failed.
+    ///
+    /// When it was, a model off this device is offered first: the model that
+    /// had the task has just shown it could not carry it, and Tramontana
+    /// knows nothing else about which local model is stronger (ADR 0051).
+    /// Nothing moves without the person, and Local Only still refuses.
+    pub escalating: bool,
+}
+
 /// A worker a task can be handed to, as a person chooses it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerOption {

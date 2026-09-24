@@ -587,3 +587,88 @@ async fn a_handoff_keeps_what_the_task_was_allowed_and_a_pinned_task_resumes_on_
     );
     assert_eq!(large.asked(), asked, "no budget was given back");
 }
+
+/// The names a stopped task is offered, in order.
+fn offered(offer: &HandoffOffer) -> Vec<String> {
+    offer
+        .workers
+        .iter()
+        .map(|worker| worker.agent_id.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_task_that_outgrew_its_model_is_offered_the_cloud_first() {
+    // ADR 0055: the local model has just shown it cannot carry this, and
+    // Tramontana knows nothing about which local model is stronger. Under
+    // Automatic, because Local Only refuses a model off this device outright.
+    let small = Model::new("a-small", ModelLocation::Local, 2);
+    let other = Model::new("b-other", ModelLocation::Local, usize::MAX);
+    let cloud = Model::new("c-cloud", ModelLocation::Cloud, usize::MAX);
+    let service = service(
+        RoutingMode::Automatic,
+        &[small.clone(), other.clone(), cloud.clone()],
+        ScriptedApprover::unavailable(),
+    );
+
+    let task = start(&service, ToolAdmission::READ_ONLY).await;
+    let events = settled(&service, &task, 0).await;
+    assert_eq!(stopped_with(&events), ["worker.stopped.limitExceeded"]);
+
+    let offer = service.handoff_options(&task).await.unwrap();
+    assert!(
+        offer.escalating,
+        "a spent budget is evidence about the model"
+    );
+    assert_eq!(
+        offered(&offer),
+        [
+            "builtin.reference@c-cloud/model",
+            "builtin.reference@b-other/model",
+            "builtin.reference@a-small/model",
+        ],
+        "off this device first, then another model here, then the one that just ran"
+    );
+    assert!(
+        !offered(&offer).contains(&"builtin.reference".to_owned()),
+        "the worker that already has the task is a resume, not a handoff"
+    );
+}
+
+#[tokio::test]
+async fn a_local_only_task_is_never_offered_a_model_off_this_device() {
+    let small = Model::new("a-small", ModelLocation::Local, 2);
+    let other = Model::new("b-other", ModelLocation::Local, usize::MAX);
+    let cloud = Model::new("c-cloud", ModelLocation::Cloud, usize::MAX);
+    let service = service(
+        RoutingMode::LocalOnly,
+        &[small.clone(), other.clone(), cloud.clone()],
+        ScriptedApprover::unavailable(),
+    );
+
+    let task = start(&service, ToolAdmission::READ_ONLY).await;
+    settled(&service, &task, 0).await;
+
+    let offer = service.handoff_options(&task).await.unwrap();
+    assert!(offer.escalating, "the reason is the same either way");
+    assert_eq!(
+        offered(&offer),
+        [
+            "builtin.reference@b-other/model",
+            "builtin.reference@a-small/model",
+        ],
+        "the cloud is not offered at all, because handing it there would be refused"
+    );
+
+    // And the refusal still stands if something asks for it anyway.
+    let checkpoint = service.latest_checkpoint(&task).await.unwrap().unwrap();
+    let refused = service
+        .hand_off_to(
+            &task,
+            &checkpoint.checkpoint_id,
+            "builtin.reference@c-cloud/model",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict);
+}

@@ -637,8 +637,26 @@ async fn handoff(args: HandoffArgs) -> ExitCode {
             .await
     } else {
         eprintln!("error: unknown worker {:?}; available:", args.to);
-        for worker in &offered {
-            eprintln!("  {}  {}", worker.agent_id, worker.display_name);
+        // In the core's order, so the terminal suggests what the window would
+        // (ADR 0055): the first is the one to reach for.
+        match service.handoff_options(&task_id).await {
+            Ok(offer) => {
+                if offer.escalating {
+                    eprintln!(
+                        "  this task ran out of what its model could do, so a model off this \
+                         device is offered first"
+                    );
+                }
+                for (position, worker) in offer.workers.iter().enumerate() {
+                    let mark = if position == 0 { "*" } else { " " };
+                    eprintln!("{mark} {}  {}", worker.agent_id, worker.display_name);
+                }
+            }
+            Err(_) => {
+                for worker in &offered {
+                    eprintln!("  {}  {}", worker.agent_id, worker.display_name);
+                }
+            }
         }
         for name in wiring::available_workers() {
             if !offered.iter().any(|worker| worker.agent_id == name) {

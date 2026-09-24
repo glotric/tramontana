@@ -95,6 +95,50 @@ fn stops_the_worker(code: ErrorCode) -> bool {
     )
 }
 
+/// Whether a worker stopped because the work was beyond the model it ran on,
+/// rather than because something around the model failed (ADR 0055).
+///
+/// Only two codes say so. `LimitExceeded` is a task that spent its whole
+/// budget without finishing, and `CapabilityUnsupported` is a model that
+/// cannot do what the work needs at all. Both are evidence about the model.
+///
+/// A timeout, an unavailable provider and a malformed reply are not. A larger
+/// model is slower, not faster; an endpoint that was down says nothing about
+/// the work; and a reply this build could not parse is as likely to be this
+/// adapter's fault as the model's. Sending a person's project off their
+/// device on that evidence would not be honest.
+#[must_use]
+pub fn beyond_the_model(code: ErrorCode) -> bool {
+    matches!(
+        code,
+        ErrorCode::LimitExceeded | ErrorCode::CapabilityUnsupported
+    )
+}
+
+/// The error a worker last stopped on, from the task's own record.
+///
+/// Read backwards, and abandoned at any state change that is not another
+/// interruption: an older stop describes a run that has since continued.
+#[must_use]
+pub fn stopped_on(events: &[crate::contracts::EventEnvelope]) -> Option<ErrorCode> {
+    for event in events.iter().rev() {
+        match &event.payload {
+            EventPayload::TaskStateChanged { current, .. }
+                if *current != TaskState::Interrupted =>
+            {
+                return None;
+            }
+            EventPayload::DiagnosticRecorded { code, .. } => {
+                if let Some(rest) = code.strip_prefix(&format!("{WORKER_STOPPED}.")) {
+                    return serde_json::from_value(serde_json::Value::String(rest.to_owned())).ok();
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Whether another worker could take this one's task: the built-in worker,
 /// in any of its configurations, whose tasks are portable (ADR 0048).
 fn can_be_handed_on(descriptor: &crate::contracts::AgentDescriptor) -> bool {
@@ -884,5 +928,93 @@ fn kind_name(value: &serde_json::Value) -> &'static str {
         serde_json::Value::String(_) => "string",
         serde_json::Value::Array(_) => "array",
         serde_json::Value::Object(_) => "object",
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests assert on known-good literals; a panic is the failure report"
+)]
+mod tests {
+    use super::*;
+    use crate::contracts::{EventEnvelope, EventId, TaskEventKind, TaskId, Timestamp};
+
+    fn event(kind: TaskEventKind, payload: EventPayload) -> EventEnvelope {
+        EventEnvelope {
+            schema_version: crate::contracts::SCHEMA_VERSION,
+            event_id: EventId::new("event"),
+            task_id: TaskId::new("task"),
+            conversation_id: None,
+            sequence: 1,
+            kind,
+            payload,
+            occurred_at: Timestamp::new("2026-01-01T00:00:00.000Z"),
+            correlation_id: crate::contracts::CorrelationId::new("correlation"),
+            visibility: crate::contracts::Visibility::User,
+            causation_id: None,
+        }
+    }
+
+    fn stopped(code: &str) -> EventEnvelope {
+        event(
+            TaskEventKind::DiagnosticRecorded,
+            EventPayload::DiagnosticRecorded {
+                code: format!("{WORKER_STOPPED}.{code}"),
+                summary: "stopped".to_owned(),
+            },
+        )
+    }
+
+    #[test]
+    fn only_a_spent_budget_or_a_missing_capability_is_evidence_about_the_model() {
+        assert!(beyond_the_model(ErrorCode::LimitExceeded));
+        assert!(beyond_the_model(ErrorCode::CapabilityUnsupported));
+        // A larger model is slower, an endpoint that was down says nothing
+        // about the work, and a reply this build could not read may be this
+        // adapter's fault (ADR 0055).
+        assert!(!beyond_the_model(ErrorCode::Timeout));
+        assert!(!beyond_the_model(ErrorCode::ProviderUnavailable));
+        assert!(!beyond_the_model(ErrorCode::ProtocolError));
+        // And a stop that is not the worker's at all is not evidence either.
+        assert!(!beyond_the_model(ErrorCode::Cancelled));
+        assert!(!beyond_the_model(ErrorCode::PermissionDenied));
+    }
+
+    #[test]
+    fn the_stop_read_back_is_the_latest_one() {
+        let events = [stopped("providerUnavailable"), stopped("limitExceeded")];
+        assert_eq!(stopped_on(&events), Some(ErrorCode::LimitExceeded));
+    }
+
+    #[test]
+    fn a_stop_from_a_run_that_has_since_continued_is_not_read() {
+        // Interrupted, then continued: the older diagnostic describes a run
+        // that is over, and offering to escalate on it would be wrong.
+        let events = [
+            stopped("limitExceeded"),
+            event(
+                TaskEventKind::TaskStateChanged,
+                EventPayload::TaskStateChanged {
+                    previous: TaskState::Interrupted,
+                    current: TaskState::Running,
+                    reason_code: "user.resumedCheckpoint".to_owned(),
+                },
+            ),
+        ];
+        assert_eq!(stopped_on(&events), None);
+    }
+
+    #[test]
+    fn a_task_nobody_stopped_has_no_reason() {
+        assert_eq!(stopped_on(&[]), None);
+        let unrelated = [event(
+            TaskEventKind::DiagnosticRecorded,
+            EventPayload::DiagnosticRecorded {
+                code: "reference.callsNotRun".to_owned(),
+                summary: "two calls".to_owned(),
+            },
+        )];
+        assert_eq!(stopped_on(&unrelated), None);
     }
 }

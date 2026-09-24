@@ -55,8 +55,11 @@ what that demonstration finds may still revise them.
   failing; **Hand over to…** gives it to the built-in worker on another
   configured model, such as a larger local one or Claude, which continues
   from the task's record. It suggests another model on this device first, the
-  cloud last. Nothing moves without your click, and a Local Only task is
-  never run on, or handed to, a model off this device.
+  cloud last — **unless the task ran out of what its model could do**, in
+  which case the model off this device is offered first, with what would be
+  sent said before the button (ADR 0055). Nothing moves without your click,
+  nothing escalates itself, and a Local Only task is never run on, or handed
+  to, a model off this device.
 - **Built:** a task runs under the project's own instructions (ADR 0052). Its
   `AGENTS.md`, `CLAUDE.md` and `.tramontana/rules` are read as the task starts
   and given to the model, strongest first, up to 16 KiB a turn; anything that

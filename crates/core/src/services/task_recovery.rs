@@ -10,7 +10,7 @@ use super::checkpoint::{ResumePlan, derive_checkpoint, derive_state};
 use super::journal::{JournalPorts, TaskJournal};
 use super::projection::TaskProjectionWriter;
 use super::runtime::TaskDriver;
-use super::task_service::{LiveTask, TaskService};
+use super::task_service::{HandoffOffer, LiveTask, TaskService, WorkerOption};
 use crate::config::ConfigurationSelection;
 use crate::contracts::{
     AgentDescriptor, CancellationOrigin, CapabilityScope, CheckpointId, CorrelationId, ErrorCode,
@@ -303,6 +303,71 @@ impl TaskService {
             crate::services::runtime::recorded_admission(&continuation.events),
         )?;
         self.launch(continuation, worker, None).await
+    }
+
+    /// The workers this interrupted task can be handed to, best first.
+    ///
+    /// The ordering is a decision, so it is made here: normally another model
+    /// on this device, then the one the routing mode chooses, then a model
+    /// off it, because work leaves the device last (ADR 0051). When the task
+    /// stopped because the work was beyond its model — its budget spent, or a
+    /// capability it does not have — that order is reversed: the local model
+    /// has just shown it cannot carry this, and escalating is the point
+    /// (ADR 0055).
+    ///
+    /// Left out: the worker that already has the task, because continuing
+    /// with it is a resume; and, for a task that runs Local Only, every model
+    /// off this device, because [`Self::hand_off_to`] would refuse it.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::NotFound`] when the task does not exist.
+    pub async fn handoff_options(&self, task_id: &TaskId) -> Result<HandoffOffer, ErrorEnvelope> {
+        let events = self.replay_task_events(task_id, 0).await?;
+        let local_only =
+            created_mode(&events).unwrap_or_else(|| self.routing_mode()) == RoutingMode::LocalOnly;
+        let escalating =
+            crate::services::stopped_on(&events).is_some_and(crate::services::beyond_the_model);
+        let previous = events.iter().rev().find_map(|event| match &event.payload {
+            EventPayload::WorkerSelected { descriptor } => Some(descriptor.agent_id.clone()),
+            _ => None,
+        });
+        // The model that actually ran, which is not the same thing as the
+        // worker: the routing mode's worker ran *some* model, and offering
+        // that same model under its pinned name would suggest the one that
+        // has just failed (ADR 0055).
+        let ran_on = events.iter().rev().find_map(|event| match &event.payload {
+            EventPayload::RoutingDecided { decision } => Some(decision.model.clone()),
+            _ => None,
+        });
+
+        let mut workers: Vec<WorkerOption> = self
+            .workers()
+            .into_iter()
+            .filter(|worker| Some(&worker.agent_id) != previous.as_ref())
+            .filter(|worker| !(local_only && self.is_cloud_worker(&worker.agent_id)))
+            .collect();
+        // A stable sort, so configured models keep their own order within a
+        // rank and the same task always offers the same first suggestion.
+        workers.sort_by_key(|worker| {
+            let pinned = worker.model.as_ref();
+            // Last, whatever else it is: it has already been tried, and
+            // nothing about this stop suggests it would do better.
+            if pinned.is_some_and(|pinned| ran_on.as_ref() == Some(&pinned.model)) {
+                return 3_u8;
+            }
+            let cloud =
+                pinned.map(|model| model.location == crate::contracts::ModelLocation::Cloud);
+            match (escalating, cloud) {
+                (true, Some(true)) | (false, Some(false)) => 0,
+                (_, None) => 1,
+                (true, Some(false)) | (false, Some(true)) => 2,
+            }
+        });
+        Ok(HandoffOffer {
+            workers,
+            escalating,
+        })
     }
 
     /// Hand an interrupted task to the worker a person chose by name, from

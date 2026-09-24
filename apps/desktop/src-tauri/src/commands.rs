@@ -1047,6 +1047,49 @@ pub(crate) struct WorkerView {
     cloud: Option<bool>,
 }
 
+/// What a stopped task can be handed to, in the order to offer it (ADR 0055).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HandoffOfferView {
+    /// The workers, best first; the first is what the panel suggests.
+    workers: Vec<WorkerView>,
+    /// Whether the task stopped because the work was beyond its model, so the
+    /// suggestion is to escalate rather than to try another model here.
+    escalating: bool,
+}
+
+/// The workers this interrupted task can be handed to, best first.
+///
+/// The order and the exclusions are the core's: the worker that already has
+/// the task is left out, a task running Local Only is offered no model off
+/// this device, and a task that ran out of what its model could do is offered
+/// the cloud first. The window renders what it is given.
+///
+/// # Errors
+///
+/// [`ErrorCode::NotFound`] when the task does not exist.
+#[tauri::command]
+pub(crate) async fn handoff_options(
+    task_id: TaskId,
+    state: State<'_, AppState>,
+) -> Result<HandoffOfferView, ErrorEnvelope> {
+    let offer = state.service.handoff_options(&task_id).await?;
+    Ok(HandoffOfferView {
+        workers: offer
+            .workers
+            .into_iter()
+            .map(|worker| WorkerView {
+                agent_id: worker.agent_id,
+                display_name: worker.display_name,
+                cloud: worker.model.map(|model| {
+                    model.location == tramontana_core::contracts::ModelLocation::Cloud
+                }),
+            })
+            .collect(),
+        escalating: offer.escalating,
+    })
+}
+
 /// The workers a stopped task can be handed to: the built-in worker as the
 /// routing mode runs it, and pinned to each configured model.
 #[tauri::command]
