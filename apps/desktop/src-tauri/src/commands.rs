@@ -999,6 +999,41 @@ pub(crate) async fn list_skills(
         .collect())
 }
 
+/// Which of this project's skills look relevant to `goal` (ADR 0054).
+///
+/// A suggestion, not a selection: the window marks these and orders them
+/// first, and a task still uses only the skills the person ticks. The rule is
+/// core's, so the terminal suggests the same ones.
+///
+/// # Errors
+///
+/// Whatever the service reports for an unknown project.
+#[tauri::command]
+pub(crate) async fn suggest_skills(
+    project_id: ProjectId,
+    goal: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, ErrorEnvelope> {
+    let Some(configuration) = state
+        .service
+        .get_effective_configuration(&project_id)
+        .await?
+    else {
+        return Ok(Vec::new());
+    };
+    // A goal longer than a task may have is read up to that length rather
+    // than refused: this runs while the person is still typing, and an error
+    // where a suggestion belongs would be noise.
+    let goal = match goal.char_indices().nth(MAX_GOAL_BYTES) {
+        Some((at, _)) => &goal[..at],
+        None => goal.as_str(),
+    };
+    Ok(tramontana_core::services::suggested_skills(
+        &configuration,
+        goal,
+    ))
+}
+
 /// A worker a task can be handed to (ADR 0048).
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]

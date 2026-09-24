@@ -117,6 +117,13 @@ pub struct ConfigurationSource {
     /// project.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub scopes: Vec<String>,
+    /// Keywords a skill declares as hints that it may be relevant.
+    ///
+    /// Kept so both applications can suggest the same skills for the same
+    /// goal from one rule in core (ADR 0054). A suggestion is not a
+    /// selection, and these grant nothing.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub suggest_when: Vec<String>,
     /// Capabilities requested by a native definition.
     ///
     /// These are informational. Loading Markdown never grants a capability.
@@ -324,6 +331,7 @@ mod tests {
             declared_id: None,
             declared_name: None,
             declared_description: None,
+            suggest_when: Vec::new(),
             scopes: Vec::new(),
             requested_capabilities: Vec::new(),
             priority: None,

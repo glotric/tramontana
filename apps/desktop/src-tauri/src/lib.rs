@@ -69,6 +69,7 @@ pub fn run() {
             commands::discard_checkpoint,
             commands::list_workers,
             commands::list_skills,
+            commands::suggest_skills,
             commands::hand_off_task,
             commands::resolve_approval,
             commands::pending_approvals,

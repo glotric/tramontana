@@ -194,6 +194,7 @@ fn interpret(
         declared_id: None,
         declared_name: None,
         declared_description: None,
+        suggest_when: Vec::new(),
         scopes: Vec::new(),
         requested_capabilities: Vec::new(),
         priority: None,
@@ -235,6 +236,13 @@ fn interpret(
             source.declared_id = matter.id.clone();
             source.declared_name = matter.name.clone();
             source.declared_description = matter.description.clone();
+            // Only a skill is suggested, so only a skill's keywords are kept;
+            // anywhere else the key is a warning already.
+            source.suggest_when = if raw.kind == ConfigurationKind::Skill {
+                matter.suggest_when.clone()
+            } else {
+                Vec::new()
+            };
             source.scopes = if raw.kind == ConfigurationKind::ScopedAgents {
                 scoped_directory(&raw.relative_path).into_iter().collect()
             } else {

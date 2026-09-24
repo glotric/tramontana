@@ -341,7 +341,7 @@ impl SqliteConfigurationRepository {
 
         let source_rows = sqlx::query(
             "SELECT source_id, relative_path, kind, declared_id, declared_name,
-                    declared_description, scopes,
+                    declared_description, suggest_when, scopes,
                     requested_capabilities, priority, selection_order, enabled, active,
                     precedence, content_hash, byte_count, unknown_keys, redactions, recipes
              FROM configuration_source
@@ -358,6 +358,7 @@ impl SqliteConfigurationRepository {
         for row in source_rows {
             let kind: String = row.try_get("kind").map_err(|e| unavailable(&e))?;
             let scopes: String = row.try_get("scopes").map_err(|e| unavailable(&e))?;
+            let suggest_when: String = row.try_get("suggest_when").map_err(|e| unavailable(&e))?;
             let requested: String = row
                 .try_get("requested_capabilities")
                 .map_err(|e| unavailable(&e))?;
@@ -380,6 +381,7 @@ impl SqliteConfigurationRepository {
                 declared_description: row
                     .try_get("declared_description")
                     .map_err(|e| unavailable(&e))?,
+                suggest_when: parse_json(&suggest_when, "configuration suggestion keywords")?,
                 scopes: parse_json(&scopes, "configuration scopes")?,
                 requested_capabilities: parse_json(
                     &requested,
@@ -491,11 +493,11 @@ impl ConfigurationRepository for SqliteConfigurationRepository {
             sqlx::query(
                 "INSERT INTO configuration_source (
                      project_id, manifest_hash, position, source_id, relative_path, kind,
-                     declared_id, declared_name, declared_description, scopes,
+                     declared_id, declared_name, declared_description, suggest_when, scopes,
                      requested_capabilities, priority,
                      selection_order, enabled, active, precedence, content_hash, byte_count,
                      unknown_keys, redactions, recipes
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(project_id.as_str())
             .bind(&configuration.manifest_hash)
@@ -506,6 +508,10 @@ impl ConfigurationRepository for SqliteConfigurationRepository {
             .bind(source.declared_id.as_deref())
             .bind(source.declared_name.as_deref())
             .bind(source.declared_description.as_deref())
+            .bind(to_json(
+                &source.suggest_when,
+                "configuration suggestion keywords",
+            )?)
             .bind(to_json(&source.scopes, "configuration scopes")?)
             .bind(to_json(
                 &source.requested_capabilities,

@@ -638,6 +638,16 @@ button:disabled {
   align-items: flex-start;
 }
 
+/* Said in words, not by position alone: a reordered list is not a label. */
+.composer-suggested {
+  font-style: normal;
+  color: var(--accent-dark);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  margin-left: 6px;
+}
+
 /* Handing the task to another worker: a second decision, set apart from
    resume and discard (ADR 0048). */
 .checkpoint-handoff {

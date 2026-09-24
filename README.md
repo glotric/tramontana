@@ -67,7 +67,9 @@ what that demonstration finds may still revise them.
   Markdown procedures in `.tramontana/skills`. The composer lists them with
   their descriptions, all unticked; the CLI takes `--skill-id`. A ticked
   skill's text goes to the model with the project's other instructions, and
-  grants nothing.
+  grants nothing. A skill that declares `suggest_when` keywords is marked
+  **suggested for this goal** and listed first when the goal mentions one; the
+  CLI says the same in a note. Nothing is ticked for you (ADR 0054).
 - **Deferred from Beta 1:** an external coding worker (M10, ADR 0038), and
   the rest listed in the [draft release notes](docs/RELEASE_NOTES_BETA_1.md).
 
@@ -133,7 +135,8 @@ what the model works to. They cannot grant it anything.
 
 A `.tramontana/skills/*.md` file is a reusable procedure. It is offered, never
 applied by itself: tick it in the composer, or name it with `--skill-id`, and
-that one task follows it.
+that one task follows it. Give it `suggest_when: [rust, cargo]` and it
+is marked when the goal mentions one of those words — marked, not chosen.
 
 **3. Start a task.** Add a conversation, then write the goal in the
 composer. By default a task may only read. Tick **May edit files**, **May

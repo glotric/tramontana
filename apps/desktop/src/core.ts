@@ -559,6 +559,18 @@ export async function listSkills(projectId: string): Promise<readonly SkillView[
 }
 
 /**
+ * Which of a project's skills look relevant to `goal`, by declared id
+ * (ADR 0054).
+ *
+ * Suggesting is not selecting: these are marked and shown first, and a task
+ * still uses only the skills the person ticks. The rule is the core's, so the
+ * CLI suggests the same ones.
+ */
+export async function suggestSkills(projectId: string, goal: string): Promise<readonly string[]> {
+  return invoke<string[]>("suggest_skills", { projectId, goal });
+}
+
+/**
  * Hand the checkpoint on screen to another worker, which continues the task
  * from its record with a budget of its own. Like resuming, it names the
  * checkpoint the person inspected.

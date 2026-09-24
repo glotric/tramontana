@@ -29,6 +29,7 @@ mod reference_worker;
 mod release;
 mod routing;
 mod runtime;
+mod suggestion;
 mod task_export;
 mod task_recovery;
 mod task_service;
@@ -76,6 +77,7 @@ pub use release::{RELEASE_CAPABILITY, ReleaseContext, ReleaseError, ReleaseManag
 pub use routing::{
     AvailabilitySnapshot, NoEligibleRoute, RoutingInput, route, route_after_failure,
 };
+pub use suggestion::suggested_skills;
 pub use task_export::ImportSummary;
 pub use task_service::{
     PinnedWorkerChoice, Providers, Repositories, StartTaskRequest, TaskService, WorkerChoice,

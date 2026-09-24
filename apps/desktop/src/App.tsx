@@ -36,6 +36,7 @@ import {
   listTasks,
   listSkills,
   listWorkers,
+  suggestSkills,
   onApprovalRequested,
   openProject,
   replayTaskEvents,
@@ -75,6 +76,9 @@ function shortId(value: string): string {
 
 /** Where a task's models may run, in the order the composer offers them. */
 const MODES: readonly RoutingMode[] = ["localOnly", "automatic", "cloudPreferred"];
+
+/** How long the typing settles before the skills are suggested again. */
+const SUGGESTION_DELAY_MS = 300;
 
 /** What each mode means for the task about to start. */
 const MODE_TEXT: Record<RoutingMode, string> = {
@@ -169,6 +173,7 @@ export function App(): React.JSX.Element {
     { readonly projectId: string; readonly skills: readonly SkillView[] } | undefined
   >();
   const [ticked, setTicked] = useState<readonly string[]>([]);
+  const [suggested, setSuggested] = useState<readonly string[]>([]);
   const [conversationTitle, setConversationTitle] = useState("");
   const [approvals, setApprovals] = useState<readonly ApprovalRequest[]>([]);
   // Moves on whenever a task ends, so the Changes panel reads the tree again.
@@ -355,6 +360,28 @@ export function App(): React.JSX.Element {
     };
   }, [skillProjectId]);
 
+  // Which of them look relevant to the goal as it stands (ADR 0054). The
+  // rule is the core's, asked again when the typing settles rather than on
+  // every keystroke. A suggestion marks and orders; it never ticks.
+  useEffect(() => {
+    if (skillProjectId === undefined) return;
+    let active = true;
+    const timer = setTimeout(() => {
+      void suggestSkills(skillProjectId, goal).then(
+        (found) => {
+          if (active) setSuggested(found);
+        },
+        () => {
+          if (active) setSuggested([]);
+        },
+      );
+    }, SUGGESTION_DELAY_MS);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [skillProjectId, goal]);
+
   useEffect(() => {
     let active = true;
     void fetchCoreInfo().then(
@@ -466,6 +493,16 @@ export function App(): React.JSX.Element {
   const chosenSkills = useMemo(
     () => ticked.filter((id) => offeredSkills.some((skill) => skill.id === id)),
     [ticked, offeredSkills],
+  );
+  // Suggested skills first, each in the order the core gave, then the rest in
+  // the project's own order. Stable, so a list does not reshuffle under the
+  // pointer as the goal is typed.
+  const listedSkills = useMemo(
+    () => [
+      ...offeredSkills.filter((skill) => suggested.includes(skill.id)),
+      ...offeredSkills.filter((skill) => !suggested.includes(skill.id)),
+    ],
+    [offeredSkills, suggested],
   );
 
   const running = selectedTaskId !== undefined && taskState !== undefined && !isTerminal(taskState);
@@ -958,7 +995,7 @@ export function App(): React.JSX.Element {
                     {offeredSkills.length > 0 && (
                       <fieldset className="composer-skills">
                         <legend>Skills this project offers</legend>
-                        {offeredSkills.map((skill) => (
+                        {listedSkills.map((skill) => (
                           <label key={skill.id} className="composer-toggle">
                             <input
                               type="checkbox"
@@ -973,6 +1010,9 @@ export function App(): React.JSX.Element {
                             />
                             <span>
                               {skill.displayName}
+                              {suggested.includes(skill.id) && (
+                                <em className="composer-suggested"> suggested for this goal</em>
+                              )}
                               {skill.description === undefined ? "" : ` — ${skill.description}`}
                             </span>
                           </label>

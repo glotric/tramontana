@@ -556,6 +556,13 @@
           "description": "Stable project-scoped key for this source (currently its relative path).",
           "type": "string"
         },
+        "suggestWhen": {
+          "description": "Keywords a skill declares as hints that it may be relevant.\n\nKept so both applications can suggest the same skills for the same\ngoal from one rule in core (ADR 0054). A suggestion is not a\nselection, and these grant nothing.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "unknownKeys": {
           "description": "Front matter keys this build does not recognize.\n\nPreserved rather than dropped, so a file authored for a newer version\nsurvives a round trip through an older one (`CONFIGURATION.md` §5).",
           "items": {

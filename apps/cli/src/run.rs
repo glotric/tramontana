@@ -306,6 +306,9 @@ async fn run(args: TaskArgs) -> ExitCode {
         workflow_id: args.workflow_id,
         skill_ids: args.skill_ids,
     };
+    if selection.skill_ids.is_empty() {
+        suggest(&service, conversation_id.as_ref(), &args.goal).await;
+    }
 
     let task_id = match service
         .start_task(StartTaskRequest {
@@ -657,4 +660,38 @@ async fn handoff(args: HandoffArgs) -> ExitCode {
         println!("handed to {} at event {}", args.to, handed.event_sequence);
     }
     stream_task(service, task_id, args.json, None, handed.event_sequence).await
+}
+
+/// Say which of the project's skills look relevant, and how to use one.
+///
+/// Only when the person named none: a note beside a choice already made
+/// would be noise. It goes to stderr, because `--json` puts the task's
+/// events on stdout and a note is not one of them. Nothing is selected by it
+/// (ADR 0054).
+async fn suggest(
+    service: &tramontana_core::services::TaskService,
+    conversation_id: Option<&ConversationId>,
+    goal: &str,
+) {
+    let Some(conversation_id) = conversation_id else {
+        return;
+    };
+    let Ok(conversation) = service.get_conversation(conversation_id).await else {
+        return;
+    };
+    let Some(project_id) = conversation.project_id else {
+        return;
+    };
+    let Ok(Some(configuration)) = service.get_effective_configuration(&project_id).await else {
+        return;
+    };
+    let suggested = tramontana_core::services::suggested_skills(&configuration, goal);
+    if suggested.is_empty() {
+        return;
+    }
+    eprintln!(
+        "note: these skills match this goal: {}",
+        suggested.join(", ")
+    );
+    eprintln!("      this task uses none; pass --skill-id <ID> to use one");
 }

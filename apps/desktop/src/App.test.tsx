@@ -38,6 +38,7 @@ const listApps = vi.hoisted(() => vi.fn());
 const latestCheckpoint = vi.hoisted(() => vi.fn());
 const listWorkers = vi.hoisted(() => vi.fn());
 const listSkills = vi.hoisted(() => vi.fn());
+const suggestSkills = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -65,6 +66,7 @@ vi.mock("./core.js", async () => {
     listApps,
     listWorkers,
     listSkills,
+    suggestSkills,
   };
 });
 
@@ -256,6 +258,7 @@ describe("M2 durable desktop surface", () => {
     listApps.mockResolvedValue([]);
     listWorkers.mockResolvedValue([]);
     listSkills.mockResolvedValue([]);
+    suggestSkills.mockResolvedValue([]);
     listProjectGrants.mockResolvedValue([]);
     listConfiguredEndpoints.mockResolvedValue([]);
     listModelEndpoints.mockResolvedValue([]);
@@ -553,6 +556,38 @@ describe("M2 durable desktop surface", () => {
         expect.any(Function),
         conversation.conversationId,
         expect.objectContaining({ skills: ["review"] }),
+      );
+    });
+  });
+
+  it("marks the skills that match the goal and shows them first, ticking none", async () => {
+    listSkills.mockResolvedValue([
+      { id: "release", displayName: "Release checklist" },
+      { id: "rust-quality", displayName: "Rust quality pass", description: "Format and lint." },
+    ]);
+    suggestSkills.mockResolvedValue(["rust-quality"]);
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    const marked = await screen.findByText("suggested for this goal");
+    // Said in words, and put first, without ticking anything.
+    const boxes = screen.getAllByRole<HTMLInputElement>("checkbox", { name: /pass|checklist/ });
+    expect(boxes.map((box) => box.checked)).toEqual([false, false]);
+    expect(marked.closest("label")?.textContent).toContain("Rust quality pass");
+    const names = screen
+      .getAllByRole("checkbox", { name: /pass|checklist/ })
+      .map((box) => box.closest("label")?.textContent ?? "");
+    expect(names[0]).toContain("Rust quality pass");
+    expect(names[1]).toContain("Release checklist");
+
+    // Suggesting is not selecting: the task carries nothing until it is ticked.
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalledWith(
+        "Say hello",
+        expect.any(Function),
+        conversation.conversationId,
+        expect.not.objectContaining({ skills: expect.anything() }),
       );
     });
   });
