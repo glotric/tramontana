@@ -42,6 +42,49 @@ pub struct ConfigurationSelection {
     pub skill_ids: Vec<String>,
 }
 
+impl ConfigurationSelection {
+    /// The choices a resolved configuration was made with.
+    ///
+    /// A task records its configuration by hash, not the selection that
+    /// produced it, so continuing one has to recover the choices before it can
+    /// resolve the files again and compare. Everything needed is in the
+    /// record: which reusable definitions came out active, and in what order
+    /// the skills were named.
+    ///
+    /// `active_path` cannot be recovered — scope matching leaves no trace of
+    /// what it matched against. Nothing sets one today; if anything ever does,
+    /// the hashes will differ and the resume is refused, which is the safe
+    /// direction (ADR 0053).
+    #[must_use]
+    pub fn recorded_in(configuration: &EffectiveConfiguration) -> Self {
+        let active = |kind: ConfigurationKind| {
+            configuration
+                .sources
+                .iter()
+                .find(|source| source.active && source.kind == kind)
+                .and_then(|source| source.declared_id.clone())
+        };
+        let mut skills: Vec<_> = configuration
+            .sources
+            .iter()
+            .filter(|source| source.active && source.kind == ConfigurationKind::Skill)
+            .filter_map(|source| {
+                Some((
+                    source.selection_order.unwrap_or(u32::MAX),
+                    source.declared_id.clone()?,
+                ))
+            })
+            .collect();
+        skills.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        Self {
+            active_path: None,
+            agent_id: active(ConfigurationKind::AgentProfile),
+            workflow_id: active(ConfigurationKind::Workflow),
+            skill_ids: skills.into_iter().map(|(_, id)| id).collect(),
+        }
+    }
+}
+
 /// Largest instruction file accepted, in bytes.
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 
@@ -150,6 +193,7 @@ fn interpret(
         kind: raw.kind,
         declared_id: None,
         declared_name: None,
+        declared_description: None,
         scopes: Vec::new(),
         requested_capabilities: Vec::new(),
         priority: None,
@@ -190,6 +234,7 @@ fn interpret(
             body = Some(rest.trim().to_owned());
             source.declared_id = matter.id.clone();
             source.declared_name = matter.name.clone();
+            source.declared_description = matter.description.clone();
             source.scopes = if raw.kind == ConfigurationKind::ScopedAgents {
                 scoped_directory(&raw.relative_path).into_iter().collect()
             } else {

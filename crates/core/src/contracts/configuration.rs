@@ -104,6 +104,12 @@ pub struct ConfigurationSource {
     /// Declared `name` from front matter, when present.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub declared_name: Option<String>,
+    /// Declared one-line `description` from front matter, when present.
+    ///
+    /// Kept because a person choosing a skill needs to know what it does, and
+    /// opening every file to find out is not a choice anyone makes (ADR 0053).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub declared_description: Option<String>,
     /// Project-relative scopes declared by the source.
     ///
     /// A nested `AGENTS.md` contributes its parent directory. Native rules
@@ -317,6 +323,7 @@ mod tests {
             kind,
             declared_id: None,
             declared_name: None,
+            declared_description: None,
             scopes: Vec::new(),
             requested_capabilities: Vec::new(),
             priority: None,

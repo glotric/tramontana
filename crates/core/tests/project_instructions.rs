@@ -19,7 +19,7 @@ use tokio::{
     time::{Duration, timeout},
 };
 use tokio_util::sync::CancellationToken;
-use tramontana_core::config::RawSource;
+use tramontana_core::config::{ConfigurationSelection, RawSource};
 use tramontana_core::{contracts::*, ports::*, services::*, testing::*};
 
 /// A model that answers at once and keeps every request it was given.
@@ -542,4 +542,152 @@ async fn an_untouched_project_resumes_as_it_always_did() {
 
     let messages = model.system_messages();
     assert!(messages[1].contains("Answer in one sentence."));
+}
+
+/// Start a task that names `selection`, and wait for it to end.
+async fn run_with(
+    service: &TaskService,
+    selection: ConfigurationSelection,
+) -> (TaskId, Vec<EventEnvelope>) {
+    let project = service
+        .create_project("Fixture", vec!["/fixture".into()])
+        .await
+        .unwrap();
+    let conversation = service
+        .create_conversation(Some(project.project_id), "Question")
+        .await
+        .unwrap();
+    let task = service
+        .start_task(StartTaskRequest {
+            conversation_id: Some(conversation.conversation_id),
+            goal: "Say what the project asks for.".into(),
+            selection: Some(selection),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let events = timeout(Duration::from_secs(20), async {
+        loop {
+            let events = service.replay_task_events(&task, 0).await.unwrap();
+            if events
+                .last()
+                .is_some_and(|event| matches!(event.kind, TaskEventKind::TaskCompleted))
+            {
+                return events;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    (task, events)
+}
+
+fn review_skill() -> RawSource {
+    file(
+        ".tramontana/skills/review.md",
+        ConfigurationKind::Skill,
+        "---\nid: review\nname: Review Rust\ndescription: Look for unsafe code.\n---\nRead every changed Rust file for unsafe blocks.",
+    )
+}
+
+#[tokio::test]
+async fn a_task_is_given_the_skills_it_names() {
+    let model = Recording::new();
+    let service = service(&model, Some(Files::holding(vec![review_skill()])));
+
+    let (_, events) = run_with(
+        &service,
+        ConfigurationSelection {
+            skill_ids: vec!["review".to_owned()],
+            ..ConfigurationSelection::default()
+        },
+    )
+    .await;
+
+    let messages = model.system_messages();
+    assert!(
+        messages.len() > 1
+            && messages[1].contains("Read every changed Rust file for unsafe blocks."),
+        "the skill the person chose must reach the model; sent: {messages:?}"
+    );
+    assert!(source(&manifest(&events), ".tramontana/skills/review.md").included);
+}
+
+#[tokio::test]
+async fn a_task_that_names_no_skill_is_given_none() {
+    let model = Recording::new();
+    let service = service(&model, Some(Files::holding(vec![review_skill()])));
+
+    let (_, events) = run_with(&service, ConfigurationSelection::default()).await;
+
+    assert_eq!(
+        model.system_messages().len(),
+        1,
+        "offering a skill is not selecting one"
+    );
+    assert_eq!(
+        source(&manifest(&events), ".tramontana/skills/review.md")
+            .exclusion_reason
+            .as_deref(),
+        Some("context.notActive")
+    );
+}
+
+#[tokio::test]
+async fn a_task_that_named_a_skill_still_resumes() {
+    // Continuing re-reads the files, and has to recover the choices the task
+    // ran under: resolving with none of them would make a task that named a
+    // skill look changed and refuse a resume nothing had touched (ADR 0053).
+    let model = Recording::holding();
+    let service = service(&model, Some(Files::holding(vec![review_skill()])));
+
+    let project = service
+        .create_project("Fixture", vec!["/fixture".into()])
+        .await
+        .unwrap();
+    let conversation = service
+        .create_conversation(Some(project.project_id), "Question")
+        .await
+        .unwrap();
+    let task = service
+        .start_task(StartTaskRequest {
+            conversation_id: Some(conversation.conversation_id),
+            goal: "Say what the project asks for.".into(),
+            selection: Some(ConfigurationSelection {
+                skill_ids: vec!["review".to_owned()],
+                ..ConfigurationSelection::default()
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(5), model.entered.notified())
+        .await
+        .unwrap();
+    let checkpoint = service.create_checkpoint(&task).await.unwrap();
+
+    model.hold.store(false, Ordering::SeqCst);
+    service
+        .resume_task(&task, &checkpoint.checkpoint_id)
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(20), async {
+        loop {
+            if service.get_task(&task).await.unwrap().state.is_terminal() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        model
+            .system_messages()
+            .get(1)
+            .is_some_and(|sent| sent.contains("Read every changed Rust file for unsafe blocks.")),
+        "the continued run reads the same skill"
+    );
 }

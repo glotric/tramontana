@@ -360,6 +360,13 @@ export interface ConfigurationSource {
    */
   contentHash: string;
   /**
+   * Declared one-line `description` from front matter, when present.
+   *
+   * Kept because a person choosing a skill needs to know what it does, and
+   * opening every file to find out is not a choice anyone makes (ADR 0053).
+   */
+  declaredDescription?: string;
+  /**
    * Declared `id` from front matter, when present.
    */
   declaredId?: string;

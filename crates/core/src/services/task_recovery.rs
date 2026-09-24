@@ -228,9 +228,24 @@ impl TaskService {
             // (ADR 0052).
             let manifest_hash = match &self.project_sources {
                 Some(reader) => {
+                    // Resolved with the choices the task ran under, recovered
+                    // from its own record. Resolving with none of them would
+                    // make every task that named a skill look changed, and
+                    // refuse a resume that nothing had touched (ADR 0053).
+                    let selection = match &record.configuration_manifest_hash {
+                        Some(hash) => self
+                            .repositories
+                            .configuration
+                            .get(project_id, hash)
+                            .await
+                            .ok()
+                            .map(|recorded| ConfigurationSelection::recorded_in(&recorded))
+                            .unwrap_or_default(),
+                        None => ConfigurationSelection::default(),
+                    };
                     let (configuration, text) = crate::config::resolve_with_bodies(
                         reader.read(project_id).await?,
-                        &ConfigurationSelection::default(),
+                        &selection,
                         self.clock.now(),
                     );
                     instructions = text;

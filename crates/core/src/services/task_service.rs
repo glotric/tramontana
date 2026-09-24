@@ -51,6 +51,14 @@ pub struct StartTaskRequest {
     /// it. A worker pinned to a model off this device is refused to a task
     /// that runs Local Only, before the task is written.
     pub worker: Option<String>,
+    /// Which of the project's reusable definitions this task uses: its
+    /// skills, and an agent profile or workflow when one is named
+    /// (ADR 0053).
+    ///
+    /// `None` selects none of them, which is what a task that says nothing
+    /// has always run under. Selecting a definition contributes its text and
+    /// nothing else: no skill grants a tool, a root, or a destination.
+    pub selection: Option<ConfigurationSelection>,
 }
 
 /// Runtime state for a task that is currently running.
@@ -607,12 +615,16 @@ impl TaskService {
 
         // Read now, not from the last inventory the project resolved: a task's
         // record must describe the instructions it actually ran under, and the
-        // worker is about to be given their text (ADR 0052).
+        // worker is about to be given their text (ADR 0052). What the task
+        // selects is its own, not whatever the project last resolved with: a
+        // task must not inherit a skill because someone inspected the
+        // configuration with it earlier (ADR 0053).
+        let selection_default = ConfigurationSelection::default();
         let (configuration, instructions) = match (&project_id, &self.project_sources) {
             (Some(project_id), Some(reader)) => {
                 let (configuration, instructions) = crate::config::resolve_with_bodies(
                     reader.read(project_id).await?,
-                    &ConfigurationSelection::default(),
+                    request.selection.as_ref().unwrap_or(&selection_default),
                     self.clock.now(),
                 );
                 // Saved only when it is new. A resume reads the manifest back

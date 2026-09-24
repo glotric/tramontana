@@ -37,6 +37,7 @@ const watchTask = vi.hoisted(() => vi.fn());
 const listApps = vi.hoisted(() => vi.fn());
 const latestCheckpoint = vi.hoisted(() => vi.fn());
 const listWorkers = vi.hoisted(() => vi.fn());
+const listSkills = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -63,6 +64,7 @@ vi.mock("./core.js", async () => {
     latestCheckpoint,
     listApps,
     listWorkers,
+    listSkills,
   };
 });
 
@@ -253,6 +255,7 @@ describe("M2 durable desktop surface", () => {
     latestCheckpoint.mockResolvedValue(undefined);
     listApps.mockResolvedValue([]);
     listWorkers.mockResolvedValue([]);
+    listSkills.mockResolvedValue([]);
     listProjectGrants.mockResolvedValue([]);
     listConfiguredEndpoints.mockResolvedValue([]);
     listModelEndpoints.mockResolvedValue([]);
@@ -519,6 +522,44 @@ describe("M2 durable desktop surface", () => {
         expect.objectContaining({ worker: "builtin.reference", routingMode: "localOnly" }),
       );
     });
+  });
+
+  it("gives a task the project's skills the person ticked, and none otherwise", async () => {
+    listSkills.mockResolvedValue([
+      { id: "review", displayName: "Review Rust", description: "Look for unsafe code." },
+      { id: "release", displayName: "Release checklist" },
+    ]);
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    // Offering is not selecting: nothing is ticked until the person ticks it.
+    await screen.findByText(/Review Rust — Look for unsafe code\./);
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalledWith(
+        "Say hello",
+        expect.any(Function),
+        conversation.conversationId,
+        expect.not.objectContaining({ skills: expect.anything() }),
+      );
+    });
+
+    await user.click(screen.getByRole("checkbox", { name: /Review Rust/ }));
+    expect(screen.getByText(/It is given one of the project's skills to follow\./)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenLastCalledWith(
+        "Say hello",
+        expect.any(Function),
+        conversation.conversationId,
+        expect.objectContaining({ skills: ["review"] }),
+      );
+    });
+  });
+
+  it("shows no skills chooser for a project that offers none", async () => {
+    await renderLoaded();
+    expect(screen.queryByRole("group", { name: "Skills this project offers" })).toBeNull();
   });
 
   it("lets a task browse only when the person allows it, and says what Local only does not cover", async () => {

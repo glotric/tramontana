@@ -19,7 +19,7 @@ import { ChangesPanel } from "./ChangesPanel.js";
 import { GrantsPanel } from "./GrantsPanel.js";
 import { AppsView } from "./AppsView.js";
 import { ModelsView } from "./ModelsView.js";
-import type { WorkerView } from "./core.js";
+import type { SkillView, WorkerView } from "./core.js";
 import { foldFrame } from "./stream.js";
 import type { LiveStream } from "./stream.js";
 import { TaskHeader } from "./TaskHeader.js";
@@ -34,6 +34,7 @@ import {
   listPendingApprovals,
   listProjects,
   listTasks,
+  listSkills,
   listWorkers,
   onApprovalRequested,
   openProject,
@@ -97,6 +98,7 @@ function describeChoices(
   recipes: boolean,
   apps: boolean,
   browse: boolean,
+  skills: number,
 ): string {
   const asks = [
     ...(writes ? ["edit files"] : []),
@@ -117,7 +119,15 @@ function describeChoices(
       ? " Each new site is asked about once, and every form. Local only governs where models run, not the pages the browser opens."
       : " Each new site is asked about once, and every form."
     : "";
-  return `${MODE_TEXT[mode]} ${access}${commands}${browsing}`;
+  // A skill is guidance the model is given, never a capability, so it is
+  // said apart from what the task may ask to do (ADR 0053).
+  const chosen =
+    skills === 0
+      ? ""
+      : skills === 1
+        ? " It is given one of the project's skills to follow."
+        : ` It is given ${skills} of the project's skills to follow.`;
+  return `${MODE_TEXT[mode]} ${access}${commands}${browsing}${chosen}`;
 }
 
 /**
@@ -155,6 +165,10 @@ export function App(): React.JSX.Element {
   const [mayBrowse, setMayBrowse] = useState(false);
   const [workers, setWorkers] = useState<readonly WorkerView[]>([]);
   const [worker, setWorker] = useState<string>("");
+  const [skills, setSkills] = useState<
+    { readonly projectId: string; readonly skills: readonly SkillView[] } | undefined
+  >();
+  const [ticked, setTicked] = useState<readonly string[]>([]);
   const [conversationTitle, setConversationTitle] = useState("");
   const [approvals, setApprovals] = useState<readonly ApprovalRequest[]>([]);
   // Moves on whenever a task ends, so the Changes panel reads the tree again.
@@ -321,6 +335,26 @@ export function App(): React.JSX.Element {
     };
   }, []);
 
+  // The skills this project offers (ADR 0053). Held with the project they
+  // came from, so another project's list is never shown while the new one
+  // loads, and so changing project needs no reset.
+  const skillProjectId = inspection?.project.projectId;
+  useEffect(() => {
+    if (skillProjectId === undefined) return;
+    let active = true;
+    void listSkills(skillProjectId).then(
+      (found) => {
+        if (active) setSkills({ projectId: skillProjectId, skills: found });
+      },
+      () => {
+        if (active) setSkills({ projectId: skillProjectId, skills: [] });
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [skillProjectId]);
+
   useEffect(() => {
     let active = true;
     void fetchCoreInfo().then(
@@ -422,6 +456,17 @@ export function App(): React.JSX.Element {
   );
   const chosenWorker =
     offeredWorkers.find((choice) => choice.agentId === worker) ?? offeredWorkers[0];
+  // Offering is not selecting, and a tick belongs to the project it was made
+  // in: only skills this project offers can reach a task, so changing project
+  // drops the rest without anything having to clear them.
+  const offeredSkills = useMemo(
+    () => (skills !== undefined && skills.projectId === skillProjectId ? skills.skills : []),
+    [skills, skillProjectId],
+  );
+  const chosenSkills = useMemo(
+    () => ticked.filter((id) => offeredSkills.some((skill) => skill.id === id)),
+    [ticked, offeredSkills],
+  );
 
   const running = selectedTaskId !== undefined && taskState !== undefined && !isTerminal(taskState);
   const configuration = inspection?.configuration ?? undefined;
@@ -494,6 +539,7 @@ export function App(): React.JSX.Element {
       browse: mayBrowse,
       routingMode,
       ...(chosenWorker === undefined ? {} : { worker: chosenWorker.agentId }),
+      ...(chosenSkills.length === 0 ? {} : { skills: chosenSkills }),
     }).then(
       (id) => {
         setSelectedTaskId(id);
@@ -505,6 +551,7 @@ export function App(): React.JSX.Element {
     );
   }, [
     goal,
+    chosenSkills,
     chosenWorker,
     handleUpdate,
     mayBrowse,
@@ -908,9 +955,40 @@ export function App(): React.JSX.Element {
                       />
                       May browse the web
                     </label>
+                    {offeredSkills.length > 0 && (
+                      <fieldset className="composer-skills">
+                        <legend>Skills this project offers</legend>
+                        {offeredSkills.map((skill) => (
+                          <label key={skill.id} className="composer-toggle">
+                            <input
+                              type="checkbox"
+                              checked={chosenSkills.includes(skill.id)}
+                              onChange={(changed) => {
+                                setTicked((chosen) =>
+                                  changed.target.checked
+                                    ? [...chosen, skill.id]
+                                    : chosen.filter((id) => id !== skill.id),
+                                );
+                              }}
+                            />
+                            <span>
+                              {skill.displayName}
+                              {skill.description === undefined ? "" : ` — ${skill.description}`}
+                            </span>
+                          </label>
+                        ))}
+                      </fieldset>
+                    )}
                   </fieldset>
                   <p className="composer-disclosure">
-                    {describeChoices(routingMode, mayWrite, mayRunRecipes, mayUseApps, mayBrowse)}
+                    {describeChoices(
+                      routingMode,
+                      mayWrite,
+                      mayRunRecipes,
+                      mayUseApps,
+                      mayBrowse,
+                      chosenSkills.length,
+                    )}
                   </p>
                   <div className="composer-footer">
                     <span>

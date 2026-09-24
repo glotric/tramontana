@@ -11,7 +11,6 @@ use tramontana_core::contracts::{
 };
 use tramontana_core::services::{StartTaskRequest, TaskService};
 
-use crate::configuration;
 use crate::render::{self, event_line, frame_line};
 use crate::wiring;
 
@@ -298,26 +297,15 @@ async fn run(args: TaskArgs) -> ExitCode {
     };
 
     let conversation_id = args.conversation_id.map(ConversationId::new);
-    if let Some(conversation_id) = &conversation_id {
-        let conversation = match service.get_conversation(conversation_id).await {
-            Ok(conversation) => conversation,
-            Err(error) => return render::application_error(&error),
-        };
-        if let Some(project_id) = conversation.project_id {
-            let selection = ConfigurationSelection {
-                active_path: args.active_path,
-                agent_id: args.agent_id,
-                workflow_id: args.workflow_id,
-                skill_ids: args.skill_ids,
-            };
-            if let Err(message) =
-                configuration::resolve_project(&service, &project_id, &selection).await
-            {
-                eprintln!("error: configuration could not be resolved: {message}");
-                return ExitCode::FAILURE;
-            }
-        }
-    }
+    // The task carries its own selection rather than resolving the project
+    // first: what a task uses is the task's, and starting one now resolves
+    // the project's files itself (ADRs 0052 and 0053).
+    let selection = ConfigurationSelection {
+        active_path: args.active_path,
+        agent_id: args.agent_id,
+        workflow_id: args.workflow_id,
+        skill_ids: args.skill_ids,
+    };
 
     let task_id = match service
         .start_task(StartTaskRequest {
@@ -325,6 +313,7 @@ async fn run(args: TaskArgs) -> ExitCode {
             goal: args.goal,
             routing_mode: args.mode.map(Into::into),
             worker: args.worker.clone(),
+            selection: Some(selection),
             ..Default::default()
         })
         .await

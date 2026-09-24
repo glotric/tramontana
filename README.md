@@ -63,6 +63,11 @@ what that demonstration finds may still revise them.
   does not fit is named rather than cut. A credential is removed before they
   are recorded, so it is removed before they are sent, and the task's record
   says which files travelled. Nothing in them grants a permission.
+- **Built:** a task can be given the project's **skills** (ADR 0053) — the
+  Markdown procedures in `.tramontana/skills`. The composer lists them with
+  their descriptions, all unticked; the CLI takes `--skill-id`. A ticked
+  skill's text goes to the model with the project's other instructions, and
+  grants nothing.
 - **Deferred from Beta 1:** an external coding worker (M10, ADR 0038), and
   the rest listed in the [draft release notes](docs/RELEASE_NOTES_BETA_1.md).
 
@@ -126,6 +131,10 @@ A task is also given the project's own instructions — its `AGENTS.md`,
 `CLAUDE.md` and any `.tramontana/rules` — so what the repository asks for is
 what the model works to. They cannot grant it anything.
 
+A `.tramontana/skills/*.md` file is a reusable procedure. It is offered, never
+applied by itself: tick it in the composer, or name it with `--skill-id`, and
+that one task follows it.
+
 **3. Start a task.** Add a conversation, then write the goal in the
 composer. By default a task may only read. Tick **May edit files**, **May
 run recipes**, **May use Apps** or **May browse the web** to let the model
@@ -163,7 +172,7 @@ in a checkout):
 pnpm dev:cli project open /path/to/project
 pnpm dev:cli task "Say hello"   # a read-only task
 pnpm dev:cli task "Read the README and summarize it" --allow-writes --browse \
-    --worker builtin.reference@<ENDPOINT>/<MODEL>
+    --worker builtin.reference@<ENDPOINT>/<MODEL> --skill-id <SKILL>
 pnpm check:fast                 # format, contracts, lint, types, tests
 pnpm check                      # the above plus the release build
 ```

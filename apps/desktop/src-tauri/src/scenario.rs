@@ -521,9 +521,10 @@ async fn start(state: &AppState, conversation: &ConversationId) -> TaskId {
         state,
         "Make greeting.txt greet Tramontana, then run the project's test.".to_owned(),
         Some(conversation.clone()),
-        Some(ToolAdmission::READ_WRITE.with_recipes()),
-        None,
-        None,
+        crate::commands::TaskChoices {
+            admission: Some(ToolAdmission::READ_WRITE.with_recipes()),
+            ..crate::commands::TaskChoices::default()
+        },
         |_| true,
     )
     .await
@@ -644,9 +645,10 @@ async fn the_apps_screen_shows_an_app_its_tools_its_decisions_and_nothing_secret
         &state,
         "Ask the App to greet Ada.".to_owned(),
         Some(conversation.conversation_id.clone()),
-        Some(ToolAdmission::READ_ONLY.with_apps()),
-        None,
-        None,
+        crate::commands::TaskChoices {
+            admission: Some(ToolAdmission::READ_ONLY.with_apps()),
+            ..crate::commands::TaskChoices::default()
+        },
         |_| true,
     )
     .await

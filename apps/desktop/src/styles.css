@@ -612,6 +612,32 @@ button:disabled {
   max-width: 260px;
 }
 
+/* The project's own skills, ticked for one task (ADR 0053). A whole row of
+   its own, because each line carries a description and would otherwise
+   crowd the permission toggles beside it. */
+.composer-skills {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.composer-skills legend {
+  padding: 0 4px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.composer-skills .composer-toggle {
+  align-items: flex-start;
+}
+
 /* Handing the task to another worker: a second decision, set apart from
    resume and discard (ADR 0048). */
 .checkpoint-handoff {

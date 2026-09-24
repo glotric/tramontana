@@ -483,6 +483,10 @@
           "description": "SHA-256 of the source's releasable text, for reproducibility.\n\nOf the *redacted* text, not the bytes on disk. A hash naming content\nthat may not be released would let a later prompt assembly send the\noriginal and still satisfy every record that describes it\n(`SECURITY_AND_PERMISSIONS.md` §7). A file with no credential in it\nhashes identically either way.",
           "type": "string"
         },
+        "declaredDescription": {
+          "description": "Declared one-line `description` from front matter, when present.\n\nKept because a person choosing a skill needs to know what it does, and\nopening every file to find out is not a choice anyone makes (ADR 0053).",
+          "type": "string"
+        },
         "declaredId": {
           "description": "Declared `id` from front matter, when present.",
           "type": "string"
