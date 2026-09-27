@@ -13,6 +13,7 @@ mod event_store;
 mod ids;
 mod model;
 mod permission;
+mod project_sources;
 mod read_only;
 mod repository;
 mod secret;
@@ -27,6 +28,7 @@ pub use permission::{
     ApprovalStore, Approver, PermissionError, PermissionOutcome, PermissionPolicy, PermissionQuery,
     SiteAccess, reason,
 };
+pub use project_sources::ProjectSourceReader;
 pub use read_only::{ReadOnlyLimits, ReadOnlyTurn, TOOL_RUN_LIMIT, ToolAdmission};
 pub use repository::{
     AppSettingsRepository, CheckpointRepository, ConfigurationRepository, ConversationRepository,

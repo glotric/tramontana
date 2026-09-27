@@ -229,6 +229,11 @@ impl AppState {
                 pinnable,
                 tramontana_composition::pinned_worker_choice(app_tools),
             )
+            // So a task is given the project's own instructions, read as it
+            // starts (ADR 0052).
+            .with_project_sources(Arc::new(tramontana_platform::ProjectFiles::new(Arc::new(
+                SqliteProjectRepository::new(database),
+            ))))
             .with_execution_guard(lease);
         service
             .recover()

@@ -39,7 +39,8 @@ what that demonstration finds may still revise them.
   the desktop from this README. Its automated checks pass; its
   demonstration has not run.
 - **Built:** MCP Apps over stdio (M9), and remote ones over Streamable HTTP
-  with a token kept in the Keychain (ADR 0050). Added from the CLI
+  with a token kept in the Keychain (ADR 0050) — obtained by hand, or through
+  an OAuth sign-in with `tramontana app sign-in <ID>` (ADR 0056). Added from the CLI
   (`tramontana app add`, `tramontana app add-remote`); seen, turned on and
   off, and their decisions read in the desktop's **Apps** view; allowed for a
   task with **May use Apps**. A remote App is never used under Local Only.
@@ -55,8 +56,24 @@ what that demonstration finds may still revise them.
   failing; **Hand over to…** gives it to the built-in worker on another
   configured model, such as a larger local one or Claude, which continues
   from the task's record. It suggests another model on this device first, the
-  cloud last. Nothing moves without your click, and a Local Only task is
-  never run on, or handed to, a model off this device.
+  cloud last — **unless the task ran out of what its model could do**, in
+  which case the model off this device is offered first, with what would be
+  sent said before the button (ADR 0055). Nothing moves without your click,
+  nothing escalates itself, and a Local Only task is never run on, or handed
+  to, a model off this device.
+- **Built:** a task runs under the project's own instructions (ADR 0052). Its
+  `AGENTS.md`, `CLAUDE.md` and `.tramontana/rules` are read as the task starts
+  and given to the model, strongest first, up to 16 KiB a turn; anything that
+  does not fit is named rather than cut. A credential is removed before they
+  are recorded, so it is removed before they are sent, and the task's record
+  says which files travelled. Nothing in them grants a permission.
+- **Built:** a task can be given the project's **skills** (ADR 0053) — the
+  Markdown procedures in `.tramontana/skills`. The composer lists them with
+  their descriptions, all unticked; the CLI takes `--skill-id`. A ticked
+  skill's text goes to the model with the project's other instructions, and
+  grants nothing. A skill that declares `suggest_when` keywords is marked
+  **suggested for this goal** and listed first when the goal mentions one; the
+  CLI says the same in a note. Nothing is ticked for you (ADR 0054).
 - **Deferred from Beta 1:** an external coding worker (M10, ADR 0038), and
   the rest listed in the [draft release notes](docs/RELEASE_NOTES_BETA_1.md).
 
@@ -116,6 +133,15 @@ recipes:
 Declaring a recipe grants nothing; every run is still put to you. See
 [configuration](docs/CONFIGURATION.md) for the rest of that file.
 
+A task is also given the project's own instructions — its `AGENTS.md`,
+`CLAUDE.md` and any `.tramontana/rules` — so what the repository asks for is
+what the model works to. They cannot grant it anything.
+
+A `.tramontana/skills/*.md` file is a reusable procedure. It is offered, never
+applied by itself: tick it in the composer, or name it with `--skill-id`, and
+that one task follows it. Give it `suggest_when: [rust, cargo]` and it
+is marked when the goal mentions one of those words — marked, not chosen.
+
 **3. Start a task.** Add a conversation, then write the goal in the
 composer. By default a task may only read. Tick **May edit files**, **May
 run recipes**, **May use Apps** or **May browse the web** to let the model
@@ -153,7 +179,7 @@ in a checkout):
 pnpm dev:cli project open /path/to/project
 pnpm dev:cli task "Say hello"   # a read-only task
 pnpm dev:cli task "Read the README and summarize it" --allow-writes --browse \
-    --worker builtin.reference@<ENDPOINT>/<MODEL>
+    --worker builtin.reference@<ENDPOINT>/<MODEL> --skill-id <SKILL>
 pnpm check:fast                 # format, contracts, lint, types, tests
 pnpm check                      # the above plus the release build
 ```
@@ -175,6 +201,8 @@ tramontana provider add-anthropic claude --model claude-sonnet-4-5 --credential 
 tramontana provider list                                 # shows local vs CLOUD, derived not declared
 tramontana provider tool-calls local                     # only after verifying this model supports native tool calls
 tramontana provider tool-calls local --off               # unknown/unsupported must stay off
+
+tramontana app sign-in   <APP>                            # OAuth, for a remote App that asks for it
 
 tramontana secret set    openai.apiKey < key.txt         # stdin only, never an argument
 tramontana secret status openai.apiKey                   # configured or not; never the value

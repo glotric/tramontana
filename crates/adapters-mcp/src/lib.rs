@@ -21,6 +21,11 @@ mod app;
 mod bounded;
 mod descriptor;
 mod http;
+mod oauth;
 
 pub use app::{AppHealth, McpApp, McpLimits, McpRemoteSpec, McpServerSpec, StartError};
 pub use descriptor::Refusal;
+pub use oauth::{
+    Attempt, AuthorizationServer, OAuthError, Tokens, authorize, discover, exchange, refresh,
+    register,
+};

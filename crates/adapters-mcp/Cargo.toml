@@ -16,7 +16,12 @@ async-trait = { workspace = true }
 process-wrap = { workspace = true }
 # The official MCP SDK, client side over plain streams only (ADR 0034).
 rmcp = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+# PKCE: the challenge is a SHA-256 of the verifier (ADR 0056).
+sha2 = { workspace = true }
+# A fresh verifier and state per sign-in attempt.
+uuid = { workspace = true }
 thiserror = { workspace = true }
 # A remote App's transport (ADR 0050): the same client and TLS as the model
 # adapters (ADRs 0007 and 0009).

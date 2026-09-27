@@ -199,19 +199,35 @@ pub(crate) async fn replay_task_events(
     state.service.replay_task_events(&task_id, 0).await
 }
 
+/// What the person chose for one task in the composer.
+///
+/// Grouped rather than passed one by one, because they are one decision made
+/// in one place, and the window already sends them as one object.
+///
+/// `admission` and `routing_mode` are ADR 0031's: absent, the task runs
+/// read-only under the profile's mode, and an admission only lets the model
+/// *ask* — every write and every recipe run is still put to the person.
+/// `worker` is ADR 0048's, absent meaning the built-in worker as the routing
+/// mode runs it. `skills` are the project's own, ticked from [`list_skills`];
+/// their text is given to the model, and they grant nothing (ADR 0053).
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskChoices {
+    /// Which tools the task's worker may offer its model.
+    pub(crate) admission: Option<ToolAdmission>,
+    /// Where this task's models may run.
+    pub(crate) routing_mode: Option<RoutingMode>,
+    /// The worker to run it, by name.
+    pub(crate) worker: Option<String>,
+    /// The project's skills this task uses, by declared id.
+    pub(crate) skills: Option<Vec<String>>,
+}
+
 /// Start a task and stream its updates over `channel`.
 ///
 /// Returns the task identifier immediately; the work continues in the
 /// background and reports through the channel. A long-running operation must
 /// never block the interface (`CORE_CONTRACTS.md` §13).
-///
-/// `admission` and `routing_mode` are what the person chose for this task in
-/// the composer (ADR 0031). Absent, the task runs read-only under the
-/// profile's mode. Admission only lets the model ask: every write and every
-/// recipe run is still put to the person as an approval.
-///
-/// `worker` is the one the person chose, from [`list_workers`]; absent, the
-/// built-in worker as the routing mode runs it (ADR 0048).
 ///
 /// # Errors
 ///
@@ -221,9 +237,7 @@ pub(crate) async fn replay_task_events(
 pub(crate) async fn start_task(
     goal: String,
     conversation_id: Option<ConversationId>,
-    admission: Option<ToolAdmission>,
-    routing_mode: Option<RoutingMode>,
-    worker: Option<String>,
+    choices: Option<TaskChoices>,
     channel: Channel<TaskUpdate>,
     state: State<'_, AppState>,
 ) -> Result<TaskId, ErrorEnvelope> {
@@ -231,9 +245,7 @@ pub(crate) async fn start_task(
         &state,
         goal,
         conversation_id,
-        admission,
-        routing_mode,
-        worker,
+        choices.unwrap_or_default(),
         move |update| channel.send(update).is_ok(),
     )
     .await
@@ -249,9 +261,7 @@ pub(crate) async fn start_task_on<F>(
     state: &AppState,
     goal: String,
     conversation_id: Option<ConversationId>,
-    admission: Option<ToolAdmission>,
-    routing_mode: Option<RoutingMode>,
-    worker: Option<String>,
+    choices: TaskChoices,
     send: F,
 ) -> Result<TaskId, ErrorEnvelope>
 where
@@ -267,20 +277,21 @@ where
         )));
     }
 
+    // The project's files are read by the task itself now, with what this
+    // task selects, so resolving the project here first would only write an
+    // inventory the task is about to replace (ADRs 0052 and 0053).
     let service = state.service.clone();
-    if let Some(conversation_id) = &conversation_id {
-        let conversation = service.get_conversation(conversation_id).await?;
-        if let Some(project_id) = conversation.project_id {
-            resolve_stored_project(&service, &project_id).await?;
-        }
-    }
     let task_id = service
         .start_task(StartTaskRequest {
             conversation_id,
             goal,
-            admission,
-            routing_mode,
-            worker,
+            admission: choices.admission,
+            routing_mode: choices.routing_mode,
+            worker: choices.worker,
+            selection: choices.skills.map(|skill_ids| ConfigurationSelection {
+                skill_ids,
+                ..ConfigurationSelection::default()
+            }),
         })
         .await?;
 
@@ -843,31 +854,6 @@ pub(crate) fn restart_supported() -> bool {
     !tauri::is_dev()
 }
 
-async fn resolve_stored_project(
-    service: &tramontana_core::services::TaskService,
-    project_id: &ProjectId,
-) -> Result<EffectiveConfiguration, ErrorEnvelope> {
-    let project = service.get_project(project_id).await?;
-    let [root] = project.roots.as_slice() else {
-        return Err(invalid(format!(
-            "project {project_id} has {} roots; M2 configuration discovery supports the default single-root project case",
-            project.roots.len()
-        )));
-    };
-    let root = canonicalize_root(std::path::Path::new(root)).map_err(|error| {
-        invalid(format!(
-            "could not reopen the approved project root: {error}"
-        ))
-    })?;
-    service
-        .resolve_configuration(
-            project_id,
-            discover(&root),
-            &ConfigurationSelection::default(),
-        )
-        .await
-}
-
 /// Request cancellation of a running task.
 ///
 /// # Errors
@@ -956,6 +942,98 @@ pub(crate) async fn discard_checkpoint(
     state.service.discard_checkpoint(&task_id).await
 }
 
+/// A skill a task can be given (ADR 0053).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SkillView {
+    /// The `id` the skill declares, which a task names to select it.
+    id: String,
+    /// What a person calls it: its declared name, or its file name.
+    display_name: String,
+    /// Its one-line description, when it declares one.
+    description: Option<String>,
+}
+
+/// The skills this project offers, in the order a person should read them.
+///
+/// From the configuration last resolved for the project, so it is the same
+/// inventory the configuration view shows. A skill without an `id` cannot be
+/// selected and is left out: naming it would offer a choice that resolution
+/// would then ignore. Offering a skill is not selecting one, and selecting
+/// one grants nothing.
+///
+/// # Errors
+///
+/// Whatever the service reports for an unknown project.
+#[tauri::command]
+pub(crate) async fn list_skills(
+    project_id: ProjectId,
+    state: State<'_, AppState>,
+) -> Result<Vec<SkillView>, ErrorEnvelope> {
+    let configuration = match state
+        .service
+        .get_effective_configuration(&project_id)
+        .await?
+    {
+        Some(configuration) => configuration,
+        // A project nobody has resolved yet offers nothing rather than
+        // failing: the composer simply shows no skills.
+        None => return Ok(Vec::new()),
+    };
+    Ok(configuration
+        .sources
+        .into_iter()
+        .filter(|source| {
+            source.enabled && source.kind == tramontana_core::contracts::ConfigurationKind::Skill
+        })
+        .filter_map(|source| {
+            let id = source.declared_id?;
+            Some(SkillView {
+                display_name: source
+                    .declared_name
+                    .unwrap_or_else(|| source.relative_path.clone()),
+                description: source.declared_description,
+                id,
+            })
+        })
+        .collect())
+}
+
+/// Which of this project's skills look relevant to `goal` (ADR 0054).
+///
+/// A suggestion, not a selection: the window marks these and orders them
+/// first, and a task still uses only the skills the person ticks. The rule is
+/// core's, so the terminal suggests the same ones.
+///
+/// # Errors
+///
+/// Whatever the service reports for an unknown project.
+#[tauri::command]
+pub(crate) async fn suggest_skills(
+    project_id: ProjectId,
+    goal: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, ErrorEnvelope> {
+    let Some(configuration) = state
+        .service
+        .get_effective_configuration(&project_id)
+        .await?
+    else {
+        return Ok(Vec::new());
+    };
+    // A goal longer than a task may have is read up to that length rather
+    // than refused: this runs while the person is still typing, and an error
+    // where a suggestion belongs would be noise.
+    let goal = match goal.char_indices().nth(MAX_GOAL_BYTES) {
+        Some((at, _)) => &goal[..at],
+        None => goal.as_str(),
+    };
+    Ok(tramontana_core::services::suggested_skills(
+        &configuration,
+        goal,
+    ))
+}
+
 /// A worker a task can be handed to (ADR 0048).
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -967,6 +1045,49 @@ pub(crate) struct WorkerView {
     /// Whether its model runs off this device. `None` for the worker whose
     /// model the routing mode chooses.
     cloud: Option<bool>,
+}
+
+/// What a stopped task can be handed to, in the order to offer it (ADR 0055).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HandoffOfferView {
+    /// The workers, best first; the first is what the panel suggests.
+    workers: Vec<WorkerView>,
+    /// Whether the task stopped because the work was beyond its model, so the
+    /// suggestion is to escalate rather than to try another model here.
+    escalating: bool,
+}
+
+/// The workers this interrupted task can be handed to, best first.
+///
+/// The order and the exclusions are the core's: the worker that already has
+/// the task is left out, a task running Local Only is offered no model off
+/// this device, and a task that ran out of what its model could do is offered
+/// the cloud first. The window renders what it is given.
+///
+/// # Errors
+///
+/// [`ErrorCode::NotFound`] when the task does not exist.
+#[tauri::command]
+pub(crate) async fn handoff_options(
+    task_id: TaskId,
+    state: State<'_, AppState>,
+) -> Result<HandoffOfferView, ErrorEnvelope> {
+    let offer = state.service.handoff_options(&task_id).await?;
+    Ok(HandoffOfferView {
+        workers: offer
+            .workers
+            .into_iter()
+            .map(|worker| WorkerView {
+                agent_id: worker.agent_id,
+                display_name: worker.display_name,
+                cloud: worker.model.map(|model| {
+                    model.location == tramontana_core::contracts::ModelLocation::Cloud
+                }),
+            })
+            .collect(),
+        escalating: offer.escalating,
+    })
 }
 
 /// The workers a stopped task can be handed to: the built-in worker as the

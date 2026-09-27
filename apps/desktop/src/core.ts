@@ -394,6 +394,12 @@ export interface TaskOptions {
    * the built-in worker on the model the routing mode chooses.
    */
   readonly worker?: string;
+  /**
+   * The project's skills this task uses, by declared id, from
+   * {@link listSkills} (ADR 0053). Their text is given to the model, in the
+   * order named. A skill grants nothing.
+   */
+  readonly skills?: readonly string[];
 }
 
 /**
@@ -414,17 +420,20 @@ export async function startTask(
   return invoke<string>("start_task", {
     goal,
     conversationId: conversationId ?? null,
-    admission:
+    choices:
       options === undefined
         ? null
         : {
-            writes: options.writes,
-            recipes: options.recipes,
-            apps: options.apps,
-            browse: options.browse,
+            admission: {
+              writes: options.writes,
+              recipes: options.recipes,
+              apps: options.apps,
+              browse: options.browse,
+            },
+            routingMode: options.routingMode,
+            worker: options.worker ?? null,
+            skills: options.skills === undefined ? null : [...options.skills],
           },
-    routingMode: options?.routingMode ?? null,
-    worker: options?.worker ?? null,
     channel,
   });
 }
@@ -528,6 +537,59 @@ export interface WorkerView {
 /** The workers a stopped task can be handed to. */
 export async function listWorkers(): Promise<readonly WorkerView[]> {
   return invoke<WorkerView[]>("list_workers");
+}
+
+/** What a stopped task can be handed to, in the order to offer it (ADR 0055). */
+export interface HandoffOffer {
+  /** The workers, best first; the first is the suggestion. */
+  readonly workers: readonly WorkerView[];
+  /**
+   * Whether the task stopped because the work was beyond its model, so the
+   * suggestion is to escalate rather than to try another model here.
+   */
+  readonly escalating: boolean;
+}
+
+/**
+ * What this interrupted task can be handed to, ordered by the core.
+ *
+ * The worker that already has it is left out, a Local Only task is offered
+ * nothing off this device, and a task whose model ran out is offered the
+ * cloud first. Nothing is handed anywhere without {@link handOffTask}.
+ */
+export async function handoffOptions(taskId: string): Promise<HandoffOffer> {
+  return invoke<HandoffOffer>("handoff_options", { taskId });
+}
+
+/** A skill a task can be given (ADR 0053). */
+export interface SkillView {
+  /** The declared id a task names to select it. */
+  readonly id: string;
+  /** What a person calls it: its declared name, or its file name. */
+  readonly displayName: string;
+  /** Its one-line description, when it declares one. */
+  readonly description?: string;
+}
+
+/**
+ * The skills a project offers, from the configuration last resolved for it.
+ *
+ * Offering is not selecting: a task uses only the ones it names.
+ */
+export async function listSkills(projectId: string): Promise<readonly SkillView[]> {
+  return invoke<SkillView[]>("list_skills", { projectId });
+}
+
+/**
+ * Which of a project's skills look relevant to `goal`, by declared id
+ * (ADR 0054).
+ *
+ * Suggesting is not selecting: these are marked and shown first, and a task
+ * still uses only the skills the person ticks. The rule is the core's, so the
+ * CLI suggests the same ones.
+ */
+export async function suggestSkills(projectId: string, goal: string): Promise<readonly string[]> {
+  return invoke<string[]>("suggest_skills", { projectId, goal });
 }
 
 /**

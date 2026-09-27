@@ -13,9 +13,10 @@ use crate::contracts::{
 };
 use crate::ports::{
     AgentProvider, CheckpointRepository, Clock, ConfigurationRepository, ConversationRepository,
-    EventStore, IdSource, ModelProvider, ProjectRepository, RepositoryError, TaskRepository,
-    ToolAdmission,
+    EventStore, IdSource, ModelProvider, ProjectRepository, ProjectSourceReader, RepositoryError,
+    TaskRepository, ToolAdmission,
 };
+use crate::services::ProjectInstructions;
 use crate::services::journal::{JournalPorts, TaskJournal};
 use crate::services::projection::TaskProjectionWriter;
 use crate::services::runtime::TaskDriver;
@@ -50,6 +51,14 @@ pub struct StartTaskRequest {
     /// it. A worker pinned to a model off this device is refused to a task
     /// that runs Local Only, before the task is written.
     pub worker: Option<String>,
+    /// Which of the project's reusable definitions this task uses: its
+    /// skills, and an agent profile or workflow when one is named
+    /// (ADR 0053).
+    ///
+    /// `None` selects none of them, which is what a task that says nothing
+    /// has always run under. Selecting a definition contributes its text and
+    /// nothing else: no skill grants a tool, a root, or a destination.
+    pub selection: Option<ConfigurationSelection>,
 }
 
 /// Runtime state for a task that is currently running.
@@ -132,6 +141,25 @@ pub type WorkerChoice = Arc<dyn Fn(ToolAdmission) -> Arc<dyn AgentProvider> + Se
 pub type PinnedWorkerChoice =
     Arc<dyn Fn(ToolAdmission, &super::PinnedModel) -> Arc<dyn AgentProvider> + Send + Sync>;
 
+/// What an interrupted task can be handed to, in the order to offer it.
+///
+/// Built by [`TaskService::handoff_options`], which owns the ordering: an
+/// application renders what it is given rather than deciding for itself which
+/// model a stopped task should try next (ADR 0055).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandoffOffer {
+    /// The workers, best first. Empty when none can take the task.
+    pub workers: Vec<WorkerOption>,
+    /// Whether the task stopped because the work was beyond the model it ran
+    /// on, rather than because something around the model failed.
+    ///
+    /// When it was, a model off this device is offered first: the model that
+    /// had the task has just shown it could not carry it, and Tramontana
+    /// knows nothing else about which local model is stronger (ADR 0051).
+    /// Nothing moves without the person, and Local Only still refuses.
+    pub escalating: bool,
+}
+
 /// A worker a task can be handed to, as a person chooses it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerOption {
@@ -166,6 +194,11 @@ pub struct TaskService {
     /// The models a person may pin the built-in worker to, and how to build
     /// it pinned (ADR 0048).
     pub(super) pinned: Option<(Vec<super::PinnedModel>, PinnedWorkerChoice)>,
+    /// How the project's own Markdown is read at the moment a task starts.
+    /// Absent in a service with no project files to read, such as a test
+    /// harness; a task then runs on the last inventory the project resolved,
+    /// without its text (ADR 0052).
+    pub(super) project_sources: Option<Arc<dyn ProjectSourceReader>>,
     pub(super) execution_allowed: bool,
     pub(super) execution_guard: Option<Arc<dyn Send + Sync>>,
 }
@@ -197,6 +230,7 @@ impl TaskService {
             routing_mode: Mutex::new(RoutingMode::Automatic),
             workers: None,
             pinned: None,
+            project_sources: None,
             execution_allowed: true,
             execution_guard: None,
         }
@@ -214,6 +248,14 @@ impl TaskService {
     #[must_use]
     pub fn with_worker_choice(mut self, workers: WorkerChoice) -> Self {
         self.workers = Some(workers);
+        self
+    }
+
+    /// Read the project's own instruction files with `reader` when a task
+    /// starts, so its worker is given them (ADR 0052).
+    #[must_use]
+    pub fn with_project_sources(mut self, reader: Arc<dyn ProjectSourceReader>) -> Self {
+        self.project_sources = Some(reader);
         self
     }
 
@@ -590,14 +632,51 @@ impl TaskService {
         let cancel = CancellationToken::new();
         let (updates, _) = broadcast::channel(UPDATE_BUFFER);
 
-        let configuration = match &project_id {
-            Some(project_id) => self
-                .repositories
-                .configuration
-                .latest(project_id)
-                .await
-                .map_err(|error| self.repository_error(&error))?,
-            None => None,
+        // Read now, not from the last inventory the project resolved: a task's
+        // record must describe the instructions it actually ran under, and the
+        // worker is about to be given their text (ADR 0052). What the task
+        // selects is its own, not whatever the project last resolved with: a
+        // task must not inherit a skill because someone inspected the
+        // configuration with it earlier (ADR 0053).
+        let selection_default = ConfigurationSelection::default();
+        let (configuration, instructions) = match (&project_id, &self.project_sources) {
+            (Some(project_id), Some(reader)) => {
+                let (configuration, instructions) = crate::config::resolve_with_bodies(
+                    reader.read(project_id).await?,
+                    request.selection.as_ref().unwrap_or(&selection_default),
+                    self.clock.now(),
+                );
+                // Saved only when it is new. A resume reads the manifest back
+                // by hash, so an unsaved one would lose the project's recipes;
+                // rewriting an identical one would move its `resolvedAt` every
+                // time a task started, and the configuration view would report
+                // a change that never happened.
+                let stored = self
+                    .repositories
+                    .configuration
+                    .latest(project_id)
+                    .await
+                    .map_err(|error| self.repository_error(&error))?;
+                if stored.as_ref().map(|stored| &stored.manifest_hash)
+                    != Some(&configuration.manifest_hash)
+                {
+                    self.repositories
+                        .configuration
+                        .save(project_id, &configuration)
+                        .await
+                        .map_err(|error| self.repository_error(&error))?;
+                }
+                (Some(configuration), instructions)
+            }
+            (Some(project_id), None) => (
+                self.repositories
+                    .configuration
+                    .latest(project_id)
+                    .await
+                    .map_err(|error| self.repository_error(&error))?,
+                ProjectInstructions::default(),
+            ),
+            (None, _) => (None, ProjectInstructions::default()),
         };
 
         // Every tool call this task makes inherits the project's approved
@@ -731,6 +810,7 @@ impl TaskService {
         .with_routing_mode(routing_mode)
         .with_worker(worker)
         .with_configuration(resolved_configuration)
+        .with_instructions(instructions)
         .with_goal_redactions(goal.reason_codes.clone())
         .with_checkpoints(Arc::clone(&self.repositories.checkpoints))
         .continuing(None, super::ResumePlan::default(), interrupt);

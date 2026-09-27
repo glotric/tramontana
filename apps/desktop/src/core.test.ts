@@ -39,6 +39,7 @@ const {
   listConversations,
   listPendingApprovals,
   listProjects,
+  listSkills,
   listTasks,
   onApprovalRequested,
   openProject,
@@ -283,15 +284,40 @@ describe("task options", () => {
     expect(invoke).toHaveBeenLastCalledWith(
       "start_task",
       expect.objectContaining({
-        admission: { writes: true, recipes: false, apps: true, browse: true },
-        routingMode: "localOnly",
+        choices: expect.objectContaining({
+          admission: { writes: true, recipes: false, apps: true, browse: true },
+          routingMode: "localOnly",
+        }),
       }),
     );
 
     await startTask("hello", () => undefined);
     expect(invoke).toHaveBeenLastCalledWith(
       "start_task",
-      expect.objectContaining({ admission: null, routingMode: null }),
+      expect.objectContaining({ choices: null }),
+    );
+  });
+
+  it("names the skills the task uses, in the order chosen, or none", async () => {
+    await startTask("hello", () => undefined, "conversation-1", {
+      writes: false,
+      recipes: false,
+      apps: false,
+      browse: false,
+      routingMode: "automatic",
+      skills: ["review", "release"],
+    });
+    expect(invoke).toHaveBeenLastCalledWith(
+      "start_task",
+      expect.objectContaining({
+        choices: expect.objectContaining({ skills: ["review", "release"] }),
+      }),
+    );
+
+    await startTask("hello", () => undefined);
+    expect(invoke).toHaveBeenLastCalledWith(
+      "start_task",
+      expect.objectContaining({ choices: null }),
     );
   });
 });
@@ -345,6 +371,10 @@ describe("core IPC client", () => {
       "start_task",
       expect.objectContaining({ goal: "hello", conversationId: "conversation-1" }),
     );
+
+    invoke.mockResolvedValue([]);
+    await listSkills("project-1");
+    expect(invoke).toHaveBeenCalledWith("list_skills", { projectId: "project-1" });
 
     invoke.mockResolvedValue(undefined);
     await cancelTask("task-1");

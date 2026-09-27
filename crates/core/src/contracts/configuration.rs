@@ -104,6 +104,12 @@ pub struct ConfigurationSource {
     /// Declared `name` from front matter, when present.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub declared_name: Option<String>,
+    /// Declared one-line `description` from front matter, when present.
+    ///
+    /// Kept because a person choosing a skill needs to know what it does, and
+    /// opening every file to find out is not a choice anyone makes (ADR 0053).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub declared_description: Option<String>,
     /// Project-relative scopes declared by the source.
     ///
     /// A nested `AGENTS.md` contributes its parent directory. Native rules
@@ -111,6 +117,13 @@ pub struct ConfigurationSource {
     /// project.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub scopes: Vec<String>,
+    /// Keywords a skill declares as hints that it may be relevant.
+    ///
+    /// Kept so both applications can suggest the same skills for the same
+    /// goal from one rule in core (ADR 0054). A suggestion is not a
+    /// selection, and these grant nothing.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub suggest_when: Vec<String>,
     /// Capabilities requested by a native definition.
     ///
     /// These are informational. Loading Markdown never grants a capability.
@@ -317,6 +330,8 @@ mod tests {
             kind,
             declared_id: None,
             declared_name: None,
+            declared_description: None,
+            suggest_when: Vec::new(),
             scopes: Vec::new(),
             requested_capabilities: Vec::new(),
             priority: None,

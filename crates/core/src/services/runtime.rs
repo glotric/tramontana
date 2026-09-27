@@ -21,6 +21,7 @@ use crate::ports::{Clock, PermissionQuery};
 use crate::services::PermissionManager;
 use crate::services::ToolRegistry;
 use crate::services::checkpoint::ResumePlan;
+use crate::services::instructions::{ComposedInstructions, ProjectInstructions};
 use crate::services::journal::TaskJournal;
 use crate::services::model_turn::{ModelTurnAccumulator, ModelTurnLimits};
 use crate::services::preparation::assemble_context;
@@ -50,6 +51,10 @@ pub(crate) struct TaskDriver {
     /// Held so the context manifest can name the instruction sources in force
     /// rather than only their combined hash.
     configuration: Option<EffectiveConfiguration>,
+    /// The text of the project-authored sources in force, when the adapter
+    /// could read them. Held apart from the configuration because the record
+    /// names sources and the model needs their words (ADR 0052).
+    instructions: ProjectInstructions,
     /// What was removed from the goal when the task was created.
     ///
     /// Carried rather than recomputed: the goal the driver receives is already
@@ -90,6 +95,50 @@ fn stops_the_worker(code: ErrorCode) -> bool {
     )
 }
 
+/// Whether a worker stopped because the work was beyond the model it ran on,
+/// rather than because something around the model failed (ADR 0055).
+///
+/// Only two codes say so. `LimitExceeded` is a task that spent its whole
+/// budget without finishing, and `CapabilityUnsupported` is a model that
+/// cannot do what the work needs at all. Both are evidence about the model.
+///
+/// A timeout, an unavailable provider and a malformed reply are not. A larger
+/// model is slower, not faster; an endpoint that was down says nothing about
+/// the work; and a reply this build could not parse is as likely to be this
+/// adapter's fault as the model's. Sending a person's project off their
+/// device on that evidence would not be honest.
+#[must_use]
+pub fn beyond_the_model(code: ErrorCode) -> bool {
+    matches!(
+        code,
+        ErrorCode::LimitExceeded | ErrorCode::CapabilityUnsupported
+    )
+}
+
+/// The error a worker last stopped on, from the task's own record.
+///
+/// Read backwards, and abandoned at any state change that is not another
+/// interruption: an older stop describes a run that has since continued.
+#[must_use]
+pub fn stopped_on(events: &[crate::contracts::EventEnvelope]) -> Option<ErrorCode> {
+    for event in events.iter().rev() {
+        match &event.payload {
+            EventPayload::TaskStateChanged { current, .. }
+                if *current != TaskState::Interrupted =>
+            {
+                return None;
+            }
+            EventPayload::DiagnosticRecorded { code, .. } => {
+                if let Some(rest) = code.strip_prefix(&format!("{WORKER_STOPPED}.")) {
+                    return serde_json::from_value(serde_json::Value::String(rest.to_owned())).ok();
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Whether another worker could take this one's task: the built-in worker,
 /// in any of its configurations, whose tasks are portable (ADR 0048).
 fn can_be_handed_on(descriptor: &crate::contracts::AgentDescriptor) -> bool {
@@ -114,6 +163,7 @@ impl TaskDriver {
             clock,
             routing_mode: RoutingMode::Automatic,
             configuration: None,
+            instructions: ProjectInstructions::default(),
             goal_redactions: Vec::new(),
             checkpoint: None,
             handoff: None,
@@ -159,6 +209,12 @@ impl TaskDriver {
         configuration: Option<EffectiveConfiguration>,
     ) -> Self {
         self.configuration = configuration;
+        self
+    }
+
+    /// Attach the text of the project-authored sources in force.
+    pub(crate) fn with_instructions(mut self, instructions: ProjectInstructions) -> Self {
+        self.instructions = instructions;
         self
     }
 
@@ -208,6 +264,14 @@ impl TaskDriver {
         // describe a release that did not happen.
         let mut context: Option<ContextManifest> = None;
 
+        // Composed once, before the manifest that must describe it: the
+        // record says which of the project's files travelled, so the two
+        // cannot disagree (ADR 0052).
+        let instructions = self
+            .instructions
+            .compose(crate::services::PROJECT_INSTRUCTION_BYTES)
+            .map(Arc::new);
+
         // Each step checks cancellation first. A cancel that arrives before the
         // task really starts still produces a proper Cancelling -> Cancelled
         // pair rather than a task that never moved.
@@ -246,13 +310,15 @@ impl TaskDriver {
             }
 
             let recorded = match state {
-                TaskState::Preparing => match self.record_context(&goal).await {
-                    Ok(manifest) => {
-                        context = Some(manifest);
-                        Ok(())
+                TaskState::Preparing => {
+                    match self.record_context(&goal, instructions.as_deref()).await {
+                        Ok(manifest) => {
+                            context = Some(manifest);
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
                     }
-                    Err(error) => Err(error),
-                },
+                }
                 TaskState::Routing => match self.record_route(context.as_ref(), &cancel).await {
                     Ok(_) => Ok(()),
                     Err(error) => Err(error),
@@ -311,6 +377,7 @@ impl TaskDriver {
             // model host prepares and routes each actual call independently.
             context: context.clone(),
             model_gate: tokio::sync::Mutex::new(()),
+            instructions: instructions.clone(),
             routing_mode: self.routing_mode,
             scope: self.scope.clone(),
             tools: ToolBroker {
@@ -439,6 +506,7 @@ impl TaskDriver {
     async fn record_context(
         &self,
         goal: &str,
+        instructions: Option<&ComposedInstructions>,
     ) -> Result<crate::contracts::ContextManifest, ErrorEnvelope> {
         let manifest = assemble_context(
             self.journal.next_id("context"),
@@ -446,6 +514,7 @@ impl TaskDriver {
             goal,
             self.goal_redactions.clone(),
             self.configuration.as_ref(),
+            instructions,
             self.clock.now(),
         );
 
@@ -682,6 +751,8 @@ struct BrokeredHost {
     releases: Arc<ReleaseManager>,
     /// The context assembled for this task.
     context: Option<ContextManifest>,
+    /// The project's own instructions, as every turn will send them.
+    instructions: Option<Arc<ComposedInstructions>>,
     /// Serialize requests so approvals and model starts cannot overlap per host.
     model_gate: tokio::sync::Mutex<()>,
     /// The standing policy in force.
@@ -857,5 +928,93 @@ fn kind_name(value: &serde_json::Value) -> &'static str {
         serde_json::Value::String(_) => "string",
         serde_json::Value::Array(_) => "array",
         serde_json::Value::Object(_) => "object",
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests assert on known-good literals; a panic is the failure report"
+)]
+mod tests {
+    use super::*;
+    use crate::contracts::{EventEnvelope, EventId, TaskEventKind, TaskId, Timestamp};
+
+    fn event(kind: TaskEventKind, payload: EventPayload) -> EventEnvelope {
+        EventEnvelope {
+            schema_version: crate::contracts::SCHEMA_VERSION,
+            event_id: EventId::new("event"),
+            task_id: TaskId::new("task"),
+            conversation_id: None,
+            sequence: 1,
+            kind,
+            payload,
+            occurred_at: Timestamp::new("2026-01-01T00:00:00.000Z"),
+            correlation_id: crate::contracts::CorrelationId::new("correlation"),
+            visibility: crate::contracts::Visibility::User,
+            causation_id: None,
+        }
+    }
+
+    fn stopped(code: &str) -> EventEnvelope {
+        event(
+            TaskEventKind::DiagnosticRecorded,
+            EventPayload::DiagnosticRecorded {
+                code: format!("{WORKER_STOPPED}.{code}"),
+                summary: "stopped".to_owned(),
+            },
+        )
+    }
+
+    #[test]
+    fn only_a_spent_budget_or_a_missing_capability_is_evidence_about_the_model() {
+        assert!(beyond_the_model(ErrorCode::LimitExceeded));
+        assert!(beyond_the_model(ErrorCode::CapabilityUnsupported));
+        // A larger model is slower, an endpoint that was down says nothing
+        // about the work, and a reply this build could not read may be this
+        // adapter's fault (ADR 0055).
+        assert!(!beyond_the_model(ErrorCode::Timeout));
+        assert!(!beyond_the_model(ErrorCode::ProviderUnavailable));
+        assert!(!beyond_the_model(ErrorCode::ProtocolError));
+        // And a stop that is not the worker's at all is not evidence either.
+        assert!(!beyond_the_model(ErrorCode::Cancelled));
+        assert!(!beyond_the_model(ErrorCode::PermissionDenied));
+    }
+
+    #[test]
+    fn the_stop_read_back_is_the_latest_one() {
+        let events = [stopped("providerUnavailable"), stopped("limitExceeded")];
+        assert_eq!(stopped_on(&events), Some(ErrorCode::LimitExceeded));
+    }
+
+    #[test]
+    fn a_stop_from_a_run_that_has_since_continued_is_not_read() {
+        // Interrupted, then continued: the older diagnostic describes a run
+        // that is over, and offering to escalate on it would be wrong.
+        let events = [
+            stopped("limitExceeded"),
+            event(
+                TaskEventKind::TaskStateChanged,
+                EventPayload::TaskStateChanged {
+                    previous: TaskState::Interrupted,
+                    current: TaskState::Running,
+                    reason_code: "user.resumedCheckpoint".to_owned(),
+                },
+            ),
+        ];
+        assert_eq!(stopped_on(&events), None);
+    }
+
+    #[test]
+    fn a_task_nobody_stopped_has_no_reason() {
+        assert_eq!(stopped_on(&[]), None);
+        let unrelated = [event(
+            TaskEventKind::DiagnosticRecorded,
+            EventPayload::DiagnosticRecorded {
+                code: "reference.callsNotRun".to_owned(),
+                summary: "two calls".to_owned(),
+            },
+        )];
+        assert_eq!(stopped_on(&unrelated), None);
     }
 }

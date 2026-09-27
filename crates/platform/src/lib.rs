@@ -9,14 +9,18 @@ mod bundle;
 mod clock;
 mod discovery;
 mod ids;
+mod loopback;
 mod paths;
 mod profile;
+mod project_sources;
 mod secrets;
 
 pub use bundle::{BundleError, MANIFEST_FILE, read_bundle, write_bundle};
 pub use clock::SystemClock;
 pub use discovery::discover;
 pub use ids::UuidIdSource;
+pub use loopback::{Redirect, RedirectError};
 pub use paths::{CanonicalRoot, PathError, canonicalize_root, contains};
 pub use profile::ProfileLease;
+pub use project_sources::ProjectFiles;
 pub use secrets::PlatformSecretVault;

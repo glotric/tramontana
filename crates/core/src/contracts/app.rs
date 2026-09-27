@@ -88,6 +88,15 @@ pub struct AppRemote {
     /// credential store. Absent for an App that needs none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<SecretRef>,
+    /// The client identifier this application signs in with, when the App
+    /// asked for OAuth: issued by the authorization server when it allows
+    /// registration, or given by the person (ADR 0056). Not a secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    /// Where the refresh token lives, when signing in produced one. Like the
+    /// token itself, by reference: the value stays in the credential store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<SecretRef>,
 }
 
 /// One configured App.

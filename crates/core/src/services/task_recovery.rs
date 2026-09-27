@@ -10,13 +10,15 @@ use super::checkpoint::{ResumePlan, derive_checkpoint, derive_state};
 use super::journal::{JournalPorts, TaskJournal};
 use super::projection::TaskProjectionWriter;
 use super::runtime::TaskDriver;
-use super::task_service::{LiveTask, TaskService};
+use super::task_service::{HandoffOffer, LiveTask, TaskService, WorkerOption};
+use crate::config::ConfigurationSelection;
 use crate::contracts::{
     AgentDescriptor, CancellationOrigin, CapabilityScope, CheckpointId, CorrelationId, ErrorCode,
     ErrorEnvelope, EventDraft, EventEnvelope, EventPayload, HandoffBundle, ResumeMode, RoutingMode,
     TaskCheckpoint, TaskEventKind, TaskId, TaskRecord, TaskState,
 };
 use crate::ports::{AgentProvider, ToolAdmission};
+use crate::services::ProjectInstructions;
 use crate::services::handoff::build_handoff;
 
 /// Every admission a task can start with, to find the worker one recorded.
@@ -51,6 +53,9 @@ struct Continuation {
     events: Vec<EventEnvelope>,
     /// The limits the continued run inherits.
     scope: CapabilityScope,
+    /// The project's own instructions as they are on disk, already known to
+    /// hash to what the task recorded at start (ADR 0052).
+    instructions: ProjectInstructions,
 }
 
 impl TaskService {
@@ -214,11 +219,44 @@ impl TaskService {
                     .unwrap_or_else(|| "Checkpoint is not resumable".into()),
             ));
         }
+        let mut instructions = ProjectInstructions::default();
         let scope = if let Some(project_id) = &record.project_id {
-            let configuration = self.get_effective_configuration(project_id).await?;
-            if configuration.as_ref().map(|config| &config.manifest_hash)
-                != record.configuration_manifest_hash.as_ref()
-            {
+            // From the files themselves where they can be read, because that
+            // is what a continued run would be given. Comparing only the last
+            // stored inventory let an edited `AGENTS.md` pass this check and
+            // then reach the model, under a hash that no longer described it
+            // (ADR 0052).
+            let manifest_hash = match &self.project_sources {
+                Some(reader) => {
+                    // Resolved with the choices the task ran under, recovered
+                    // from its own record. Resolving with none of them would
+                    // make every task that named a skill look changed, and
+                    // refuse a resume that nothing had touched (ADR 0053).
+                    let selection = match &record.configuration_manifest_hash {
+                        Some(hash) => self
+                            .repositories
+                            .configuration
+                            .get(project_id, hash)
+                            .await
+                            .ok()
+                            .map(|recorded| ConfigurationSelection::recorded_in(&recorded))
+                            .unwrap_or_default(),
+                        None => ConfigurationSelection::default(),
+                    };
+                    let (configuration, text) = crate::config::resolve_with_bodies(
+                        reader.read(project_id).await?,
+                        &selection,
+                        self.clock.now(),
+                    );
+                    instructions = text;
+                    Some(configuration.manifest_hash)
+                }
+                None => self
+                    .get_effective_configuration(project_id)
+                    .await?
+                    .map(|configuration| configuration.manifest_hash),
+            };
+            if manifest_hash.as_ref() != record.configuration_manifest_hash.as_ref() {
                 return Err(self.error(
                     ErrorCode::Conflict,
                     "Configuration changed; this checkpoint cannot be continued unchanged",
@@ -242,6 +280,7 @@ impl TaskService {
             derived,
             events,
             scope,
+            instructions,
         })
     }
 
@@ -264,6 +303,71 @@ impl TaskService {
             crate::services::runtime::recorded_admission(&continuation.events),
         )?;
         self.launch(continuation, worker, None).await
+    }
+
+    /// The workers this interrupted task can be handed to, best first.
+    ///
+    /// The ordering is a decision, so it is made here: normally another model
+    /// on this device, then the one the routing mode chooses, then a model
+    /// off it, because work leaves the device last (ADR 0051). When the task
+    /// stopped because the work was beyond its model — its budget spent, or a
+    /// capability it does not have — that order is reversed: the local model
+    /// has just shown it cannot carry this, and escalating is the point
+    /// (ADR 0055).
+    ///
+    /// Left out: the worker that already has the task, because continuing
+    /// with it is a resume; and, for a task that runs Local Only, every model
+    /// off this device, because [`Self::hand_off_to`] would refuse it.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::NotFound`] when the task does not exist.
+    pub async fn handoff_options(&self, task_id: &TaskId) -> Result<HandoffOffer, ErrorEnvelope> {
+        let events = self.replay_task_events(task_id, 0).await?;
+        let local_only =
+            created_mode(&events).unwrap_or_else(|| self.routing_mode()) == RoutingMode::LocalOnly;
+        let escalating =
+            crate::services::stopped_on(&events).is_some_and(crate::services::beyond_the_model);
+        let previous = events.iter().rev().find_map(|event| match &event.payload {
+            EventPayload::WorkerSelected { descriptor } => Some(descriptor.agent_id.clone()),
+            _ => None,
+        });
+        // The model that actually ran, which is not the same thing as the
+        // worker: the routing mode's worker ran *some* model, and offering
+        // that same model under its pinned name would suggest the one that
+        // has just failed (ADR 0055).
+        let ran_on = events.iter().rev().find_map(|event| match &event.payload {
+            EventPayload::RoutingDecided { decision } => Some(decision.model.clone()),
+            _ => None,
+        });
+
+        let mut workers: Vec<WorkerOption> = self
+            .workers()
+            .into_iter()
+            .filter(|worker| Some(&worker.agent_id) != previous.as_ref())
+            .filter(|worker| !(local_only && self.is_cloud_worker(&worker.agent_id)))
+            .collect();
+        // A stable sort, so configured models keep their own order within a
+        // rank and the same task always offers the same first suggestion.
+        workers.sort_by_key(|worker| {
+            let pinned = worker.model.as_ref();
+            // Last, whatever else it is: it has already been tried, and
+            // nothing about this stop suggests it would do better.
+            if pinned.is_some_and(|pinned| ran_on.as_ref() == Some(&pinned.model)) {
+                return 3_u8;
+            }
+            let cloud =
+                pinned.map(|model| model.location == crate::contracts::ModelLocation::Cloud);
+            match (escalating, cloud) {
+                (true, Some(true)) | (false, Some(false)) => 0,
+                (_, None) => 1,
+                (true, Some(false)) | (false, Some(true)) => 2,
+            }
+        });
+        Ok(HandoffOffer {
+            workers,
+            escalating,
+        })
     }
 
     /// Hand an interrupted task to the worker a person chose by name, from
@@ -449,6 +553,7 @@ impl TaskService {
             checkpoint,
             events,
             scope,
+            instructions,
             ..
         } = continuation;
         let task_id = record.task_id.clone();
@@ -500,6 +605,7 @@ impl TaskService {
         let driver = TaskDriver::new(journal, self.providers.clone(), scope, self.clock.clone())
             .with_routing_mode(routing_mode)
             .with_configuration(configuration)
+            .with_instructions(instructions)
             .with_checkpoints(Arc::clone(&self.repositories.checkpoints));
         let driver = match handoff {
             Some(handoff) => driver.handing_over(worker, handoff, plan, interrupt),

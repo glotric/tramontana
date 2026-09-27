@@ -11,7 +11,6 @@ use tramontana_core::contracts::{
 };
 use tramontana_core::services::{StartTaskRequest, TaskService};
 
-use crate::configuration;
 use crate::render::{self, event_line, frame_line};
 use crate::wiring;
 
@@ -298,25 +297,17 @@ async fn run(args: TaskArgs) -> ExitCode {
     };
 
     let conversation_id = args.conversation_id.map(ConversationId::new);
-    if let Some(conversation_id) = &conversation_id {
-        let conversation = match service.get_conversation(conversation_id).await {
-            Ok(conversation) => conversation,
-            Err(error) => return render::application_error(&error),
-        };
-        if let Some(project_id) = conversation.project_id {
-            let selection = ConfigurationSelection {
-                active_path: args.active_path,
-                agent_id: args.agent_id,
-                workflow_id: args.workflow_id,
-                skill_ids: args.skill_ids,
-            };
-            if let Err(message) =
-                configuration::resolve_project(&service, &project_id, &selection).await
-            {
-                eprintln!("error: configuration could not be resolved: {message}");
-                return ExitCode::FAILURE;
-            }
-        }
+    // The task carries its own selection rather than resolving the project
+    // first: what a task uses is the task's, and starting one now resolves
+    // the project's files itself (ADRs 0052 and 0053).
+    let selection = ConfigurationSelection {
+        active_path: args.active_path,
+        agent_id: args.agent_id,
+        workflow_id: args.workflow_id,
+        skill_ids: args.skill_ids,
+    };
+    if selection.skill_ids.is_empty() {
+        suggest(&service, conversation_id.as_ref(), &args.goal).await;
     }
 
     let task_id = match service
@@ -325,6 +316,7 @@ async fn run(args: TaskArgs) -> ExitCode {
             goal: args.goal,
             routing_mode: args.mode.map(Into::into),
             worker: args.worker.clone(),
+            selection: Some(selection),
             ..Default::default()
         })
         .await
@@ -645,8 +637,26 @@ async fn handoff(args: HandoffArgs) -> ExitCode {
             .await
     } else {
         eprintln!("error: unknown worker {:?}; available:", args.to);
-        for worker in &offered {
-            eprintln!("  {}  {}", worker.agent_id, worker.display_name);
+        // In the core's order, so the terminal suggests what the window would
+        // (ADR 0055): the first is the one to reach for.
+        match service.handoff_options(&task_id).await {
+            Ok(offer) => {
+                if offer.escalating {
+                    eprintln!(
+                        "  this task ran out of what its model could do, so a model off this \
+                         device is offered first"
+                    );
+                }
+                for (position, worker) in offer.workers.iter().enumerate() {
+                    let mark = if position == 0 { "*" } else { " " };
+                    eprintln!("{mark} {}  {}", worker.agent_id, worker.display_name);
+                }
+            }
+            Err(_) => {
+                for worker in &offered {
+                    eprintln!("  {}  {}", worker.agent_id, worker.display_name);
+                }
+            }
         }
         for name in wiring::available_workers() {
             if !offered.iter().any(|worker| worker.agent_id == name) {
@@ -668,4 +678,38 @@ async fn handoff(args: HandoffArgs) -> ExitCode {
         println!("handed to {} at event {}", args.to, handed.event_sequence);
     }
     stream_task(service, task_id, args.json, None, handed.event_sequence).await
+}
+
+/// Say which of the project's skills look relevant, and how to use one.
+///
+/// Only when the person named none: a note beside a choice already made
+/// would be noise. It goes to stderr, because `--json` puts the task's
+/// events on stdout and a note is not one of them. Nothing is selected by it
+/// (ADR 0054).
+async fn suggest(
+    service: &tramontana_core::services::TaskService,
+    conversation_id: Option<&ConversationId>,
+    goal: &str,
+) {
+    let Some(conversation_id) = conversation_id else {
+        return;
+    };
+    let Ok(conversation) = service.get_conversation(conversation_id).await else {
+        return;
+    };
+    let Some(project_id) = conversation.project_id else {
+        return;
+    };
+    let Ok(Some(configuration)) = service.get_effective_configuration(&project_id).await else {
+        return;
+    };
+    let suggested = tramontana_core::services::suggested_skills(&configuration, goal);
+    if suggested.is_empty() {
+        return;
+    }
+    eprintln!(
+        "note: these skills match this goal: {}",
+        suggested.join(", ")
+    );
+    eprintln!("      this task uses none; pass --skill-id <ID> to use one");
 }

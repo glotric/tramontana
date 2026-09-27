@@ -22,6 +22,10 @@ use crate::contracts::{
 /// The goal is the one source that always exists. A project task also carries
 /// its effective configuration, named by the manifest hash the task already
 /// records — the same value, so the two records cannot drift.
+///
+/// `instructions` is what the worker will actually send (ADR 0052). A source
+/// the worker had no room for is still listed, and says so: the manifest
+/// describes the release, not the inventory.
 #[must_use]
 pub fn assemble_context(
     context_manifest_id: impl Into<String>,
@@ -29,6 +33,7 @@ pub fn assemble_context(
     goal: &str,
     goal_redactions: Vec<String>,
     configuration: Option<&EffectiveConfiguration>,
+    instructions: Option<&crate::services::ComposedInstructions>,
     created_at: Timestamp,
 ) -> ContextManifest {
     // `goal` is already redacted — `TaskService::start_task` does it, so no
@@ -60,10 +65,12 @@ pub fn assemble_context(
                 content_hash: source.content_hash.clone(),
                 byte_count: source.byte_count,
                 token_estimate: None,
-                included: source.active,
+                included: sent(instructions, &source.source_id, source.active),
                 // An inactive source was gathered and deliberately not used;
                 // saying so is the difference between a manifest and a list.
-                exclusion_reason: (!source.active).then(|| "context.notActive".to_owned()),
+                // An active one the turn had no room for says which of the two
+                // it was, so "not sent" is never mistaken for "not wanted".
+                exclusion_reason: exclusion_reason(instructions, &source.source_id, source.active),
                 // Carried from resolution, where the file was redacted
                 // before it was hashed. The hash below therefore names text
                 // that may be released, and prompt assembly in M6 cannot send
@@ -82,6 +89,42 @@ pub fn assemble_context(
         sources,
         created_at,
     )
+}
+
+/// Whether this source's text is in the message the worker will send.
+///
+/// With no instructions composed at all — a task with no worker turn yet, or
+/// one whose sources all lost their text to validation — the old meaning
+/// stands: active is what was given.
+fn sent(
+    instructions: Option<&crate::services::ComposedInstructions>,
+    source_id: &str,
+    active: bool,
+) -> bool {
+    match instructions {
+        Some(composed) => composed.included.iter().any(|id| id == source_id),
+        None => active,
+    }
+}
+
+/// Why a source's text is absent, or `None` when it is present.
+fn exclusion_reason(
+    instructions: Option<&crate::services::ComposedInstructions>,
+    source_id: &str,
+    active: bool,
+) -> Option<String> {
+    if sent(instructions, source_id, active) {
+        return None;
+    }
+    if !active {
+        return Some("context.notActive".to_owned());
+    }
+    // Active, and still not sent: either the turn ran out of room for it, or
+    // the file holds front matter and no instructions at all.
+    if instructions.is_some_and(|composed| composed.left_out.iter().any(|id| id == source_id)) {
+        return Some(crate::services::OVER_INSTRUCTION_BUDGET.to_owned());
+    }
+    Some(crate::services::NO_INSTRUCTION_TEXT.to_owned())
 }
 
 /// Which context category a configuration source belongs to.
@@ -115,6 +158,7 @@ mod tests {
             "say hello",
             Vec::new(),
             None,
+            None,
             at(),
         );
         assert_eq!(manifest.sources.len(), 1);
@@ -133,6 +177,7 @@ mod tests {
             TaskId::new("task-1"),
             "call with [redacted]",
             vec![crate::services::redaction_reason::PROVIDER_API_KEY.to_owned()],
+            None,
             None,
             at(),
         );
@@ -164,6 +209,7 @@ mod tests {
             "say hello",
             Vec::new(),
             Some(&configuration),
+            None,
             at(),
         );
         let rendered = serde_json::to_string(&manifest).unwrap();

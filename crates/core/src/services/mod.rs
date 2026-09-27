@@ -12,6 +12,7 @@
 mod checkpoint;
 mod export;
 mod handoff;
+mod instructions;
 mod journal;
 mod model_catalogue;
 mod model_context;
@@ -28,6 +29,7 @@ mod reference_worker;
 mod release;
 mod routing;
 mod runtime;
+mod suggestion;
 mod task_export;
 mod task_recovery;
 mod task_service;
@@ -42,6 +44,10 @@ pub use export::{
     imported_project_id, is_safe_relative_path, validate_import,
 };
 pub use handoff::build_handoff;
+pub use instructions::{
+    ComposedInstructions, InstructionSource, NO_INSTRUCTION_TEXT, OVER_INSTRUCTION_BUDGET,
+    PROJECT_INSTRUCTION_BYTES, PROJECT_INSTRUCTIONS_SOURCE_ID, ProjectInstructions,
+};
 pub use journal::{JournalPorts, TaskJournal};
 pub use model_catalogue::ModelToolCatalogue;
 pub use model_context::{
@@ -71,10 +77,12 @@ pub use release::{RELEASE_CAPABILITY, ReleaseContext, ReleaseError, ReleaseManag
 pub use routing::{
     AvailabilitySnapshot, NoEligibleRoute, RoutingInput, route, route_after_failure,
 };
+pub use runtime::{beyond_the_model, stopped_on};
+pub use suggestion::suggested_skills;
 pub use task_export::ImportSummary;
 pub use task_service::{
-    PinnedWorkerChoice, Providers, Repositories, StartTaskRequest, TaskService, WorkerChoice,
-    WorkerOption,
+    HandoffOffer, PinnedWorkerChoice, Providers, Repositories, StartTaskRequest, TaskService,
+    WorkerChoice, WorkerOption,
 };
 pub use tool_registry::{
     APP_NAMESPACE, BROWSER_PROVIDER, RegisteredTool, RegistryError, ToolRegistry, is_app_tool,

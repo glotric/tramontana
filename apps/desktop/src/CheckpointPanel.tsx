@@ -5,8 +5,8 @@ import {
   asErrorEnvelope,
   discardCheckpoint,
   handOffTask,
+  handoffOptions,
   latestCheckpoint,
-  listWorkers,
   resumeTask,
   type WorkerView,
 } from "./core.js";
@@ -59,6 +59,7 @@ export function CheckpointPanel({
 }: CheckpointPanelProps): React.JSX.Element {
   const [checkpoint, setCheckpoint] = useState<TaskCheckpoint | undefined>();
   const [workers, setWorkers] = useState<readonly WorkerView[]>([]);
+  const [escalating, setEscalating] = useState(false);
   const [receiving, setReceiving] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -86,19 +87,24 @@ export function CheckpointPanel({
     };
   }, [taskId]);
 
-  // The workers it could go to. A failure to list them leaves only resume.
+  // The workers it could go to, in the core's order: the one that already
+  // has the task is left out, a Local Only task is offered nothing off this
+  // device, and a task whose model ran out is offered the cloud first
+  // (ADR 0055). A failure to list them leaves only resume.
   useEffect(() => {
     let active = true;
-    void listWorkers().then(
-      (found) => {
-        if (active) setWorkers(found);
+    void handoffOptions(taskId).then(
+      (offer) => {
+        if (!active) return;
+        setWorkers(offer.workers);
+        setEscalating(offer.escalating);
       },
       () => undefined,
     );
     return () => {
       active = false;
     };
-  }, []);
+  }, [taskId]);
 
   const act = useCallback(
     async (action: () => Promise<void>, fallback: string): Promise<void> => {
@@ -146,17 +152,9 @@ export function CheckpointPanel({
   const pending = checkpoint.pendingAction;
   const replayable = pending === undefined || pending.replaySafety === "safe";
   const resumable = checkpoint.resume.eligible && replayable;
-  // Not the worker that already has the task: that is a resume. What is
-  // suggested first is another model on this device, then the one the mode
-  // chooses, then a model off this device: a different model is likelier to
-  // get further than the same one, and work leaves the device last
-  // (ADR 0048).
-  const previous = checkpoint.worker?.descriptor.agentId;
-  const rank = (worker: WorkerView): number =>
-    worker.cloud === true ? 2 : worker.cloud === false ? 0 : 1;
-  const others = workers
-    .filter((worker) => worker.agentId !== previous)
-    .sort((left, right) => rank(left) - rank(right));
+  // Already ordered, and already filtered: which model a stopped task should
+  // try next is a decision, and it is the core's (ADR 0055).
+  const others = workers;
   const chosen = others.find((worker) => worker.agentId === receiving) ?? others[0];
 
   return (
@@ -174,6 +172,17 @@ export function CheckpointPanel({
           {chosen === undefined
             ? "Configure another model to hand it to, or resume it once this one can go on."
             : `Hand it to ${chosen.displayName} to continue from here, with a budget of its own.`}
+        </p>
+      )}
+
+      {/* Why the cloud is being offered first, and what it would cost in
+          privacy. Said before the button, not after (ADR 0055). */}
+      {escalating && chosen?.cloud === true && (
+        <p className="notice" role="note">
+          This one ran out of what its model could do, so a model off this device is offered first.
+          Handing it to {chosen.displayName} sends the task&rsquo;s record — its goal, what it read
+          and what it said — to that provider. Each release is still shown and approved as it
+          happens, and nothing moves until you click.
         </p>
       )}
 

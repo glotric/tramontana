@@ -399,6 +399,7 @@ async fn a_resumed_task_keeps_the_worker_and_mode_it_started_with() {
             admission: Some(ToolAdmission::READ_WRITE),
             routing_mode: Some(RoutingMode::LocalOnly),
             worker: None,
+            selection: None,
         })
         .await
         .unwrap();
