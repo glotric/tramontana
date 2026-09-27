@@ -67,6 +67,13 @@ async fn a_remote_app_comes_back_as_it_was_configured_beside_one_that_runs_here(
                 key: "search.token".to_owned(),
                 store: SecretStore::Platform,
             }),
+            // Signed in to, so the client it registered as and where its
+            // refresh token lives read back too (ADR 0056).
+            client_id: Some("tramontana-client".to_owned()),
+            refresh: Some(SecretRef {
+                key: "search.refresh".to_owned(),
+                store: SecretStore::Platform,
+            }),
         },
         Timestamp::new("2026-01-02T00:00:00.000Z"),
     );

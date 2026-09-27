@@ -14,7 +14,9 @@ use tramontana_core::contracts::{
     AppConfig, AppLaunch, AppRemote, AppSecret, AppVariable, RiskClass, SecretRef, SecretStore,
     is_loopback_url, is_valid_app_id,
 };
-use tramontana_core::ports::{AppSettingsRepository, Clock, SecretResolver, ToolProvider};
+use tramontana_core::ports::{
+    AppSettingsRepository, Clock, SecretResolver, SecretVault, ToolProvider,
+};
 use tramontana_persistence::{Database, SqliteAppSettingsRepository};
 use tramontana_platform::{PlatformSecretVault, SystemClock};
 
@@ -48,6 +50,25 @@ enum AppCommand {
     Remove(IdArgs),
     /// Start an App, list the tools it offers and those refused, and stop it.
     Tools(IdArgs),
+    /// Sign in to a remote App that asks for OAuth, and store its token
+    /// (ADR 0056).
+    SignIn(SignInArgs),
+}
+
+#[derive(Debug, Args)]
+struct SignInArgs {
+    /// The remote App to sign in to.
+    #[arg(value_name = "ID")]
+    id: String,
+    /// The client identifier the authorization server issued you, for a
+    /// server that does not let an application register itself.
+    #[arg(long, value_name = "ID")]
+    client_id: Option<String>,
+    /// How long to wait for the browser to come back.
+    #[arg(long, value_name = "SECONDS", default_value_t = 300)]
+    wait_seconds: u64,
+    #[command(flatten)]
+    profile: ProfileArgs,
 }
 
 #[derive(Debug, Args)]
@@ -131,6 +152,7 @@ pub(crate) async fn execute(args: AppArgs) -> ExitCode {
     let result = match args.command {
         AppCommand::Add(args) => add(args).await,
         AppCommand::AddRemote(args) => add_remote(args).await,
+        AppCommand::SignIn(args) => sign_in(args).await,
         AppCommand::List(args) => list(args.profile).await,
         AppCommand::Enable(args) => toggle(args).await,
         AppCommand::Remove(args) => remove(args).await,
@@ -256,6 +278,8 @@ async fn add_remote(args: AddRemoteArgs) -> Result<(), String> {
                 key,
                 store: SecretStore::Platform,
             }),
+            client_id: None,
+            refresh: None,
         },
         SystemClock::new().now(),
     );
@@ -280,6 +304,166 @@ async fn add_remote(args: AddRemoteArgs) -> Result<(), String> {
         );
     }
     println!("  a task is offered its tools only with --apps, and each call is asked about");
+    Ok(())
+}
+
+/// Sign in to a remote App and store what it gave back.
+///
+/// The person's part is opening one address; everything else — discovering the
+/// authorization server, proving this attempt with PKCE, catching the redirect
+/// on this computer — happens here. A token is written to the operating
+/// system's credential store and nowhere else (ADR 0056).
+async fn sign_in(args: SignInArgs) -> Result<(), String> {
+    let settings = settings(args.profile).await?;
+    let mut config = find(&settings, &args.id).await?;
+    let remote = config
+        .remote
+        .clone()
+        .ok_or_else(|| format!("{} is not a remote App; nothing to sign in to", args.id))?;
+
+    let vault = PlatformSecretVault::new();
+    let token_ref = remote.token.clone().unwrap_or_else(|| SecretRef {
+        key: format!("{}.token", config.app_id),
+        store: SecretStore::Platform,
+    });
+    let refresh_ref = remote.refresh.clone().unwrap_or_else(|| SecretRef {
+        key: format!("{}.refresh", config.app_id),
+        store: SecretStore::Platform,
+    });
+
+    let server = tramontana_composition::discover(&remote.url, None)
+        .await
+        .map_err(|error| format!("could not find how to sign in to {}: {error}", args.id))?;
+    println!("signing in at {}", server.authorization_endpoint);
+
+    // A refresh token already here is the quiet path: no browser, no
+    // approval, because the person already gave one.
+    let client_id = args.client_id.clone().or_else(|| remote.client_id.clone());
+    if let (Some(client_id), Ok(refresh_token)) =
+        (client_id.as_deref(), vault.resolve(&refresh_ref).await)
+    {
+        match tramontana_composition::refresh(&server, client_id, &refresh_token).await {
+            Ok(tokens) => {
+                store_tokens(&vault, &token_ref, &refresh_ref, &tokens).await?;
+                println!("refreshed without asking you again");
+                return Ok(());
+            }
+            Err(error) => {
+                println!(
+                    "note: the stored refresh token no longer works ({error}); signing in again"
+                );
+            }
+        }
+    }
+
+    let redirect = tramontana_platform::Redirect::bind()
+        .await
+        .map_err(|error| format!("could not listen for the sign-in: {error}"))?;
+    let client_id = match client_id {
+        Some(client_id) => client_id,
+        None => {
+            let endpoint = server.registration_endpoint.clone().ok_or_else(|| {
+                "this authorization server does not let an application register itself; pass \
+                 --client-id with the identifier it issued you"
+                    .to_owned()
+            })?;
+            let registered = tramontana_composition::register(&endpoint, redirect.uri())
+                .await
+                .map_err(|error| {
+                    format!("could not register with the authorization server: {error}")
+                })?;
+            println!("registered as {registered}");
+            registered
+        }
+    };
+
+    let (address, attempt) = tramontana_composition::authorize(&server, &client_id, redirect.uri());
+    println!();
+    println!("open this address to approve the sign-in:");
+    println!("  {address}");
+    println!();
+    println!(
+        "waiting for the browser to come back on {} …",
+        redirect.uri()
+    );
+
+    let code = redirect
+        .wait(
+            attempt.state(),
+            std::time::Duration::from_secs(args.wait_seconds),
+        )
+        .await
+        .map_err(|error| format!("the sign-in did not finish: {error}"))?;
+    let tokens = tramontana_composition::exchange(
+        &server,
+        &client_id,
+        // The same address that was registered and approved, or the server
+        // refuses — which is the point of the parameter.
+        redirect_uri_of(&address),
+        &code,
+        &attempt,
+    )
+    .await
+    .map_err(|error| format!("the token could not be collected: {error}"))?;
+    store_tokens(&vault, &token_ref, &refresh_ref, &tokens).await?;
+
+    // Only now, with a token actually stored: the configuration records where
+    // to find it and who this application signed in as.
+    let mut updated = remote;
+    updated.token = Some(token_ref.clone());
+    updated.client_id = Some(client_id);
+    updated.refresh = tokens.refresh.as_ref().map(|_| refresh_ref.clone());
+    config.remote = Some(updated);
+    settings
+        .save(&config)
+        .await
+        .map_err(|error| format!("could not save the App: {error}"))?;
+
+    println!(
+        "signed in; its token is in the credential store as {}",
+        token_ref.key
+    );
+    if tokens.refresh.is_some() {
+        println!(
+            "  and a refresh token, so `tramontana app sign-in {}` will not ask again",
+            config.app_id
+        );
+    }
+    match tokens.expires_in {
+        Some(seconds) => println!("  the token expires in {seconds} seconds"),
+        None => println!("  the server did not say when the token expires"),
+    }
+    Ok(())
+}
+
+/// The redirect address out of an authorization address, unescaped.
+///
+/// Read back from what was actually sent rather than passed a second time, so
+/// the two cannot differ.
+fn redirect_uri_of(address: &str) -> &str {
+    address
+        .split("redirect_uri=")
+        .nth(1)
+        .and_then(|rest| rest.split('&').next())
+        .unwrap_or("")
+}
+
+async fn store_tokens(
+    vault: &PlatformSecretVault,
+    token: &SecretRef,
+    refresh: &SecretRef,
+    tokens: &tramontana_composition::Tokens,
+) -> Result<(), String> {
+    vault
+        .store(token, &tokens.access)
+        .await
+        .map_err(|error| format!("could not store the token: {}", error.message))?;
+    if let Some(value) = &tokens.refresh {
+        vault
+            .store(refresh, value)
+            .await
+            .map_err(|error| format!("could not store the refresh token: {}", error.message))?;
+    }
     Ok(())
 }
 

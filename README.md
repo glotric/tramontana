@@ -39,7 +39,8 @@ what that demonstration finds may still revise them.
   the desktop from this README. Its automated checks pass; its
   demonstration has not run.
 - **Built:** MCP Apps over stdio (M9), and remote ones over Streamable HTTP
-  with a token kept in the Keychain (ADR 0050). Added from the CLI
+  with a token kept in the Keychain (ADR 0050) — obtained by hand, or through
+  an OAuth sign-in with `tramontana app sign-in <ID>` (ADR 0056). Added from the CLI
   (`tramontana app add`, `tramontana app add-remote`); seen, turned on and
   off, and their decisions read in the desktop's **Apps** view; allowed for a
   task with **May use Apps**. A remote App is never used under Local Only.
@@ -200,6 +201,8 @@ tramontana provider add-anthropic claude --model claude-sonnet-4-5 --credential 
 tramontana provider list                                 # shows local vs CLOUD, derived not declared
 tramontana provider tool-calls local                     # only after verifying this model supports native tool calls
 tramontana provider tool-calls local --off               # unknown/unsupported must stay off
+
+tramontana app sign-in   <APP>                            # OAuth, for a remote App that asks for it
 
 tramontana secret set    openai.apiKey < key.txt         # stdin only, never an argument
 tramontana secret status openai.apiKey                   # configured or not; never the value

@@ -21,10 +21,16 @@ mod apps;
 use std::sync::Arc;
 
 pub use apps::{AppFailure, AppPlane, app_folder, offerable, start_app, start_apps};
+// Signing in to a remote App (ADR 0056). Re-exported rather than reimplemented:
+// this crate is the one place that knows the MCP adapter exists, and an
+// application composes the person's part of the flow around it.
 pub use tramontana_adapters_browser::{
     BrowserProvider, LaunchOptions as BrowserLaunchOptions, find_browser,
 };
 use tramontana_adapters_local::{LlamaServerSpec, SupervisedLlamaServer};
+pub use tramontana_adapters_mcp::{
+    Attempt, AuthorizationServer, Tokens, authorize, discover, exchange, refresh, register,
+};
 use tramontana_adapters_model::{AnthropicProvider, OpenAiCompatibleProvider, ProviderAuth};
 use tramontana_core::contracts::{
     ErrorEnvelope, Health, ModelCapability, ModelDescriptor, ModelLocation, ProviderConfig,
