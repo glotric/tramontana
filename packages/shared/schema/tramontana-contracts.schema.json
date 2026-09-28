@@ -57,6 +57,26 @@
       ],
       "type": "object"
     },
+    "AnswerStyle": {
+      "description": "How answers should be written.",
+      "oneOf": [
+        {
+          "const": "quick",
+          "description": "Short answers, as fast as possible.",
+          "type": "string"
+        },
+        {
+          "const": "balanced",
+          "description": "Clear, complete answers for everyday work.",
+          "type": "string"
+        },
+        {
+          "const": "thorough",
+          "description": "Takes longer, and thinks things through.",
+          "type": "string"
+        }
+      ]
+    },
     "ApprovalDecisionKind": {
       "description": "What the user may choose when asked.",
       "oneOf": [
@@ -1317,6 +1337,10 @@
               "const": "taskCreated",
               "type": "string"
             },
+            "personal": {
+              "description": "What the person's profile told this task's model about them, as\nit was when the task started (ADR 0061). Absent when nothing was\ntold: every task with a project, and every chat before profiles.",
+              "type": "string"
+            },
             "routingMode": {
               "$ref": "#/$defs/RoutingMode",
               "description": "Where this task's models may run, chosen when it was created and\nkept if it is resumed.\n\nAbsent from tasks recorded before the mode was, which resume under\nthe profile's mode (ADR 0031)."
@@ -2209,6 +2233,29 @@
       "description": "One tool invocation.",
       "type": "string"
     },
+    "MemoryNote": {
+      "description": "One thing the person asked Tramontana to remember.",
+      "properties": {
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it was added."
+        },
+        "noteId": {
+          "description": "Stable identifier.",
+          "type": "string"
+        },
+        "text": {
+          "description": "The note, redacted when it was saved.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "noteId",
+        "text",
+        "createdAt"
+      ],
+      "type": "object"
+    },
     "MessageId": {
       "description": "A durable message in a conversation.",
       "type": "string"
@@ -2951,6 +2998,79 @@
           "type": "object"
         }
       ]
+    },
+    "PersonalDetails": {
+      "description": "The parts of the profile a person edits together.",
+      "properties": {
+        "about": {
+          "default": "",
+          "description": "About their work; empty clears it.",
+          "type": "string"
+        },
+        "answerStyle": {
+          "$ref": "#/$defs/AnswerStyle",
+          "description": "How answers should be written."
+        },
+        "memoryEnabled": {
+          "description": "Whether the notes are given to chats.",
+          "type": "boolean"
+        },
+        "name": {
+          "default": "",
+          "description": "What to call the person; empty clears it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "about",
+        "answerStyle",
+        "memoryEnabled"
+      ],
+      "type": "object"
+    },
+    "PersonalProfile": {
+      "description": "The person's profile: kept in the local profile, never in a project, and\ngiven only to chats (ADR 0061).",
+      "properties": {
+        "about": {
+          "description": "A sentence or two about their work.",
+          "type": "string"
+        },
+        "answerStyle": {
+          "$ref": "#/$defs/AnswerStyle",
+          "default": "balanced",
+          "description": "How answers should be written."
+        },
+        "memoryEnabled": {
+          "description": "Whether the notes are given to chats. Notes are kept either way.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "What to call the person.",
+          "type": "string"
+        },
+        "notes": {
+          "default": [],
+          "description": "The notes, oldest first.",
+          "items": {
+            "$ref": "#/$defs/MemoryNote"
+          },
+          "type": "array"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "answerStyle",
+        "memoryEnabled",
+        "notes"
+      ],
+      "type": "object"
     },
     "ProjectGrant": {
       "description": "A persistent, revocable grant.",

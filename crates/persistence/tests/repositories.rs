@@ -501,6 +501,7 @@ async fn task_and_initial_events_commit_as_one_transaction() {
         conversation_id: None,
         routing_mode: None,
         attachments: Vec::new(),
+        personal: None,
     };
     let error = tasks
         .create_with_initial_events(&record, &[event])
@@ -750,4 +751,53 @@ async fn provider_endpoints_round_trip_and_never_hold_a_credential() {
     assert!(settings.delete("anthropic").await.unwrap());
     assert!(!settings.delete("anthropic").await.unwrap());
     assert_eq!(settings.list().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_personal_profile_round_trips_with_its_notes_in_order() {
+    use tramontana_core::contracts::{AnswerStyle, MemoryNote, PersonalProfile};
+    use tramontana_core::ports::PersonalRepository;
+    use tramontana_persistence::SqlitePersonalRepository;
+
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(&directory, "personal").await;
+    let store = SqlitePersonalRepository::new(db.clone());
+
+    // Nothing saved yet: the default profile, not an error.
+    assert_eq!(store.load().await.unwrap(), PersonalProfile::default());
+
+    let mut profile = PersonalProfile {
+        name: Some("Gasper".into()),
+        about: Some("I plan crane maintenance.".into()),
+        answer_style: AnswerStyle::Thorough,
+        memory_enabled: false,
+        ..PersonalProfile::default()
+    };
+    for (index, text) in ["Site in Koper", "Prefers metric", "Team of six"]
+        .iter()
+        .enumerate()
+    {
+        profile.notes.push(MemoryNote {
+            note_id: format!("note-{}", 9 - index),
+            text: (*text).into(),
+            created_at: at(u32::try_from(index).unwrap()),
+        });
+    }
+    store.save(&profile).await.unwrap();
+    // Read back through a fresh handle, as after a restart.
+    assert_eq!(
+        SqlitePersonalRepository::new(db.clone())
+            .load()
+            .await
+            .unwrap(),
+        profile
+    );
+
+    // Saving again replaces, notes included.
+    profile.notes.remove(1);
+    profile.name = None;
+    store.save(&profile).await.unwrap();
+    let reloaded = store.load().await.unwrap();
+    assert_eq!(reloaded, profile);
+    assert_eq!(reloaded.notes.len(), 2);
 }

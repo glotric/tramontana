@@ -11,6 +11,7 @@ mod approval;
 mod bundle;
 mod configuration;
 mod conversation;
+mod profile;
 mod project;
 mod provider;
 mod render;
@@ -48,6 +49,8 @@ enum Command {
     App(app::AppArgs),
     /// Configure where models can be reached.
     Provider(provider::ProviderArgs),
+    /// What chats are told about you, and the notes they remember.
+    Profile(profile::ProfileArgs),
     /// Store, inspect, and remove credentials in the operating system store.
     Secret(secret::SecretArgs),
     /// Run one task against the fake providers and stream its activity.
@@ -91,6 +94,7 @@ async fn execute(command: Command) -> std::process::ExitCode {
         Command::Configuration(args) => configuration::execute(args).await,
         Command::App(args) => app::execute(args).await,
         Command::Provider(args) => provider::execute(args).await,
+        Command::Profile(args) => profile::execute(args).await,
         Command::Secret(args) => secret::execute(args).await,
         Command::Task(args) => run::execute(args).await,
         Command::Info => std::process::ExitCode::SUCCESS,

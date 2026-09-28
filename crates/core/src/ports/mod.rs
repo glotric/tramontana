@@ -34,7 +34,8 @@ pub use project_sources::ProjectSourceReader;
 pub use read_only::{ReadOnlyLimits, ReadOnlyTurn, TOOL_RUN_LIMIT, ToolAdmission};
 pub use repository::{
     AppSettingsRepository, CheckpointRepository, ConfigurationRepository, ConversationRepository,
-    ProjectRepository, ProviderSettingsRepository, RepositoryError, TaskRepository,
+    PersonalRepository, ProjectRepository, ProviderSettingsRepository, RepositoryError,
+    TaskRepository,
 };
 pub use secret::{SecretResolver, SecretVault};
 pub use tool::{ToolInvocation, ToolOutcome, ToolProvider, ToolTarget};

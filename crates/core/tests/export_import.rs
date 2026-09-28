@@ -133,6 +133,7 @@ fn revealing_request() -> ExportRequest {
                 conversation_id: None,
                 routing_mode: None,
                 attachments: Vec::new(),
+                personal: None,
             },
             TaskEventKind::TaskCreated,
         ),

@@ -675,3 +675,107 @@ async fn a_chat_is_answered_by_a_model_that_cannot_call_tools() {
 
     assert_eq!(events.last().unwrap().kind, TaskEventKind::TaskCompleted);
 }
+
+fn system_texts(request: &ModelRequest) -> Vec<String> {
+    request
+        .messages
+        .iter()
+        .filter(|message| message.role == MessageRole::System)
+        .map(text)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_chat_is_told_the_person_s_profile_and_a_project_task_is_not() {
+    let model = Numbered::new();
+    let store = Arc::new(InMemoryPersonalRepository::new());
+    let service = service(&model).with_personal(store);
+    service
+        .update_personal(&PersonalDetails {
+            name: "Gasper".into(),
+            about: "I plan crane maintenance.".into(),
+            answer_style: AnswerStyle::Quick,
+            memory_enabled: true,
+        })
+        .await
+        .unwrap();
+    let profile = service.remember("Our site is in Koper.").await.unwrap();
+    assert_eq!(profile.notes.len(), 1);
+
+    let chat = service.create_conversation(None, "Chat").await.unwrap();
+    let events = ask(&service, &chat.conversation_id, "Hello?").await;
+
+    let told = system_texts(&model.last());
+    assert_eq!(told.len(), 2, "the chat instructions, then the profile");
+    assert_eq!(told[0], CHAT_INSTRUCTIONS);
+    assert!(told[1].contains("Their name is Gasper."));
+    assert!(told[1].contains("- Our site is in Koper."));
+
+    // The record holds what was told, and the manifest names it sensitive.
+    let recorded = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::TaskCreated { personal, .. } => personal.clone(),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(recorded, told[1]);
+    let source = manifest(&events)
+        .sources
+        .into_iter()
+        .find(|source| source.source_id == PERSONAL_SOURCE_ID)
+        .unwrap();
+    assert_eq!(source.data_class, DataClass::Sensitive);
+
+    // A task in a project is told nothing about the person.
+    let project = service
+        .create_project("Cranes", vec!["/work/cranes".into()])
+        .await
+        .unwrap();
+    let work = service
+        .create_conversation(Some(project.project_id), "Work")
+        .await
+        .unwrap();
+    let events = ask(&service, &work.conversation_id, "List it.").await;
+    assert!(
+        !system_texts(&model.last())
+            .iter()
+            .any(|message| message.contains("Gasper"))
+    );
+    assert!(events.iter().all(|event| !matches!(
+        &event.payload,
+        EventPayload::TaskCreated {
+            personal: Some(_),
+            ..
+        }
+    )));
+}
+
+#[tokio::test]
+async fn notes_are_kept_but_not_told_when_memory_is_off_and_can_be_forgotten() {
+    let model = Numbered::new();
+    let service = service(&model).with_personal(Arc::new(InMemoryPersonalRepository::new()));
+    let profile = service.remember("Prefers metric units.").await.unwrap();
+    let note_id = profile.notes[0].note_id.clone();
+    service
+        .update_personal(&PersonalDetails {
+            name: String::new(),
+            about: String::new(),
+            answer_style: AnswerStyle::Balanced,
+            memory_enabled: false,
+        })
+        .await
+        .unwrap();
+
+    let chat = service.create_conversation(None, "Chat").await.unwrap();
+    ask(&service, &chat.conversation_id, "Hello?").await;
+    assert_eq!(system_texts(&model.last()), [CHAT_INSTRUCTIONS]);
+    assert_eq!(service.personal_profile().await.unwrap().notes.len(), 1);
+
+    let forgotten = service.forget(&note_id).await.unwrap();
+    assert!(forgotten.notes.is_empty());
+    assert_eq!(
+        service.forget(&note_id).await.unwrap_err().code,
+        ErrorCode::NotFound
+    );
+}

@@ -55,6 +55,11 @@ export interface AgentDescriptor {
 }
 
 /**
+ * How answers should be written.
+ */
+export type AnswerStyle = "quick" | "balanced" | "thorough";
+
+/**
  * What the user may choose when asked.
  */
 export type ApprovalDecisionKind = "allowOnce" | "allowProject" | "allowSite" | "deny";
@@ -939,6 +944,12 @@ export interface EventEnvelope {
         goalSummary: string;
         kind: "taskCreated";
         /**
+         * What the person's profile told this task's model about them, as
+         * it was when the task started (ADR 0061). Absent when nothing was
+         * told: every task with a project, and every chat before profiles.
+         */
+        personal?: string;
+        /**
          * Where this task's models may run, chosen when it was created and
          * kept if it is resumed.
          *
@@ -1245,6 +1256,12 @@ export type EventPayload =
        */
       goalSummary: string;
       kind: "taskCreated";
+      /**
+       * What the person's profile told this task's model about them, as
+       * it was when the task started (ADR 0061). Absent when nothing was
+       * told: every task with a project, and every chat before profiles.
+       */
+      personal?: string;
       /**
        * Where this task's models may run, chosen when it was created and
        * kept if it is resumed.
@@ -1741,6 +1758,24 @@ export type IntegrationMode = "embedded" | "acp" | "customProcess";
 export type InvocationId = string;
 
 /**
+ * One thing the person asked Tramontana to remember.
+ */
+export interface MemoryNote {
+  /**
+   * When it was added.
+   */
+  createdAt: string;
+  /**
+   * Stable identifier.
+   */
+  noteId: string;
+  /**
+   * The note, redacted when it was saved.
+   */
+  text: string;
+}
+
+/**
  * A durable message in a conversation.
  */
 export type MessageId = string;
@@ -2150,6 +2185,59 @@ export type PermissionOrigin =
        */
       workflowId: string;
     };
+
+/**
+ * The parts of the profile a person edits together.
+ */
+export interface PersonalDetails {
+  /**
+   * About their work; empty clears it.
+   */
+  about: string;
+  /**
+   * How answers should be written.
+   */
+  answerStyle: "quick" | "balanced" | "thorough";
+  /**
+   * Whether the notes are given to chats.
+   */
+  memoryEnabled: boolean;
+  /**
+   * What to call the person; empty clears it.
+   */
+  name: string;
+}
+
+/**
+ * The person's profile: kept in the local profile, never in a project, and
+ * given only to chats (ADR 0061).
+ */
+export interface PersonalProfile {
+  /**
+   * A sentence or two about their work.
+   */
+  about?: string;
+  /**
+   * How answers should be written.
+   */
+  answerStyle: "quick" | "balanced" | "thorough";
+  /**
+   * Whether the notes are given to chats. Notes are kept either way.
+   */
+  memoryEnabled: boolean;
+  /**
+   * What to call the person.
+   */
+  name?: string;
+  /**
+   * The notes, oldest first.
+   */
+  notes: MemoryNote[];
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+}
 
 /**
  * A persistent, revocable grant.

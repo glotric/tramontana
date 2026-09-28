@@ -140,6 +140,11 @@ pub enum EventPayload {
         /// recorded before attachments were.
         #[serde(skip_serializing_if = "Vec::is_empty", default)]
         attachments: Vec<TaskAttachment>,
+        /// What the person's profile told this task's model about them, as
+        /// it was when the task started (ADR 0061). Absent when nothing was
+        /// told: every task with a project, and every chat before profiles.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        personal: Option<String>,
     },
     /// The task moved between states.
     #[serde(rename_all = "camelCase")]

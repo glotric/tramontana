@@ -182,8 +182,11 @@ impl BrokeredHost {
             self.journal.next_id("context"),
             catalogue,
             self.instructions.as_deref(),
-            &self.earlier,
-            &self.attachments,
+            crate::services::ConversationContext {
+                earlier: &self.earlier,
+                attachments: &self.attachments,
+                personal: self.personal.as_deref(),
+            },
         )?;
         input.request.limits.max_output_tokens = Some(u64::from(limits.turn_tokens));
         input.request.limits.deadline_ms = limits.turn_ms;

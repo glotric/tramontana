@@ -46,6 +46,15 @@ fn created_attachments(events: &[EventEnvelope]) -> Vec<crate::contracts::TaskAt
         .unwrap_or_default()
 }
 
+/// What the task's model was told about the person, from its own record
+/// (ADR 0061).
+fn created_personal(events: &[EventEnvelope]) -> Option<String> {
+    events.iter().find_map(|event| match &event.payload {
+        EventPayload::TaskCreated { personal, .. } => personal.clone(),
+        _ => None,
+    })
+}
+
 fn created_mode(events: &[EventEnvelope]) -> Option<RoutingMode> {
     events.iter().find_map(|event| match &event.payload {
         EventPayload::TaskCreated { routing_mode, .. } => *routing_mode,
@@ -620,6 +629,7 @@ impl TaskService {
             .with_instructions(instructions)
             .with_earlier_turns(earlier)
             .with_attachments(created_attachments(&events))
+            .with_personal(created_personal(&events))
             .with_checkpoints(Arc::clone(&self.repositories.checkpoints));
         let driver = match handoff {
             Some(handoff) => driver.handing_over(worker, handoff, plan, interrupt),

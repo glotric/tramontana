@@ -228,6 +228,9 @@ pub struct TaskService {
     /// What reads PDF and Word attachments (ADR 0062). Without one, only
     /// text files can be attached.
     pub(super) documents: Option<Arc<dyn crate::ports::DocumentReader>>,
+    /// The person's profile and memory (ADR 0061). Without it, chats are
+    /// told nothing about the person.
+    pub(super) personal: Option<Arc<dyn crate::ports::PersonalRepository>>,
     pub(super) execution_allowed: bool,
     pub(super) execution_guard: Option<Arc<dyn Send + Sync>>,
 }
@@ -261,6 +264,7 @@ impl TaskService {
             pinned: None,
             project_sources: None,
             documents: None,
+            personal: None,
             execution_allowed: true,
             execution_guard: None,
         }
@@ -287,6 +291,110 @@ impl TaskService {
     pub fn with_project_sources(mut self, reader: Arc<dyn ProjectSourceReader>) -> Self {
         self.project_sources = Some(reader);
         self
+    }
+
+    /// Keep the person's profile and memory in `store`, and tell chats
+    /// about them (ADR 0061).
+    #[must_use]
+    pub fn with_personal(mut self, store: Arc<dyn crate::ports::PersonalRepository>) -> Self {
+        self.personal = Some(store);
+        self
+    }
+
+    fn personal_store(&self) -> Result<&Arc<dyn crate::ports::PersonalRepository>, ErrorEnvelope> {
+        self.personal.as_ref().ok_or_else(|| {
+            self.error(
+                ErrorCode::CapabilityUnsupported,
+                "This application keeps no personal profile",
+            )
+        })
+    }
+
+    /// The person's profile and memory notes (ADR 0061).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::CapabilityUnsupported`] when the service keeps no
+    /// profile, or a persistence error.
+    pub async fn personal_profile(
+        &self,
+    ) -> Result<crate::contracts::PersonalProfile, ErrorEnvelope> {
+        self.personal_store()?
+            .load()
+            .await
+            .map_err(|error| self.repository_error(&error))
+    }
+
+    /// Change what the person told Tramontana about themselves.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidRequest`] for a field that cannot be kept, or as
+    /// [`Self::personal_profile`].
+    pub async fn update_personal(
+        &self,
+        details: &crate::contracts::PersonalDetails,
+    ) -> Result<crate::contracts::PersonalProfile, ErrorEnvelope> {
+        let profile = super::apply_details(self.personal_profile().await?, details)?;
+        self.personal_store()?
+            .save(&profile)
+            .await
+            .map_err(|error| self.repository_error(&error))?;
+        Ok(profile)
+    }
+
+    /// Add a note for chats to remember. Only the person adds one; nothing
+    /// is remembered on its own (ADR 0061).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidRequest`] for an empty or long note, or when the
+    /// profile holds as many as it may, or as [`Self::personal_profile`].
+    pub async fn remember(
+        &self,
+        text: &str,
+    ) -> Result<crate::contracts::PersonalProfile, ErrorEnvelope> {
+        let mut profile = self.personal_profile().await?;
+        let note = super::new_note(&profile, self.ids.next("note"), text, self.clock.now())?;
+        profile.notes.push(note);
+        self.personal_store()?
+            .save(&profile)
+            .await
+            .map_err(|error| self.repository_error(&error))?;
+        Ok(profile)
+    }
+
+    /// Forget one note.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::NotFound`] when no note has that id, or as
+    /// [`Self::personal_profile`].
+    pub async fn forget(
+        &self,
+        note_id: &str,
+    ) -> Result<crate::contracts::PersonalProfile, ErrorEnvelope> {
+        let mut profile = self.personal_profile().await?;
+        let before = profile.notes.len();
+        profile.notes.retain(|note| note.note_id != note_id);
+        if profile.notes.len() == before {
+            return Err(self.error(ErrorCode::NotFound, "No note has that id"));
+        }
+        self.personal_store()?
+            .save(&profile)
+            .await
+            .map_err(|error| self.repository_error(&error))?;
+        Ok(profile)
+    }
+
+    /// What a chat starting now is told about the person, if anything.
+    /// A profile that cannot be read tells nothing: less context is safe.
+    async fn personal_for(&self, project_id: Option<&ProjectId>) -> Option<String> {
+        if project_id.is_some() {
+            return None;
+        }
+        let profile = self.personal.as_ref()?.load().await.ok()?;
+        super::personal_context(&profile)
     }
 
     /// Read PDF and Word attachments with `reader` (ADR 0062).
@@ -1008,6 +1116,9 @@ impl TaskService {
         // here on there is only the redacted text
         // (`SECURITY_AND_PERMISSIONS.md` §7).
         let goal = crate::services::redact(&request.goal);
+        // Chosen now and recorded, so a resumed task is told the same
+        // (ADR 0061). Only a chat is told anything.
+        let personal = self.personal_for(project_id.as_ref()).await;
 
         let created_at = self.clock.now();
         let mut record = TaskRecord::new(
@@ -1029,6 +1140,7 @@ impl TaskService {
                     conversation_id: request.conversation_id.clone(),
                     routing_mode: Some(routing_mode),
                     attachments: attachments.clone(),
+                    personal: personal.clone(),
                 },
             )
             .into_envelope(
@@ -1117,6 +1229,7 @@ impl TaskService {
         .with_instructions(instructions)
         .with_earlier_turns(earlier)
         .with_attachments(attachments)
+        .with_personal(personal)
         .with_goal_redactions(goal.reason_codes.clone())
         .with_checkpoints(Arc::clone(&self.repositories.checkpoints))
         .continuing(None, super::ResumePlan::default(), interrupt);

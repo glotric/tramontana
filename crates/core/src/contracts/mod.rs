@@ -27,6 +27,7 @@ mod ids;
 mod message;
 mod model;
 mod permission;
+mod personal;
 mod primitives;
 mod provider;
 mod records;
@@ -83,6 +84,7 @@ pub use permission::{
     Capability, CapabilityScope, GrantKind, ProjectGrant,
 };
 pub(crate) use permission::{AuthorizedTarget, GrantedAuthority};
+pub use personal::{AnswerStyle, MemoryNote, PersonalDetails, PersonalProfile};
 pub use primitives::{
     DataClass, ExecutionLocation, RiskClass, RoutingMode, SecretRef, SecretStore, SideEffect,
     Visibility,

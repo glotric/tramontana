@@ -492,3 +492,32 @@ impl CheckpointRepository for InMemoryCheckpointRepository {
         Ok(found)
     }
 }
+
+/// The person's profile, held in memory (ADR 0061).
+#[derive(Debug, Default)]
+pub struct InMemoryPersonalRepository {
+    profile: Mutex<Option<crate::contracts::PersonalProfile>>,
+}
+
+impl InMemoryPersonalRepository {
+    /// An empty store: loading gives the default profile.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl crate::ports::PersonalRepository for InMemoryPersonalRepository {
+    async fn load(&self) -> Result<crate::contracts::PersonalProfile, RepositoryError> {
+        Ok(lock(&self.profile)?.clone().unwrap_or_default())
+    }
+
+    async fn save(
+        &self,
+        profile: &crate::contracts::PersonalProfile,
+    ) -> Result<(), RepositoryError> {
+        *lock(&self.profile)? = Some(profile.clone());
+        Ok(())
+    }
+}

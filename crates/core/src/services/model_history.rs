@@ -61,6 +61,32 @@ Answer the person directly and clearly, in the language they write in. \
 Earlier messages in this conversation are there for context; answer the newest one. \
 If you are not sure of something, say so rather than guessing.";
 
+/// What a turn is given besides its own record: the conversation so far,
+/// the files attached to its message, and what the person's profile says
+/// (ADRs 0057, 0058 and 0061). All three are chosen by core when the task
+/// starts, never by the worker.
+#[derive(Clone, Copy)]
+pub struct ConversationContext<'a> {
+    /// The earlier turns of the conversation.
+    pub earlier: &'a crate::services::EarlierTurns,
+    /// The files attached to the task's message.
+    pub attachments: &'a [crate::contracts::TaskAttachment],
+    /// What the person's profile tells a chat, if anything.
+    pub personal: Option<&'a str>,
+}
+
+impl std::fmt::Debug for ConversationContext<'_> {
+    // Counts only: a debug print must not copy the person's words or files
+    // into a log.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConversationContext")
+            .field("earlier", &self.earlier.turns().len())
+            .field("attachments", &self.attachments.len())
+            .field("personal", &self.personal.is_some())
+            .finish()
+    }
+}
+
 /// A bounded explicit selection of canonical messages. Core callers choose
 /// IDs; workers cannot inject bodies, roles or sensitivity through this API.
 pub struct CanonicalModelHistory {
@@ -235,9 +261,13 @@ impl CanonicalModelHistory {
         context_manifest_id: impl Into<String>,
         catalogue: ModelToolCatalogue,
         project: Option<&crate::services::ComposedInstructions>,
-        earlier: &crate::services::EarlierTurns,
-        attachments: &[crate::contracts::TaskAttachment],
+        conversation: ConversationContext<'_>,
     ) -> Result<ModelContextInput, ErrorEnvelope> {
+        let ConversationContext {
+            earlier,
+            attachments,
+            personal,
+        } = conversation;
         let at = self.messages.first().map_or_else(
             || crate::contracts::Timestamp::new(""),
             |first| first.created_at.clone(),
@@ -332,6 +362,28 @@ impl CanonicalModelHistory {
                     // is disclosed and approved like any other project content.
                     data_class: DataClass::Project,
                     redactions: project.redactions.clone(),
+                },
+            );
+        }
+
+        // What the person told Tramontana about themselves, after the
+        // standing instructions below and before anything else (ADR 0061).
+        if let Some(personal) = personal {
+            let mut message = NormalizedMessage::text(
+                MessageId::new(format!("personal-{}", self.task_id)),
+                None,
+                MessageRole::System,
+                at.clone(),
+                personal,
+            );
+            message.task_id = Some(self.task_id.clone());
+            self.messages.insert(0, message);
+            self.provenance.insert(
+                0,
+                ModelContentProvenance {
+                    source_id: crate::services::PERSONAL_SOURCE_ID.to_owned(),
+                    data_class: DataClass::Sensitive,
+                    redactions: Vec::new(),
                 },
             );
         }

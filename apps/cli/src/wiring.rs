@@ -258,8 +258,13 @@ async fn open_with(
         // So a task is given the project's own instructions, read as it starts
         // (ADR 0052).
         .with_project_sources(Arc::new(tramontana_platform::ProjectFiles::new(Arc::new(
-            SqliteProjectRepository::new(database),
+            SqliteProjectRepository::new(database.clone()),
         ))))
+        // So chats can be told what the person wrote about themselves
+        // (ADR 0061).
+        .with_personal(Arc::new(
+            tramontana_persistence::SqlitePersonalRepository::new(database.clone()),
+        ))
         // So PDF and Word files can be attached (ADR 0062).
         .with_document_reader(Arc::new(tramontana_adapters_documents::Documents::new()))
         .with_execution_guard(lease);

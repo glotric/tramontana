@@ -278,6 +278,7 @@ mod tests {
                     conversation_id: None,
                     routing_mode: None,
                     attachments,
+                    personal: None,
                 },
             ),
             envelope(&task, 2, EventPayload::MessageCommitted { message }),

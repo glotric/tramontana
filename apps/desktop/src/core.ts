@@ -2,6 +2,8 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   ApprovalDecisionKind,
+  PersonalDetails,
+  PersonalProfile,
   SearchResults,
   TranscriptOptions,
   ApprovalRequest,
@@ -767,4 +769,24 @@ export async function saveTranscript(
   options: TranscriptOptions,
 ): Promise<string | undefined> {
   return (await invoke<string | null>("save_transcript", { conversationId, options })) ?? undefined;
+}
+
+/** The person's profile and memory notes (ADR 0061). */
+export async function personalProfile(): Promise<PersonalProfile> {
+  return invoke<PersonalProfile>("personal_profile");
+}
+
+/** Change what chats are told about the person. */
+export async function updatePersonal(details: PersonalDetails): Promise<PersonalProfile> {
+  return invoke<PersonalProfile>("update_personal", { details });
+}
+
+/** Add a note for chats to remember. */
+export async function remember(text: string): Promise<PersonalProfile> {
+  return invoke<PersonalProfile>("remember", { text });
+}
+
+/** Forget one note. */
+export async function forget(noteId: string): Promise<PersonalProfile> {
+  return invoke<PersonalProfile>("forget", { noteId });
 }

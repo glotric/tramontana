@@ -300,6 +300,57 @@ pub(crate) async fn save_transcript(
     Ok(Some(path.display().to_string()))
 }
 
+/// The person's profile and memory notes (ADR 0061).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn personal_profile(
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::PersonalProfile, ErrorEnvelope> {
+    state.service.personal_profile().await
+}
+
+/// Change what chats are told about the person (ADR 0061).
+///
+/// # Errors
+///
+/// Whatever the service reports, such as a field that is too long.
+#[tauri::command]
+pub(crate) async fn update_personal(
+    details: tramontana_core::contracts::PersonalDetails,
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::PersonalProfile, ErrorEnvelope> {
+    state.service.update_personal(&details).await
+}
+
+/// Add a note for chats to remember (ADR 0061).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn remember(
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::PersonalProfile, ErrorEnvelope> {
+    state.service.remember(&text).await
+}
+
+/// Forget one note (ADR 0061).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn forget(
+    note_id: String,
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::PersonalProfile, ErrorEnvelope> {
+    state.service.forget(&note_id).await
+}
+
 /// Search conversation titles, what was asked in them, and project names
 /// and folders (ADR 0059).
 ///

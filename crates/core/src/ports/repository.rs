@@ -347,3 +347,24 @@ pub trait CheckpointRepository: Send + Sync {
     /// [`RepositoryError::Unavailable`] when storage failed.
     async fn list(&self, task_id: &TaskId) -> Result<Vec<TaskCheckpoint>, RepositoryError>;
 }
+
+/// The person's profile and memory notes, in the local profile (ADR 0061).
+#[async_trait]
+pub trait PersonalRepository: Send + Sync {
+    /// The profile, or the default one when nothing was ever saved.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn load(&self) -> Result<crate::contracts::PersonalProfile, RepositoryError>;
+
+    /// Replace the profile, its notes included, in one write.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn save(
+        &self,
+        profile: &crate::contracts::PersonalProfile,
+    ) -> Result<(), RepositoryError>;
+}

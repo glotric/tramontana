@@ -13,12 +13,14 @@
 mod apps;
 mod database;
 mod event_store;
+mod personal;
 mod repositories;
 
 pub use apps::SqliteAppSettingsRepository;
 
 pub use database::{Database, DatabaseError};
 pub use event_store::SqliteEventStore;
+pub use personal::SqlitePersonalRepository;
 pub use repositories::{
     SqliteCheckpointRepository, SqliteConfigurationRepository, SqliteConversationRepository,
     SqliteProjectRepository, SqliteProviderSettingsRepository, SqliteTaskRepository,

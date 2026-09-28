@@ -23,6 +23,7 @@ mod model_input;
 mod model_turn;
 mod permission_manager;
 mod person_read;
+mod personal;
 mod preparation;
 mod projection;
 mod recipe;
@@ -66,14 +67,18 @@ pub use model_context::{
     prepare_model_context_on,
 };
 pub use model_history::{
-    CHAT_INSTRUCTIONS, CanonicalModelHistory, HISTORY_RESULT_BYTES, RESULT_LEFT_OUT,
-    WORKER_INSTRUCTIONS,
+    CHAT_INSTRUCTIONS, CanonicalModelHistory, ConversationContext, HISTORY_RESULT_BYTES,
+    RESULT_LEFT_OUT, WORKER_INSTRUCTIONS,
 };
 pub use model_input::{
     MODEL_INPUT_BYTES, model_input_content, validate_model_capabilities, validate_model_input,
 };
 pub use model_turn::{ModelToolCall, ModelTurn, ModelTurnAccumulator, ModelTurnLimits};
 pub use permission_manager::PermissionManager;
+pub use personal::{
+    MEMORY_NOTE_BYTES, MEMORY_NOTES, PERSONAL_ABOUT_BYTES, PERSONAL_CONTEXT_BYTES,
+    PERSONAL_NAME_BYTES, PERSONAL_SOURCE_ID, apply_details, new_note, personal_context,
+};
 pub use preparation::assemble_context;
 pub use projection::TaskProjectionWriter;
 pub use recipe::{COMMAND_ENVIRONMENT, RECIPE_TOOL_ID};

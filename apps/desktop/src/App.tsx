@@ -19,6 +19,7 @@ import { ChangesPanel } from "./ChangesPanel.js";
 import { ChatView } from "./ChatView.js";
 import { ConversationMenu } from "./ConversationMenu.js";
 import { SearchPanel } from "./SearchPanel.js";
+import { SettingsView } from "./SettingsView.js";
 import { ShareDialog } from "./ShareDialog.js";
 import { AttachButton, PendingFiles, useAttachments } from "./Attachments.js";
 import { Glyph } from "./Glyph.js";
@@ -210,7 +211,7 @@ export function App(): React.JSX.Element {
   // Moves on whenever a task ends, so the Changes panel reads the tree again.
   const [revision, setRevision] = useState(0);
   // The work area, or the models and credentials the tasks run against.
-  const [view, setView] = useState<"work" | "models" | "apps" | "projects">("work");
+  const [view, setView] = useState<"work" | "models" | "apps" | "projects" | "settings">("work");
   // Both side panels can be put away, leaving the work column on its own.
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(true);
@@ -929,6 +930,17 @@ export function App(): React.JSX.Element {
             )}
           </nav>
 
+          <button
+            type="button"
+            className="rail-row rail-row--nav"
+            aria-pressed={view === "settings"}
+            onClick={() => {
+              setView((current) => (current === "settings" ? "work" : "settings"));
+            }}
+          >
+            <Glyph icon="gear" hue="blue" size={28} />
+            <span>Settings</span>
+          </button>
           <footer className="rail-status">
             <span className="status-dot" data-state={status.kind} aria-hidden="true" />
             <span>{describeCoreStatus(status)}</span>
@@ -937,7 +949,9 @@ export function App(): React.JSX.Element {
       )}
 
       <main className="workspace">
-        {view === "projects" ? (
+        {view === "settings" ? (
+          <SettingsView />
+        ) : view === "projects" ? (
           <ProjectsView
             projects={projects}
             opening={openingProject}
