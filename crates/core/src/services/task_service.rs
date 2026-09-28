@@ -801,6 +801,7 @@ impl TaskService {
             journal.publish_persisted(event);
         }
 
+        let earlier = self.earlier_turns(&record).await;
         let driver = TaskDriver::new(
             journal,
             self.providers.clone(),
@@ -811,6 +812,7 @@ impl TaskService {
         .with_worker(worker)
         .with_configuration(resolved_configuration)
         .with_instructions(instructions)
+        .with_earlier_turns(earlier)
         .with_goal_redactions(goal.reason_codes.clone())
         .with_checkpoints(Arc::clone(&self.repositories.checkpoints))
         .continuing(None, super::ResumePlan::default(), interrupt);
@@ -825,6 +827,38 @@ impl TaskService {
         });
 
         Ok(task_id)
+    }
+
+    /// The earlier turns of `task`'s conversation (ADR 0057).
+    ///
+    /// Only the newest completed tasks created before it are read, so the
+    /// same task chooses the same turns on resume. A task whose record cannot
+    /// be read is left out: less context is safe, and a turn made up from a
+    /// partial record would not be.
+    pub(crate) async fn earlier_turns(&self, task: &TaskRecord) -> super::EarlierTurns {
+        let Some(conversation_id) = &task.conversation_id else {
+            return super::EarlierTurns::default();
+        };
+        let Ok(mut tasks) = self.list_tasks(Some(conversation_id)).await else {
+            return super::EarlierTurns::default();
+        };
+        tasks.retain(|record| {
+            record.state == crate::contracts::TaskState::Completed
+                && (record.created_at.as_str(), record.task_id.as_str())
+                    < (task.created_at.as_str(), task.task_id.as_str())
+        });
+        tasks.sort_by(|a, b| {
+            (b.created_at.as_str(), b.task_id.as_str())
+                .cmp(&(a.created_at.as_str(), a.task_id.as_str()))
+        });
+        tasks.truncate(super::EARLIER_TURNS);
+        let mut earlier = Vec::with_capacity(tasks.len());
+        for record in tasks {
+            if let Ok(events) = self.replay_task_events(&record.task_id, 0).await {
+                earlier.push((record, events));
+            }
+        }
+        super::EarlierTurns::choose(task, &earlier)
     }
 
     /// Request cancellation.

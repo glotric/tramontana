@@ -10,6 +10,7 @@
 //! state.
 
 mod checkpoint;
+mod earlier_turns;
 mod export;
 mod handoff;
 mod instructions;
@@ -39,6 +40,9 @@ mod tool_schema;
 pub use checkpoint::{
     DerivedState, ResumePlan, derive_checkpoint, derive_state, reason as checkpoint_reason,
 };
+pub use earlier_turns::{
+    EARLIER_TURN_BYTES, EARLIER_TURNS, EarlierTurn, EarlierTurns, answer_source_id, goal_source_id,
+};
 pub use export::{
     ExportRequest, ImportError, ImportLimits, REDACTED_OUTPUT, REDACTED_PATH, build_export,
     imported_project_id, is_safe_relative_path, validate_import,
@@ -55,7 +59,8 @@ pub use model_context::{
     prepare_model_context_on,
 };
 pub use model_history::{
-    CanonicalModelHistory, HISTORY_RESULT_BYTES, RESULT_LEFT_OUT, WORKER_INSTRUCTIONS,
+    CHAT_INSTRUCTIONS, CanonicalModelHistory, HISTORY_RESULT_BYTES, RESULT_LEFT_OUT,
+    WORKER_INSTRUCTIONS,
 };
 pub use model_input::{
     MODEL_INPUT_BYTES, model_input_content, validate_model_capabilities, validate_model_input,

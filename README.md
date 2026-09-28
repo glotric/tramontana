@@ -119,7 +119,7 @@ only once you know the model makes
 native tool calls. A new endpoint is used the next time Tramontana starts:
 quit and run `pnpm dev` again.
 
-**2. Open a project.** **+ Open project** and choose a folder, ideally a Git
+**2. Open a project.** **Open project** and choose a folder, ideally a Git
 repository. To let a task run the project's own commands, such as its
 tests, declare them as recipes in `.tramontana/project.md`:
 

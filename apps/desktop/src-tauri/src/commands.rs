@@ -150,10 +150,11 @@ pub(crate) async fn inspect_project(
     })
 }
 
-/// Create a durable conversation in a project.
+/// Create a durable conversation in a project, or a chat that belongs to
+/// none (ADR 0057).
 #[tauri::command]
 pub(crate) async fn create_conversation(
-    project_id: ProjectId,
+    project_id: Option<ProjectId>,
     title: String,
     state: State<'_, AppState>,
 ) -> Result<ConversationRecord, ErrorEnvelope> {
@@ -166,19 +167,17 @@ pub(crate) async fn create_conversation(
             "a conversation title may be at most {MAX_TITLE_BYTES} bytes"
         )));
     }
-    state
-        .service
-        .create_conversation(Some(project_id), title)
-        .await
+    state.service.create_conversation(project_id, title).await
 }
 
-/// List durable conversations for one project.
+/// List durable conversations for one project, or the chats that belong to
+/// none when no project is named (ADR 0057).
 #[tauri::command]
 pub(crate) async fn list_conversations(
-    project_id: ProjectId,
+    project_id: Option<ProjectId>,
     state: State<'_, AppState>,
 ) -> Result<Vec<ConversationRecord>, ErrorEnvelope> {
-    state.service.list_conversations(Some(&project_id)).await
+    state.service.list_conversations(project_id.as_ref()).await
 }
 
 /// List durable tasks, optionally narrowed to a conversation.

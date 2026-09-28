@@ -602,10 +602,12 @@ impl TaskService {
         // the profile's, as it always did.
         let routing_mode = created_mode(&events).unwrap_or_else(|| self.routing_mode());
         let plan = ResumePlan::from_events(&events);
+        let earlier = self.earlier_turns(&record).await;
         let driver = TaskDriver::new(journal, self.providers.clone(), scope, self.clock.clone())
             .with_routing_mode(routing_mode)
             .with_configuration(configuration)
             .with_instructions(instructions)
+            .with_earlier_turns(earlier)
             .with_checkpoints(Arc::clone(&self.repositories.checkpoints));
         let driver = match handoff {
             Some(handoff) => driver.handing_over(worker, handoff, plan, interrupt),

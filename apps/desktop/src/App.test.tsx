@@ -229,6 +229,9 @@ function duplicateIds(): string[] {
 
 describe("M2 durable desktop surface", () => {
   beforeEach(() => {
+    // These tests are about work in a project, which is Agent mode; the
+    // window otherwise opens in Chat (ADR 0057).
+    localStorage.setItem("tramontana.mode", "agent");
     for (const mock of [
       fetchCoreInfo,
       openProject,
@@ -290,11 +293,69 @@ describe("M2 durable desktop surface", () => {
     expect(replayTaskEvents).toHaveBeenCalledWith(task.taskId);
   });
 
+  it("opens in Chat, lists the chats, and switches to Agent and back", async () => {
+    const user = userEvent.setup();
+    localStorage.removeItem("tramontana.mode");
+    const chat: ConversationRecord = {
+      schemaVersion: 1,
+      conversationId: "chat-1",
+      title: "Winds",
+      createdAt: "2026-01-01T00:00:09.000Z",
+    };
+    listConversations.mockImplementation((projectId?: string) =>
+      Promise.resolve(projectId === undefined ? [chat] : [conversation]),
+    );
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: "What can I help with?" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Winds" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New chat" })).toBeInTheDocument();
+    // A chat has no project, so there is no project inspector to show.
+    expect(
+      screen.queryByRole("complementary", { name: "Project inspector" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Agent" }));
+    expect(await screen.findByRole("heading", { name: "M2 Conversation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Agent" })).toHaveAttribute("aria-pressed", "true");
+    expect(localStorage.getItem("tramontana.mode")).toBe("agent");
+
+    await user.click(screen.getByRole("button", { name: "Chat" }));
+    expect(screen.getByRole("heading", { name: "New chat", level: 1 })).toBeInTheDocument();
+  });
+
+  it("puts the sidebar and the details away, and brings them back", async () => {
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    await user.click(screen.getByRole("button", { name: "Hide sidebar" }));
+    expect(
+      screen.queryByRole("complementary", { name: "Projects and conversations" }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show sidebar" }));
+    expect(
+      screen.getByRole("complementary", { name: "Projects and conversations" }),
+    ).toBeInTheDocument();
+
+    // Open, the panel closes from its own button, and the pill is gone.
+    expect(screen.queryByRole("button", { name: "Details" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close details" }));
+    expect(
+      screen.queryByRole("complementary", { name: "Project inspector" }),
+    ).not.toBeInTheDocument();
+    // Closed, the pill brings it back.
+    await user.click(screen.getByRole("button", { name: "Details" }));
+    expect(screen.getByRole("complementary", { name: "Project inspector" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Details" })).not.toBeInTheDocument();
+  });
+
   it("opens a native-picked project and refreshes the durable recents", async () => {
     const user = userEvent.setup();
     await renderLoaded();
 
-    await user.click(screen.getByRole("button", { name: "+ Open project" }));
+    await user.click(screen.getByRole("button", { name: "Open project" }));
     await waitFor(() => {
       expect(openProject).toHaveBeenCalledOnce();
     });
@@ -887,7 +948,7 @@ describe("M2 durable desktop surface", () => {
     render(<App />);
 
     expect(await screen.findByText("No durable projects yet.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "+ Open project" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Open project" })).toBeEnabled();
     expect(screen.getByRole("heading", { name: "Open a project", level: 1 })).toBeInTheDocument();
     expect(screen.getByText(/Choose a local directory/)).toBeInTheDocument();
     // Nothing was read for a project that is not there.

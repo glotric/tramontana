@@ -16,6 +16,8 @@ import { ApprovalCard } from "./ApprovalCard.js";
 import { BundlesPanel } from "./BundlesPanel.js";
 import { buildCards, describeHeader, MODE_LABEL } from "./cards.js";
 import { ChangesPanel } from "./ChangesPanel.js";
+import { ChatView } from "./ChatView.js";
+import { Glyph } from "./Glyph.js";
 import { GrantsPanel } from "./GrantsPanel.js";
 import { AppsView } from "./AppsView.js";
 import { ModelsView } from "./ModelsView.js";
@@ -79,6 +81,21 @@ const MODES: readonly RoutingMode[] = ["localOnly", "automatic", "cloudPreferred
 
 /** How long the typing settles before the skills are suggested again. */
 const SUGGESTION_DELAY_MS = 300;
+
+/** Chat or Agent: which half of the window is showing (ADR 0057). */
+type Mode = "chat" | "agent";
+
+/** Where the window remembers which half it was last showing. */
+const MODE_KEY = "tramontana.mode";
+
+/** The half the window last showed, or Chat, as the design starts. */
+function rememberedMode(): Mode {
+  try {
+    return localStorage.getItem(MODE_KEY) === "agent" ? "agent" : "chat";
+  } catch {
+    return "chat";
+  }
+}
 
 /** What each mode means for the task about to start. */
 const MODE_TEXT: Record<RoutingMode, string> = {
@@ -180,6 +197,15 @@ export function App(): React.JSX.Element {
   const [revision, setRevision] = useState(0);
   // The work area, or the models and credentials the tasks run against.
   const [view, setView] = useState<"work" | "models" | "apps">("work");
+  // Both side panels can be put away, leaving the work column on its own.
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [detailsOpen, setDetailsOpen] = useState(true);
+  // Chat for questions and writing, Agent for work in a project (ADR 0057).
+  // Which one the window opens in is a convenience kept in this browser
+  // profile, not a record.
+  const [mode, setMode] = useState<Mode>(rememberedMode);
+  const [chats, setChats] = useState<readonly ConversationRecord[]>([]);
+  const [selectedChatId, setSelectedChatId] = useState<string | undefined>();
   const [failure, setFailure] = useState<string | undefined>();
   const [loadingProject, setLoadingProject] = useState(false);
   const [openingProject, setOpeningProject] = useState(false);
@@ -455,6 +481,26 @@ export function App(): React.JSX.Element {
     setRevision((current) => current + 1);
   }, []);
 
+  const refreshChats = useCallback(() => {
+    void listConversations(undefined).then(setChats, () => undefined);
+  }, []);
+  useEffect(() => {
+    if (status.kind === "ready") refreshChats();
+  }, [status.kind, refreshChats]);
+  const selectedChat = useMemo(
+    () => chats.find((chat) => chat.conversationId === selectedChatId),
+    [chats, selectedChatId],
+  );
+  const chooseMode = useCallback((next: Mode) => {
+    setMode(next);
+    setView("work");
+    try {
+      localStorage.setItem(MODE_KEY, next);
+    } catch {
+      // A window that cannot remember still switches.
+    }
+  }, []);
+
   const selectedConversation = useMemo(
     () =>
       conversations.find((conversation) => conversation.conversationId === selectedConversationId),
@@ -608,132 +654,192 @@ export function App(): React.JSX.Element {
   }, [selectedTaskId]);
 
   return (
-    <div className="app-shell">
-      <aside className="rail" aria-label="Projects and conversations">
-        <div className="brand-lockup">
-          <span className="brand-mark" aria-hidden="true">
-            T
-          </span>
-          <div>
+    <div
+      className="app-shell"
+      data-sidebar={sidebarOpen ? "open" : "closed"}
+      data-details={detailsOpen && view === "work" && mode === "agent" ? "open" : "closed"}
+    >
+      {sidebarOpen && (
+        <aside className="rail" aria-label="Projects and conversations">
+          <div className="brand-lockup">
+            <Glyph icon="wind" hue="blue" size={34} />
             <strong>Tramontana</strong>
-            <span>Personal control plane</span>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Hide sidebar"
+              onClick={() => {
+                setSidebarOpen(false);
+              }}
+            >
+              <SidebarIcon />
+            </button>
           </div>
-        </div>
 
-        <button
-          type="button"
-          className="button button--primary button--block"
-          onClick={onOpenProject}
-          disabled={status.kind !== "ready" || openingProject}
-        >
-          {openingProject ? "Opening…" : "+ Open project"}
-        </button>
-
-        <nav className="rail-scroll" aria-label="Recent work">
-          <section>
-            <h2 className="rail-heading">Projects</h2>
-            {projects.length === 0 ? (
-              <p className="rail-empty">No durable projects yet.</p>
-            ) : (
-              <ul className="rail-list">
-                {projects.map((project) => (
-                  <li key={project.projectId}>
-                    <button
-                      type="button"
-                      className="rail-row"
-                      data-selected={inspection?.project.projectId === project.projectId}
-                      aria-current={
-                        inspection?.project.projectId === project.projectId ? "true" : undefined
-                      }
-                      onClick={() => void selectProject(project.projectId)}
-                    >
-                      <span className="status-dot" aria-hidden="true" />
-                      <span>{project.name}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          {inspection !== undefined && (
-            <section>
-              <h2 className="rail-heading">Conversations</h2>
-              <form
-                className="new-conversation"
-                onSubmit={(submitted) => {
-                  submitted.preventDefault();
-                  onCreateConversation();
-                }}
-              >
-                <label className="sr-only" htmlFor="conversation-title">
-                  New conversation title
-                </label>
-                <input
-                  id="conversation-title"
-                  value={conversationTitle}
-                  onChange={(changed) => {
-                    setConversationTitle(changed.target.value);
-                  }}
-                  placeholder="New conversation"
-                />
-                <button type="submit" disabled={conversationTitle.trim() === ""}>
-                  Add
-                </button>
-              </form>
-              {conversations.length === 0 ? (
-                <p className="rail-empty">Create a conversation for this project.</p>
-              ) : (
-                <ul className="rail-list">
-                  {conversations.map((conversation) => (
-                    <li key={conversation.conversationId}>
-                      <button
-                        type="button"
-                        className="rail-row rail-row--conversation"
-                        data-selected={selectedConversationId === conversation.conversationId}
-                        aria-current={
-                          selectedConversationId === conversation.conversationId
-                            ? "true"
-                            : undefined
-                        }
-                        onClick={() => void selectConversation(conversation.conversationId)}
-                      >
-                        <span>{conversation.title}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
+          {mode === "chat" ? (
+            <button
+              type="button"
+              className="rail-row rail-row--nav"
+              aria-pressed={view === "work" && selectedChatId === undefined}
+              onClick={() => {
+                setSelectedChatId(undefined);
+                setView("work");
+              }}
+            >
+              <Glyph icon="pen" hue="blue" size={28} />
+              <span>New chat</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="rail-row rail-row--nav"
+              onClick={onOpenProject}
+              disabled={status.kind !== "ready" || openingProject}
+            >
+              <Glyph icon="folder" hue="yellow" size={28} />
+              <span>{openingProject ? "Opening…" : "Open project"}</span>
+            </button>
           )}
-        </nav>
+          <button
+            type="button"
+            className="rail-row rail-row--nav"
+            aria-pressed={view === "models"}
+            onClick={() => {
+              setView((current) => (current === "models" ? "work" : "models"));
+            }}
+          >
+            <Glyph icon="agent" hue="purple" size={28} />
+            <span>Models and credentials</span>
+          </button>
+          <button
+            type="button"
+            className="rail-row rail-row--nav"
+            aria-pressed={view === "apps"}
+            onClick={() => {
+              setView((current) => (current === "apps" ? "work" : "apps"));
+            }}
+          >
+            <Glyph icon="board" hue="orange" size={28} />
+            <span>Apps</span>
+          </button>
 
-        <button
-          type="button"
-          className="rail-row rail-row--settings"
-          aria-pressed={view === "models"}
-          onClick={() => {
-            setView((current) => (current === "models" ? "work" : "models"));
-          }}
-        >
-          Models and credentials
-        </button>
-        <button
-          type="button"
-          className="rail-row rail-row--settings"
-          aria-pressed={view === "apps"}
-          onClick={() => {
-            setView((current) => (current === "apps" ? "work" : "apps"));
-          }}
-        >
-          Apps
-        </button>
+          <nav className="rail-scroll" aria-label="Recent work">
+            {mode === "chat" ? (
+              <section>
+                <h2 className="rail-heading">Chats</h2>
+                {chats.length === 0 ? (
+                  <p className="rail-empty">No chats yet.</p>
+                ) : (
+                  <ul className="rail-list">
+                    {chats.map((chat) => (
+                      <li key={chat.conversationId}>
+                        <button
+                          type="button"
+                          className="rail-row"
+                          data-selected={selectedChatId === chat.conversationId}
+                          aria-current={selectedChatId === chat.conversationId ? "true" : undefined}
+                          onClick={() => {
+                            setSelectedChatId(chat.conversationId);
+                            setView("work");
+                          }}
+                        >
+                          <span>{chat.title}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            ) : (
+              <>
+                <section>
+                  <h2 className="rail-heading">Projects</h2>
+                  {projects.length === 0 ? (
+                    <p className="rail-empty">No durable projects yet.</p>
+                  ) : (
+                    <ul className="rail-list">
+                      {projects.map((project) => (
+                        <li key={project.projectId}>
+                          <button
+                            type="button"
+                            className="rail-row rail-row--project"
+                            data-selected={inspection?.project.projectId === project.projectId}
+                            aria-current={
+                              inspection?.project.projectId === project.projectId
+                                ? "true"
+                                : undefined
+                            }
+                            onClick={() => void selectProject(project.projectId)}
+                          >
+                            <Glyph icon="doc" hue="blue" size={26} />
+                            <span>{project.name}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
 
-        <footer className="rail-status">
-          <span className="status-dot" data-state={status.kind} aria-hidden="true" />
-          <span>{describeCoreStatus(status)}</span>
-        </footer>
-      </aside>
+                {inspection !== undefined && (
+                  <section>
+                    <h2 className="rail-heading">Conversations</h2>
+                    <form
+                      className="new-conversation"
+                      onSubmit={(submitted) => {
+                        submitted.preventDefault();
+                        onCreateConversation();
+                      }}
+                    >
+                      <label className="sr-only" htmlFor="conversation-title">
+                        New conversation title
+                      </label>
+                      <input
+                        id="conversation-title"
+                        value={conversationTitle}
+                        onChange={(changed) => {
+                          setConversationTitle(changed.target.value);
+                        }}
+                        placeholder="New conversation"
+                      />
+                      <button type="submit" disabled={conversationTitle.trim() === ""}>
+                        Add
+                      </button>
+                    </form>
+                    {conversations.length === 0 ? (
+                      <p className="rail-empty">Create a conversation for this project.</p>
+                    ) : (
+                      <ul className="rail-list">
+                        {conversations.map((conversation) => (
+                          <li key={conversation.conversationId}>
+                            <button
+                              type="button"
+                              className="rail-row rail-row--conversation"
+                              data-selected={selectedConversationId === conversation.conversationId}
+                              aria-current={
+                                selectedConversationId === conversation.conversationId
+                                  ? "true"
+                                  : undefined
+                              }
+                              onClick={() => void selectConversation(conversation.conversationId)}
+                            >
+                              <span>{conversation.title}</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                )}
+              </>
+            )}
+          </nav>
+
+          <footer className="rail-status">
+            <span className="status-dot" data-state={status.kind} aria-hidden="true" />
+            <span>{describeCoreStatus(status)}</span>
+          </footer>
+        </aside>
+      )}
 
       <main className="workspace">
         {view === "models" ? (
@@ -748,11 +854,69 @@ export function App(): React.JSX.Element {
               setView("work");
             }}
           />
+        ) : mode === "chat" ? (
+          <>
+            <header className="workspace-header">
+              {!sidebarOpen && (
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Show sidebar"
+                  onClick={() => {
+                    setSidebarOpen(true);
+                  }}
+                >
+                  <SidebarIcon />
+                </button>
+              )}
+              <div className="workspace-title">
+                <h1>{selectedChat?.title ?? "New chat"}</h1>
+              </div>
+              <ModeSwitch mode={mode} onChange={chooseMode} />
+              <div className="workspace-header-end">
+                <span className="runtime-chip" data-mode={routingMode}>
+                  {routingMode === "localOnly" && <LockIcon />}
+                  {MODE_LABEL[routingMode]}
+                </span>
+              </div>
+            </header>
+            <ChatView
+              conversation={selectedChat}
+              routingMode={routingMode}
+              onRoutingMode={setRoutingMode}
+              onCreated={(created) => {
+                setChats((current) => [created, ...current]);
+                setSelectedChatId(created.conversationId);
+              }}
+              onTurnEnded={refreshChats}
+              notice={
+                approvals[0] !== undefined && (
+                  <ApprovalCard
+                    key={approvals[0].approvalId}
+                    request={approvals[0]}
+                    waiting={approvals.length - 1}
+                    onAnswered={onApprovalAnswered}
+                  />
+                )
+              }
+            />
+          </>
         ) : (
           <>
             <header className="workspace-header">
-              <div>
-                <span className="eyebrow">Repository work</span>
+              {!sidebarOpen && (
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Show sidebar"
+                  onClick={() => {
+                    setSidebarOpen(true);
+                  }}
+                >
+                  <SidebarIcon />
+                </button>
+              )}
+              <div className="workspace-title">
                 <h1>
                   {selectedConversation?.title ?? inspection?.project.name ?? "Open a project"}
                 </h1>
@@ -761,142 +925,168 @@ export function App(): React.JSX.Element {
                     "Choose a local directory to create a canonical, restart-safe project record."}
                 </p>
               </div>
-              <div
-                className="runtime-chip"
-                title="Inspect task activity for the selected worker, model and destination"
-              >
-                <span className="status-dot" data-state="ready" aria-hidden="true" />
-                governed task runtime
+              <ModeSwitch mode={mode} onChange={chooseMode} />
+              <div className="workspace-header-end">
+                {/* The mode the next task will start under, said in words; the
+                  lock only repeats Local only. */}
+                <span className="runtime-chip" data-mode={routingMode}>
+                  {routingMode === "localOnly" && <LockIcon />}
+                  {MODE_LABEL[routingMode]}
+                </span>
+                {/* Only while the panel is put away: once open, it closes from
+                  its own button. */}
+                {!detailsOpen && (
+                  <button
+                    type="button"
+                    className="pill-button"
+                    onClick={() => {
+                      setDetailsOpen(true);
+                    }}
+                  >
+                    Details
+                  </button>
+                )}
               </div>
             </header>
 
-            {failure !== undefined && (
-              <div className="notice notice--error" role="alert">
-                {failure}
-              </div>
-            )}
-
-            {approvals[0] !== undefined && (
-              <ApprovalCard
-                key={approvals[0].approvalId}
-                request={approvals[0]}
-                waiting={approvals.length - 1}
-                onAnswered={onApprovalAnswered}
-              />
-            )}
-
-            {loadingProject ? (
-              <p className="workspace-loading">Loading durable project record…</p>
-            ) : inspection === undefined ? (
-              <section className="empty-state" aria-labelledby="empty-heading">
-                <div className="blueprint-corners" aria-hidden="true" />
-                <span className="eyebrow">Local by default</span>
-                <h2 id="empty-heading">Start with an approved project root.</h2>
-                <p>
-                  Tramontana stores project identity, conversations, task history, and configuration
-                  manifests in the local profile. Markdown is parsed as configuration data and never
-                  executed.
-                </p>
-                <button
-                  type="button"
-                  className="button button--primary"
-                  onClick={onOpenProject}
-                  disabled={status.kind !== "ready" || openingProject}
-                >
-                  Open a project folder
-                </button>
-              </section>
-            ) : (
-              <>
-                <section className="task-strip" aria-labelledby="tasks-heading">
-                  <div className="section-heading-row">
-                    <h2 id="tasks-heading">Recent tasks</h2>
-                    <span>{tasks.length} in this conversation</span>
+            <div className="workspace-scroll">
+              <div className="workspace-column">
+                {failure !== undefined && (
+                  <div className="notice notice--error" role="alert">
+                    {failure}
                   </div>
-                  {selectedConversation === undefined ? (
-                    <p className="inline-empty">Create a conversation to begin durable work.</p>
-                  ) : tasks.length === 0 ? (
-                    <p className="inline-empty">No tasks yet. The first run will appear here.</p>
-                  ) : (
-                    <ul className="task-tabs" aria-label="Tasks in this conversation">
-                      {tasks.map((task) => (
-                        <li key={task.taskId}>
-                          <button
-                            type="button"
-                            data-selected={selectedTaskId === task.taskId}
-                            aria-current={selectedTaskId === task.taskId ? "true" : undefined}
-                            onClick={() => void selectTask(task.taskId)}
-                          >
-                            <span data-task-state={task.state}>{task.state}</span>
-                            <strong>{task.goalSummary}</strong>
-                            <code>{shortId(task.taskId)}</code>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </section>
+                )}
 
-                {selectedTask?.state === "interrupted" && selectedTaskId !== undefined && (
-                  <CheckpointPanel
-                    key={selectedTaskId}
-                    taskId={selectedTaskId}
-                    stoppedBecause={stoppedBecause(events)}
-                    onChanged={() => {
-                      if (selectedConversationId !== undefined) {
-                        void selectConversation(selectedConversationId);
-                      }
-                    }}
+                {approvals[0] !== undefined && (
+                  <ApprovalCard
+                    key={approvals[0].approvalId}
+                    request={approvals[0]}
+                    waiting={approvals.length - 1}
+                    onAnswered={onApprovalAnswered}
                   />
                 )}
 
-                <section className="activity" aria-labelledby="activity-heading">
-                  <div className="section-heading-row">
-                    <h2 id="activity-heading">Activity</h2>
-                    <span>
-                      {selectedTask === undefined
-                        ? "No selected task"
-                        : `${shortId(selectedTask.taskId)} · ${events.length} durable events`}
-                    </span>
-                  </div>
-                  {events.length === 0 ? (
-                    <div className="activity-empty">
-                      <span className="eyebrow">Sequence gap-free</span>
-                      <p>Start a task to see its canonical event stream.</p>
-                    </div>
-                  ) : (
-                    <>
-                      <TaskHeader header={header} onRetry={onRetry} />
-                      <ActivityCards cards={cards} />
-                      {/* The record itself, one line per event, as the CLI replays it. */}
-                      <details className="raw-events">
-                        <summary>All events ({events.length})</summary>
-                        <ol className="event-list" aria-label="Task event stream">
-                          {events.map((event) => {
-                            const line = describeEvent(event);
-                            return (
-                              <li key={event.eventId}>
-                                <span className="event-sequence">{line.sequence}</span>
-                                <code>{line.kind}</code>
-                                <span>{line.detail}</span>
-                              </li>
-                            );
-                          })}
-                        </ol>
-                      </details>
-                    </>
-                  )}
-                  {stream !== undefined && stream.text !== "" && (
-                    <div className="stream-output" role="region" aria-label="Live answer">
-                      {/* A window that joined an answer already under way holds
-                          only the end of it, and says so rather than letting a
-                          fragment read as the whole thing. */}
-                      <span>{stream.partial ? "live frame · joined part-way" : "live frame"}</span>
-                      <p>{stream.text}</p>
-                    </div>
-                  )}
-                </section>
+                {loadingProject ? (
+                  <p className="workspace-loading">Loading durable project record…</p>
+                ) : inspection === undefined ? (
+                  <section className="empty-state" aria-labelledby="empty-heading">
+                    <Glyph icon="folder" hue="yellow" size={72} />
+                    <h2 id="empty-heading">Start with an approved project root.</h2>
+                    <p>
+                      Tramontana stores project identity, conversations, task history, and
+                      configuration manifests in the local profile. Markdown is parsed as
+                      configuration data and never executed.
+                    </p>
+                    <button
+                      type="button"
+                      className="button button--primary"
+                      onClick={onOpenProject}
+                      disabled={status.kind !== "ready" || openingProject}
+                    >
+                      Open a project folder
+                    </button>
+                  </section>
+                ) : (
+                  <>
+                    <section className="task-strip" aria-labelledby="tasks-heading">
+                      <div className="section-heading-row">
+                        <h2 id="tasks-heading">Recent tasks</h2>
+                        <span>{tasks.length} in this conversation</span>
+                      </div>
+                      {selectedConversation === undefined ? (
+                        <p className="inline-empty">Create a conversation to begin durable work.</p>
+                      ) : tasks.length === 0 ? (
+                        <p className="inline-empty">
+                          No tasks yet. The first run will appear here.
+                        </p>
+                      ) : (
+                        <ul className="task-tabs" aria-label="Tasks in this conversation">
+                          {tasks.map((task) => (
+                            <li key={task.taskId}>
+                              <button
+                                type="button"
+                                data-selected={selectedTaskId === task.taskId}
+                                aria-current={selectedTaskId === task.taskId ? "true" : undefined}
+                                onClick={() => void selectTask(task.taskId)}
+                              >
+                                <span data-task-state={task.state}>{task.state}</span>
+                                <strong>{task.goalSummary}</strong>
+                                <code>{shortId(task.taskId)}</code>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </section>
 
+                    {selectedTask?.state === "interrupted" && selectedTaskId !== undefined && (
+                      <CheckpointPanel
+                        key={selectedTaskId}
+                        taskId={selectedTaskId}
+                        stoppedBecause={stoppedBecause(events)}
+                        onChanged={() => {
+                          if (selectedConversationId !== undefined) {
+                            void selectConversation(selectedConversationId);
+                          }
+                        }}
+                      />
+                    )}
+
+                    <section className="activity" aria-labelledby="activity-heading">
+                      <div className="section-heading-row">
+                        <h2 id="activity-heading">Activity</h2>
+                        <span>
+                          {selectedTask === undefined
+                            ? "No selected task"
+                            : `${shortId(selectedTask.taskId)} · ${events.length} durable events`}
+                        </span>
+                      </div>
+                      {events.length === 0 ? (
+                        <div className="activity-empty">
+                          <Glyph icon="agent" hue="purple" size={52} />
+                          <p>Start a task to see its canonical event stream.</p>
+                        </div>
+                      ) : (
+                        <>
+                          <TaskHeader header={header} onRetry={onRetry} />
+                          <ActivityCards cards={cards} />
+                          {/* The record itself, one line per event, as the CLI replays it. */}
+                          <details className="raw-events">
+                            <summary>All events ({events.length})</summary>
+                            <ol className="event-list" aria-label="Task event stream">
+                              {events.map((event) => {
+                                const line = describeEvent(event);
+                                return (
+                                  <li key={event.eventId}>
+                                    <span className="event-sequence">{line.sequence}</span>
+                                    <code>{line.kind}</code>
+                                    <span>{line.detail}</span>
+                                  </li>
+                                );
+                              })}
+                            </ol>
+                          </details>
+                        </>
+                      )}
+                      {stream !== undefined && stream.text !== "" && (
+                        <div className="stream-output" role="region" aria-label="Live answer">
+                          {/* A window that joined an answer already under way holds
+                              only the end of it, and says so rather than letting a
+                              fragment read as the whole thing. */}
+                          <span>
+                            {stream.partial ? "live frame · joined part-way" : "live frame"}
+                          </span>
+                          <p>{stream.text}</p>
+                        </div>
+                      )}
+                    </section>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {inspection !== undefined && !loadingProject && (
+              <div className="composer-dock">
                 <form
                   className="composer"
                   onSubmit={(submitted) => {
@@ -904,11 +1094,14 @@ export function App(): React.JSX.Element {
                     onStart();
                   }}
                 >
-                  <label htmlFor="goal">Task goal</label>
+                  <label className="sr-only" htmlFor="goal">
+                    Task goal
+                  </label>
                   <textarea
                     ref={goalInput}
                     id="goal"
                     value={goal}
+                    placeholder="Describe a task for this project"
                     onChange={(changed) => {
                       setGoal(changed.target.value);
                     }}
@@ -952,7 +1145,7 @@ export function App(): React.JSX.Element {
                         </select>
                       </label>
                     )}
-                    <label className="composer-toggle">
+                    <label className="composer-toggle" data-checked={mayWrite}>
                       <input
                         type="checkbox"
                         checked={mayWrite}
@@ -962,7 +1155,7 @@ export function App(): React.JSX.Element {
                       />
                       May edit files
                     </label>
-                    <label className="composer-toggle">
+                    <label className="composer-toggle" data-checked={mayRunRecipes}>
                       <input
                         type="checkbox"
                         checked={mayRunRecipes}
@@ -972,7 +1165,7 @@ export function App(): React.JSX.Element {
                       />
                       May run recipes
                     </label>
-                    <label className="composer-toggle">
+                    <label className="composer-toggle" data-checked={mayUseApps}>
                       <input
                         type="checkbox"
                         checked={mayUseApps}
@@ -982,7 +1175,7 @@ export function App(): React.JSX.Element {
                       />
                       May use Apps
                     </label>
-                    <label className="composer-toggle">
+                    <label className="composer-toggle" data-checked={mayBrowse}>
                       <input
                         type="checkbox"
                         checked={mayBrowse}
@@ -996,7 +1189,7 @@ export function App(): React.JSX.Element {
                       <fieldset className="composer-skills">
                         <legend>Skills this project offers</legend>
                         {listedSkills.map((skill) => (
-                          <label key={skill.id} className="composer-toggle">
+                          <label key={skill.id} className="composer-skill">
                             <input
                               type="checkbox"
                               checked={chosenSkills.includes(skill.id)}
@@ -1020,16 +1213,6 @@ export function App(): React.JSX.Element {
                       </fieldset>
                     )}
                   </fieldset>
-                  <p className="composer-disclosure">
-                    {describeChoices(
-                      routingMode,
-                      mayWrite,
-                      mayRunRecipes,
-                      mayUseApps,
-                      mayBrowse,
-                      chosenSkills.length,
-                    )}
-                  </p>
                   <div className="composer-footer">
                     <span>
                       {configuration === undefined
@@ -1038,10 +1221,11 @@ export function App(): React.JSX.Element {
                     </span>
                     <button
                       type="button"
-                      className="button button--secondary"
+                      className="button button--stop"
                       onClick={onCancel}
                       disabled={!running}
                     >
+                      <span className="stop-square" aria-hidden="true" />
                       Stop
                     </button>
                     <button
@@ -1055,14 +1239,38 @@ export function App(): React.JSX.Element {
                     </button>
                   </div>
                 </form>
-              </>
+                <p className="composer-disclosure">
+                  {describeChoices(
+                    routingMode,
+                    mayWrite,
+                    mayRunRecipes,
+                    mayUseApps,
+                    mayBrowse,
+                    chosenSkills.length,
+                  )}
+                </p>
+              </div>
             )}
           </>
         )}
       </main>
 
-      <aside className="inspector" aria-label="Project inspector">
+      <aside
+        className="inspector"
+        aria-label="Project inspector"
+        hidden={!detailsOpen || view !== "work" || mode !== "agent"}
+      >
         <div className="inspector-header">
+          <button
+            type="button"
+            className="close-button"
+            aria-label="Close details"
+            onClick={() => {
+              setDetailsOpen(false);
+            }}
+          >
+            <CloseIcon />
+          </button>
           <span className="eyebrow">Effective configuration</span>
           <h2>Instruction manifest</h2>
           <code>{configuration?.manifestHash ?? "No manifest resolved"}</code>
@@ -1142,5 +1350,94 @@ export function App(): React.JSX.Element {
         />
       </aside>
     </div>
+  );
+}
+
+/** The design's Chat / Agent switch: one of two, said in words. */
+function ModeSwitch({
+  mode,
+  onChange,
+}: {
+  readonly mode: Mode;
+  readonly onChange: (mode: Mode) => void;
+}): React.JSX.Element {
+  return (
+    <div className="mode-switch" role="group" aria-label="Mode">
+      <button
+        type="button"
+        aria-pressed={mode === "chat"}
+        onClick={() => {
+          onChange("chat");
+        }}
+      >
+        <Glyph icon="chat" hue="blue" size={24} />
+        Chat
+      </button>
+      <button
+        type="button"
+        aria-pressed={mode === "agent"}
+        onClick={() => {
+          onChange("agent");
+        }}
+      >
+        <Glyph icon="agent" hue="purple" size={24} />
+        Agent
+      </button>
+    </div>
+  );
+}
+
+function SidebarIcon(): React.JSX.Element {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="4" width="18" height="16" rx="3" />
+      <path d="M9 4v16" />
+    </svg>
+  );
+}
+
+function CloseIcon(): React.JSX.Element {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M6 6l12 12M18 6 6 18" />
+    </svg>
+  );
+}
+
+function LockIcon(): React.JSX.Element {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="5" y="11" width="14" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+    </svg>
   );
 }

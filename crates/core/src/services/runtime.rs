@@ -18,6 +18,7 @@ use crate::contracts::{
 };
 use crate::ports::{AgentProvider, ModelProvider, WorkerHost, WorkerOutcome, WorkerRequest};
 use crate::ports::{Clock, PermissionQuery};
+use crate::services::EarlierTurns;
 use crate::services::PermissionManager;
 use crate::services::ToolRegistry;
 use crate::services::checkpoint::ResumePlan;
@@ -55,6 +56,9 @@ pub(crate) struct TaskDriver {
     /// could read them. Held apart from the configuration because the record
     /// names sources and the model needs their words (ADR 0052).
     instructions: ProjectInstructions,
+    /// The earlier turns of the task's conversation, chosen when it was
+    /// created and chosen again identically on resume (ADR 0057).
+    earlier: Arc<EarlierTurns>,
     /// What was removed from the goal when the task was created.
     ///
     /// Carried rather than recomputed: the goal the driver receives is already
@@ -164,6 +168,7 @@ impl TaskDriver {
             routing_mode: RoutingMode::Automatic,
             configuration: None,
             instructions: ProjectInstructions::default(),
+            earlier: Arc::new(EarlierTurns::default()),
             goal_redactions: Vec::new(),
             checkpoint: None,
             handoff: None,
@@ -215,6 +220,12 @@ impl TaskDriver {
     /// Attach the text of the project-authored sources in force.
     pub(crate) fn with_instructions(mut self, instructions: ProjectInstructions) -> Self {
         self.instructions = instructions;
+        self
+    }
+
+    /// Give the task the earlier turns of its conversation (ADR 0057).
+    pub(crate) fn with_earlier_turns(mut self, earlier: EarlierTurns) -> Self {
+        self.earlier = Arc::new(earlier);
         self
     }
 
@@ -378,6 +389,7 @@ impl TaskDriver {
             context: context.clone(),
             model_gate: tokio::sync::Mutex::new(()),
             instructions: instructions.clone(),
+            earlier: Arc::clone(&self.earlier),
             routing_mode: self.routing_mode,
             scope: self.scope.clone(),
             tools: ToolBroker {
@@ -508,7 +520,7 @@ impl TaskDriver {
         goal: &str,
         instructions: Option<&ComposedInstructions>,
     ) -> Result<crate::contracts::ContextManifest, ErrorEnvelope> {
-        let manifest = assemble_context(
+        let assembled = assemble_context(
             self.journal.next_id("context"),
             self.journal.task_id().clone(),
             goal,
@@ -517,6 +529,20 @@ impl TaskDriver {
             instructions,
             self.clock.now(),
         );
+        // The earlier turns come first, as the model reads them (ADR 0057).
+        let manifest = if self.earlier.is_empty() {
+            assembled
+        } else {
+            let mut sources = self.earlier.sources();
+            sources.extend(assembled.sources);
+            crate::contracts::ContextManifest::new(
+                assembled.context_manifest_id,
+                assembled.task_id,
+                assembled.destination_class,
+                sources,
+                assembled.created_at,
+            )
+        };
 
         self.record(EventDraft::user(
             TaskEventKind::ContextPrepared,
@@ -753,6 +779,8 @@ struct BrokeredHost {
     context: Option<ContextManifest>,
     /// The project's own instructions, as every turn will send them.
     instructions: Option<Arc<ComposedInstructions>>,
+    /// The earlier turns of the conversation, as every turn will send them.
+    earlier: Arc<EarlierTurns>,
     /// Serialize requests so approvals and model starts cannot overlap per host.
     model_gate: tokio::sync::Mutex<()>,
     /// The standing policy in force.

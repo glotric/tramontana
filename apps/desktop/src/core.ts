@@ -61,17 +61,26 @@ export async function inspectProject(projectId: string): Promise<ProjectInspecti
   return invoke<ProjectInspection>("inspect_project", { projectId });
 }
 
-/** Create a durable project conversation. */
+/**
+ * Create a durable conversation in a project, or a chat when no project is
+ * named: a conversation with no files, whose tasks are asked to answer
+ * (ADR 0057).
+ */
 export async function createConversation(
-  projectId: string,
+  projectId: string | undefined,
   title: string,
 ): Promise<ConversationRecord> {
-  return invoke<ConversationRecord>("create_conversation", { projectId, title });
+  return invoke<ConversationRecord>("create_conversation", {
+    projectId: projectId ?? null,
+    title,
+  });
 }
 
-/** List durable conversations in a project. */
-export async function listConversations(projectId: string): Promise<readonly ConversationRecord[]> {
-  return invoke<ConversationRecord[]>("list_conversations", { projectId });
+/** List durable conversations in a project, or the chats when none is named. */
+export async function listConversations(
+  projectId: string | undefined,
+): Promise<readonly ConversationRecord[]> {
+  return invoke<ConversationRecord[]>("list_conversations", { projectId: projectId ?? null });
 }
 
 /** List task records, optionally within one conversation. */

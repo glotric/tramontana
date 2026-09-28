@@ -11,6 +11,9 @@ use std::collections::BTreeSet;
 
 const OUTPUT_BYTES: usize = 262_144;
 
+/// The capability namespaces that act on a project's roots (ADR 0057).
+const PROJECT_CAPABILITIES: [&str; 3] = ["filesystem.", "git.", "command."];
+
 impl BrokeredHost {
     pub(super) async fn run_tool_step(
         &self,
@@ -367,6 +370,20 @@ impl BrokeredHost {
                 .get(tool_id)
                 .and_then(|tool| tool.provider.remote_site())
                 .is_some_and(|site| !crate::contracts::is_loopback_url(&site))
+    }
+
+    /// Whether `tool_id` can do anything for a task with no project
+    /// (ADR 0057): by the capability it declares, never its name. Reading or
+    /// writing files, reading Git, and running a project's recipes all act on
+    /// a project's roots, and a projectless task has none. An unknown tool is
+    /// not offered.
+    pub(super) fn needs_no_project(&self, tool_id: &str) -> bool {
+        self.tools.registry.get(tool_id).is_some_and(|tool| {
+            let capability = tool.descriptor.capability.as_str();
+            !PROJECT_CAPABILITIES
+                .iter()
+                .any(|namespace| capability.starts_with(namespace))
+        })
     }
 
     /// The files a request names, for its approval prompt.
