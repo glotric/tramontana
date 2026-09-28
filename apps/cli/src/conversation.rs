@@ -31,6 +31,36 @@ enum ConversationCommand {
     /// Search conversation titles, what was asked in them, and project names
     /// and folders.
     Search(SearchArgs),
+    /// Write a readable transcript of a conversation, to share (ADR 0060).
+    Export(ExportConversationArgs),
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum FormatArg {
+    Markdown,
+    Html,
+}
+
+#[derive(Debug, Args)]
+struct ExportConversationArgs {
+    #[arg(value_name = "CONVERSATION_ID")]
+    conversation_id: String,
+
+    /// How to write it.
+    #[arg(long, value_enum, default_value = "markdown")]
+    format: FormatArg,
+
+    /// Include attached files' text, not only their names.
+    #[arg(long)]
+    include_files: bool,
+
+    /// Write it to this file instead of standard output.
+    #[arg(long, value_name = "PATH")]
+    out: Option<PathBuf>,
+
+    /// Database file to use.
+    #[arg(long, value_name = "PATH")]
+    profile: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -114,6 +144,45 @@ pub(crate) async fn execute(args: ConversationArgs) -> ExitCode {
         ConversationCommand::Rename(args) => rename(args).await,
         ConversationCommand::Delete(args) => delete(args).await,
         ConversationCommand::Search(args) => search(args).await,
+        ConversationCommand::Export(args) => export(args).await,
+    }
+}
+
+async fn export(args: ExportConversationArgs) -> ExitCode {
+    use tramontana_core::contracts::{TranscriptFormat, TranscriptOptions};
+    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
+        Ok(service) => service,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let options = TranscriptOptions {
+        format: match args.format {
+            FormatArg::Markdown => TranscriptFormat::Markdown,
+            FormatArg::Html => TranscriptFormat::Html,
+        },
+        include_attachments: args.include_files,
+    };
+    let text = match service
+        .transcript(&ConversationId::new(args.conversation_id), options)
+        .await
+    {
+        Ok(text) => text,
+        Err(error) => return render::application_error(&error),
+    };
+    match args.out {
+        Some(path) => match std::fs::write(&path, text) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("error: could not write {}: {error}", path.display());
+                ExitCode::FAILURE
+            }
+        },
+        None => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
     }
 }
 

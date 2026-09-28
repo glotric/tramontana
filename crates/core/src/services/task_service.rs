@@ -647,6 +647,41 @@ impl TaskService {
             .map_err(|error| self.repository_error(&error))
     }
 
+    /// A readable transcript of one conversation, to share as a file
+    /// (ADR 0060): its tasks oldest first, each with what was asked, the
+    /// names of its attached files, and its final answer.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::NotFound`] when it does not exist, or a persistence error.
+    pub async fn transcript(
+        &self,
+        conversation_id: &ConversationId,
+        options: crate::contracts::TranscriptOptions,
+    ) -> Result<String, ErrorEnvelope> {
+        let conversation = self.get_conversation(conversation_id).await?;
+        let project_name = match &conversation.project_id {
+            Some(id) => Some(self.get_project(id).await?.name),
+            None => None,
+        };
+        let mut tasks = self.list_tasks(Some(conversation_id)).await?;
+        tasks.sort_by(|a, b| {
+            (a.created_at.as_str(), a.task_id.as_str())
+                .cmp(&(b.created_at.as_str(), b.task_id.as_str()))
+        });
+        let mut turns = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let events = self.replay_task_events(&task.task_id, 0).await?;
+            turns.push((task, events));
+        }
+        Ok(super::render_transcript(
+            &conversation,
+            project_name.as_deref(),
+            &turns,
+            &options,
+        ))
+    }
+
     /// Search conversation titles, what was asked in them, and project names
     /// and folders (`PHASE_1_SPEC.md` §4.1, ADR 0059).
     ///

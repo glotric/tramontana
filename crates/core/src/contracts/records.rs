@@ -244,3 +244,24 @@ pub struct SearchResults {
     /// Matching projects, by name or folder.
     pub projects: Vec<ProjectRecord>,
 }
+
+/// How a shared transcript is written (ADR 0060).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum TranscriptFormat {
+    /// Markdown text.
+    Markdown,
+    /// A self-contained HTML page with no scripts or external resources.
+    Html,
+}
+
+/// What a shared transcript holds (ADR 0060).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptOptions {
+    /// How it is written.
+    pub format: TranscriptFormat,
+    /// Whether attached files' text is included, not only their names.
+    #[serde(default)]
+    pub include_attachments: bool,
+}

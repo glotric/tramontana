@@ -213,6 +213,93 @@ pub(crate) async fn delete_conversation(
     state.service.delete_conversation(&conversation_id).await
 }
 
+/// The transcript a share would save, for the person to read first
+/// (ADR 0060).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn preview_transcript(
+    conversation_id: ConversationId,
+    options: tramontana_core::contracts::TranscriptOptions,
+    state: State<'_, AppState>,
+) -> Result<String, ErrorEnvelope> {
+    state.service.transcript(&conversation_id, options).await
+}
+
+/// Save a conversation's transcript where the person chooses (ADR 0060).
+///
+/// The text is rendered again here from the record, never taken from the
+/// window. Returns where it was written, or `None` when the person cancels.
+///
+/// # Errors
+///
+/// Whatever the service reports, or [`ErrorCode::Internal`] when the file
+/// cannot be written.
+#[tauri::command]
+pub(crate) async fn save_transcript(
+    conversation_id: ConversationId,
+    options: tramontana_core::contracts::TranscriptOptions,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, ErrorEnvelope> {
+    let conversation = state.service.get_conversation(&conversation_id).await?;
+    let text = state.service.transcript(&conversation_id, options).await?;
+    let extension = match options.format {
+        tramontana_core::contracts::TranscriptFormat::Markdown => "md",
+        tramontana_core::contracts::TranscriptFormat::Html => "html",
+    };
+    let stem: String = conversation
+        .title
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || character == ' ' || character == '-' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(80)
+        .collect();
+    let stem = if stem.is_empty() {
+        "Conversation".to_owned()
+    } else {
+        stem
+    };
+    let (send, receive) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Save the conversation")
+        .set_file_name(format!("{stem}.{extension}"))
+        .add_filter(
+            if extension == "md" {
+                "Markdown"
+            } else {
+                "Web page"
+            },
+            &[extension],
+        )
+        .save_file(move |selection| {
+            let _ = send.send(selection);
+        });
+    let Some(selection) = receive
+        .await
+        .map_err(|_| internal("the save dialog closed unexpectedly"))?
+    else {
+        return Ok(None);
+    };
+    let path = selection
+        .into_path()
+        .map_err(|_| invalid("the chosen place is not a local file"))?;
+    std::fs::write(&path, text)
+        .map_err(|_| internal("the conversation could not be saved there"))?;
+    Ok(Some(path.display().to_string()))
+}
+
 /// Search conversation titles, what was asked in them, and project names
 /// and folders (ADR 0059).
 ///

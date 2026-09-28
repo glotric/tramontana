@@ -37,6 +37,7 @@ mod task_recovery;
 mod task_service;
 mod tool_registry;
 mod tool_schema;
+mod transcript;
 
 pub use attachments::{
     ATTACHMENT_BYTES, ATTACHMENT_TOTAL_BYTES, ATTACHMENTS, AttachmentInput, accept_attachments,
@@ -78,6 +79,7 @@ pub use recipe::{COMMAND_ENVIRONMENT, RECIPE_TOOL_ID};
 pub use redaction::{
     PLACEHOLDER, Redacted, carries_credential, reason as redaction_reason, redact, redacted_hash,
 };
+pub use transcript::render_transcript;
 /// The reason a task moved on to another worker, from which that worker's
 /// budget is counted (ADR 0048).
 pub const HANDED_OVER: &str = "user.handedOver";

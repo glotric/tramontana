@@ -28,7 +28,8 @@ use tramontana_core::contracts::{
     ReplaySafety, ResponseFormat, ResumeEligibility, ResumeMode, RiskClass, RoutedModel,
     RoutingDecision, RoutingFallback, RoutingMode, SearchField, SearchResults, SecretRef,
     SecretStore, SideEffect, StopReason, StreamFrame, TaskCheckpoint, TaskEventKind, TaskRecord,
-    TaskSnapshot, TaskState, TaskUpdate, ToolDescriptor, Usage, Visibility,
+    TaskSnapshot, TaskState, TaskUpdate, ToolDescriptor, TranscriptFormat, TranscriptOptions,
+    Usage, Visibility,
 };
 
 /// Filename of the single bundled contract schema.
@@ -126,6 +127,8 @@ fn emit_schema(dir: &Path) -> Result<PathBuf> {
     register::<SearchField>(&mut generator);
     register::<ConversationHit>(&mut generator);
     register::<SearchResults>(&mut generator);
+    register::<TranscriptFormat>(&mut generator);
+    register::<TranscriptOptions>(&mut generator);
     register::<ContextCategory>(&mut generator);
     register::<DestinationClass>(&mut generator);
     register::<ContextSource>(&mut generator);
@@ -328,6 +331,8 @@ mod tests {
             "SearchField",
             "ConversationHit",
             "SearchResults",
+            "TranscriptFormat",
+            "TranscriptOptions",
             "ContextCategory",
             "DestinationClass",
             "ContextSource",

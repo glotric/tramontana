@@ -556,3 +556,77 @@ async fn search_finds_titles_questions_and_projects_ignoring_case() {
         ErrorCode::InvalidRequest
     );
 }
+
+#[tokio::test]
+async fn a_transcript_holds_the_conversation_oldest_first_and_names_its_files() {
+    let model = Numbered::new();
+    let service = service(&model);
+    let chat = service.create_conversation(None, "Winds").await.unwrap();
+    ask(&service, &chat.conversation_id, "Name a wind.").await;
+    let task = service
+        .start_task(StartTaskRequest {
+            conversation_id: Some(chat.conversation_id.clone()),
+            goal: "Summarize the notes.".into(),
+            attachments: vec![AttachmentInput {
+                name: "notes.md".into(),
+                bytes: b"Private detail.".to_vec(),
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(20), async {
+        while !service
+            .replay_task_events(&task, 0)
+            .await
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == TaskEventKind::TaskCompleted)
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let names_only = service
+        .transcript(
+            &chat.conversation_id,
+            TranscriptOptions {
+                format: TranscriptFormat::Markdown,
+                include_attachments: false,
+            },
+        )
+        .await
+        .unwrap();
+    let first = names_only.find("Name a wind.").unwrap();
+    let answer = names_only.find("Answer 1.").unwrap();
+    let second = names_only.find("Summarize the notes.").unwrap();
+    assert!(first < answer && answer < second);
+    assert!(names_only.contains("Attached: notes.md"));
+    assert!(!names_only.contains("Private detail."));
+
+    let with_files = service
+        .transcript(
+            &chat.conversation_id,
+            TranscriptOptions {
+                format: TranscriptFormat::Markdown,
+                include_attachments: true,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(with_files.contains("Private detail."));
+
+    let missing = service
+        .transcript(
+            &ConversationId::new("nope"),
+            TranscriptOptions {
+                format: TranscriptFormat::Html,
+                include_attachments: false,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(missing.code, ErrorCode::NotFound);
+}

@@ -2916,6 +2916,25 @@ export interface ToolDescriptor {
 }
 
 /**
+ * How a shared transcript is written (ADR 0060).
+ */
+export type TranscriptFormat = "markdown" | "html";
+
+/**
+ * What a shared transcript holds (ADR 0060).
+ */
+export interface TranscriptOptions {
+  /**
+   * How it is written.
+   */
+  format: "markdown" | "html";
+  /**
+   * Whether attached files' text is included, not only their names.
+   */
+  includeAttachments: boolean;
+}
+
+/**
  * Token counts for one request.
  */
 export interface Usage {

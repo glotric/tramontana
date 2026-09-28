@@ -19,6 +19,7 @@ import { ChangesPanel } from "./ChangesPanel.js";
 import { ChatView } from "./ChatView.js";
 import { ConversationMenu } from "./ConversationMenu.js";
 import { SearchPanel } from "./SearchPanel.js";
+import { ShareDialog } from "./ShareDialog.js";
 import { AttachButton, PendingFiles, useAttachments } from "./Attachments.js";
 import { Glyph } from "./Glyph.js";
 import { GrantsPanel } from "./GrantsPanel.js";
@@ -220,6 +221,8 @@ export function App(): React.JSX.Element {
   const [chats, setChats] = useState<readonly ConversationRecord[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<string | undefined>();
   const [searchOpen, setSearchOpen] = useState(false);
+  // The conversation being shared, while its dialog is open (ADR 0060).
+  const [sharing, setSharing] = useState<ConversationRecord | undefined>();
 
   // ⌘K on macOS, Ctrl+K elsewhere, as the design's sidebar says.
   useEffect(() => {
@@ -690,6 +693,14 @@ export function App(): React.JSX.Element {
       data-sidebar={sidebarOpen ? "open" : "closed"}
       data-details={detailsOpen && view === "work" && mode === "agent" ? "open" : "closed"}
     >
+      {sharing !== undefined && (
+        <ShareDialog
+          conversation={sharing}
+          onClose={() => {
+            setSharing(undefined);
+          }}
+        />
+      )}
       {searchOpen && (
         <SearchPanel
           onClose={() => {
@@ -995,6 +1006,18 @@ export function App(): React.JSX.Element {
                   {routingMode === "localOnly" && <LockIcon />}
                   {MODE_LABEL[routingMode]}
                 </span>
+                {selectedChat !== undefined && (
+                  <button
+                    type="button"
+                    className="pill-button"
+                    onClick={() => {
+                      setSharing(selectedChat);
+                    }}
+                  >
+                    <ShareIcon />
+                    Share
+                  </button>
+                )}
               </div>
             </header>
             <ChatView
@@ -1068,6 +1091,18 @@ export function App(): React.JSX.Element {
                   {routingMode === "localOnly" && <LockIcon />}
                   {MODE_LABEL[routingMode]}
                 </span>
+                {selectedConversation !== undefined && (
+                  <button
+                    type="button"
+                    className="pill-button"
+                    onClick={() => {
+                      setSharing(selectedConversation);
+                    }}
+                  >
+                    <ShareIcon />
+                    Share
+                  </button>
+                )}
                 {/* Only while the panel is put away: once open, it closes from
                   its own button. */}
                 {!detailsOpen && (
@@ -1561,6 +1596,25 @@ function CloseIcon(): React.JSX.Element {
       aria-hidden="true"
     >
       <path d="M6 6l12 12M18 6 6 18" />
+    </svg>
+  );
+}
+
+function ShareIcon(): React.JSX.Element {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 15V3M7 8l5-5 5 5" />
+      <path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" />
     </svg>
   );
 }

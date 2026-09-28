@@ -90,6 +90,7 @@ pub use primitives::{
 pub use provider::{ProviderConfig, ProviderEndpoint, RuntimeProvenance, is_loopback_url};
 pub use records::{
     ConversationHit, ConversationRecord, ProjectRecord, SearchField, SearchResults, TaskRecord,
+    TranscriptFormat, TranscriptOptions,
 };
 pub use release::{
     ContextReleasePlan, ReleaseAuthorization, ReleaseExclusion, ReleasedCategory,

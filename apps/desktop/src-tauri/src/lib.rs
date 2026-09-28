@@ -81,6 +81,8 @@ pub fn run() {
             commands::rename_conversation,
             commands::delete_conversation,
             commands::search,
+            commands::preview_transcript,
+            commands::save_transcript,
             commands::discard_attachment,
             commands::inspect_bundle,
             commands::import_staged_bundle,

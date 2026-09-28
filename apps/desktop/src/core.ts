@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   ApprovalDecisionKind,
   SearchResults,
+  TranscriptOptions,
   ApprovalRequest,
   ConversationRecord,
   CoreInfo,
@@ -747,4 +748,23 @@ export async function deleteConversation(conversationId: string): Promise<void> 
 /** Search conversation titles, what was asked in them, and projects (ADR 0059). */
 export async function search(query: string): Promise<SearchResults> {
   return invoke<SearchResults>("search", { query });
+}
+
+/** The transcript a share would save, to read first (ADR 0060). */
+export async function previewTranscript(
+  conversationId: string,
+  options: TranscriptOptions,
+): Promise<string> {
+  return invoke<string>("preview_transcript", { conversationId, options });
+}
+
+/**
+ * Save a conversation's transcript where the person chooses (ADR 0060).
+ * Resolves with where it was written, or `undefined` when they cancel.
+ */
+export async function saveTranscript(
+  conversationId: string,
+  options: TranscriptOptions,
+): Promise<string | undefined> {
+  return (await invoke<string | null>("save_transcript", { conversationId, options })) ?? undefined;
 }

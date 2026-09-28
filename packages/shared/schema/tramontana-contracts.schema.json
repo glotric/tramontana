@@ -4050,6 +4050,40 @@
       ],
       "type": "object"
     },
+    "TranscriptFormat": {
+      "description": "How a shared transcript is written (ADR 0060).",
+      "oneOf": [
+        {
+          "const": "markdown",
+          "description": "Markdown text.",
+          "type": "string"
+        },
+        {
+          "const": "html",
+          "description": "A self-contained HTML page with no scripts or external resources.",
+          "type": "string"
+        }
+      ]
+    },
+    "TranscriptOptions": {
+      "description": "What a shared transcript holds (ADR 0060).",
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/TranscriptFormat",
+          "description": "How it is written."
+        },
+        "includeAttachments": {
+          "default": false,
+          "description": "Whether attached files' text is included, not only their names.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "format",
+        "includeAttachments"
+      ],
+      "type": "object"
+    },
     "Usage": {
       "description": "Token counts for one request.",
       "properties": {
