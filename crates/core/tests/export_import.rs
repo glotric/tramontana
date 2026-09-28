@@ -132,6 +132,7 @@ fn revealing_request() -> ExportRequest {
                 goal_summary: "Explain the permission boundary".to_owned(),
                 conversation_id: None,
                 routing_mode: None,
+                attachments: Vec::new(),
             },
             TaskEventKind::TaskCreated,
         ),

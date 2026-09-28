@@ -409,6 +409,11 @@ export interface TaskOptions {
    * order named. A skill grants nothing.
    */
   readonly skills?: readonly string[];
+  /**
+   * Files picked with {@link chooseAttachments} for this message, by token
+   * (ADR 0058). Their text is given to the model before the goal.
+   */
+  readonly attachments?: readonly string[];
 }
 
 /**
@@ -442,6 +447,7 @@ export async function startTask(
             routingMode: options.routingMode,
             worker: options.worker ?? null,
             skills: options.skills === undefined ? null : [...options.skills],
+            attachments: options.attachments === undefined ? null : [...options.attachments],
           },
     channel,
   });
@@ -698,4 +704,25 @@ export function asErrorEnvelope(error: unknown): ErrorEnvelope | undefined {
   return typeof candidate.code === "string" && typeof candidate.message === "string"
     ? (candidate as ErrorEnvelope)
     : undefined;
+}
+
+/** A file picked for the next message, held by the desktop until it is sent. */
+export interface StagedAttachment {
+  readonly token: string;
+  readonly name: string;
+  readonly byteCount: number;
+}
+
+/**
+ * Pick files to attach to the next message (ADR 0058). The desktop reads
+ * and holds them; the window only ever sees their names and sizes. Empty when
+ * the person cancels.
+ */
+export async function chooseAttachments(): Promise<readonly StagedAttachment[]> {
+  return invoke<StagedAttachment[]>("choose_attachments");
+}
+
+/** Stop holding a picked file the person removed before sending. */
+export async function discardAttachment(token: string): Promise<void> {
+  return invoke("discard_attachment", { token });
 }

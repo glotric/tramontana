@@ -905,6 +905,12 @@ export interface EventEnvelope {
       }
     | {
         /**
+         * Files the person attached to this message, as their redacted text
+         * (ADR 0058). Absent when there were none, and from every task
+         * recorded before attachments were.
+         */
+        attachments?: TaskAttachment[];
+        /**
          * Conversation this task belongs to, when it has one.
          */
         conversationId?: string;
@@ -1205,6 +1211,12 @@ export type EventPayload =
       summary: string;
     }
   | {
+      /**
+       * Files the person attached to this message, as their redacted text
+       * (ADR 0058). Absent when there were none, and from every task
+       * recorded before attachments were.
+       */
+      attachments?: TaskAttachment[];
       /**
        * Conversation this task belongs to, when it has one.
        */
@@ -2505,6 +2517,40 @@ export interface StreamFrame {
   streamId: string;
   /**
    * The text produced.
+   */
+  text: string;
+}
+
+/**
+ * A file the person attached to a message (ADR 0058).
+ *
+ * Held in the task's own record, beside its goal: the text is what the model
+ * is given, already redacted, and the hash names that text rather than the
+ * original bytes, so the record describes only what may be released.
+ */
+export interface TaskAttachment {
+  /**
+   * The length of `text` in bytes.
+   */
+  byteCount: number;
+  /**
+   * The content hash of `text`.
+   */
+  contentHash: string;
+  /**
+   * What kind of text it is, such as `text/markdown`.
+   */
+  mediaType: string;
+  /**
+   * The file's name, without any folder.
+   */
+  name: string;
+  /**
+   * What was removed from it at ingestion.
+   */
+  redactions?: string[];
+  /**
+   * Its redacted text.
    */
   text: string;
 }

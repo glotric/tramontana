@@ -236,6 +236,7 @@ impl CanonicalModelHistory {
         catalogue: ModelToolCatalogue,
         project: Option<&crate::services::ComposedInstructions>,
         earlier: &crate::services::EarlierTurns,
+        attachments: &[crate::contracts::TaskAttachment],
     ) -> Result<ModelContextInput, ErrorEnvelope> {
         let at = self.messages.first().map_or_else(
             || crate::contracts::Timestamp::new(""),
@@ -284,6 +285,28 @@ impl CanonicalModelHistory {
                     redactions,
                 });
             }
+        }
+        // Then the files attached to this message, just before its goal
+        // (ADR 0058): named, and marked as data rather than instructions.
+        for (index, attachment) in attachments.iter().enumerate() {
+            let mut message = NormalizedMessage::text(
+                MessageId::new(format!(
+                    "{}-{}",
+                    crate::services::attachment_source_id(index),
+                    self.task_id
+                )),
+                conversation.clone(),
+                MessageRole::User,
+                at.clone(),
+                crate::services::attachment_message(attachment),
+            );
+            message.task_id = Some(self.task_id.clone());
+            before.push(message);
+            before_provenance.push(ModelContentProvenance {
+                source_id: crate::services::attachment_source_id(index),
+                data_class: DataClass::Project,
+                redactions: attachment.redactions.clone(),
+            });
         }
         self.messages.splice(0..0, before);
         self.provenance.splice(0..0, before_provenance);

@@ -62,7 +62,7 @@ pub use descriptor::{
 pub use error::{ErrorCode, ErrorEnvelope};
 pub use event::{
     CancellationOrigin, EventDraft, EventEnvelope, EventPayload, PermissionOrigin, StreamFrame,
-    TaskEventKind, TaskUpdate,
+    TaskAttachment, TaskEventKind, TaskUpdate,
 };
 pub use export::{
     BUNDLE_MAJOR_VERSION, BUNDLE_MINOR_VERSION, BundleEntry, ExportBundle, ExportManifest,

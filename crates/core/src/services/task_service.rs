@@ -59,6 +59,9 @@ pub struct StartTaskRequest {
     /// has always run under. Selecting a definition contributes its text and
     /// nothing else: no skill grants a tool, a root, or a destination.
     pub selection: Option<ConfigurationSelection>,
+    /// Files the person attached to this message (ADR 0058). Checked, and
+    /// their text redacted, before anything is written.
+    pub attachments: Vec<super::AttachmentInput>,
 }
 
 /// Runtime state for a task that is currently running.
@@ -591,6 +594,8 @@ impl TaskService {
         // Both chosen before anything is written, so a refusal leaves no
         // task behind.
         let routing_mode = request.routing_mode.unwrap_or_else(|| self.routing_mode());
+        // Before anything is written, so a refused file leaves no task.
+        let attachments = super::accept_attachments(&request.attachments)?;
         let worker = match (request.admission, request.worker.as_deref(), &self.workers) {
             (None, None, _) => Arc::clone(&self.providers.worker),
             (Some(admission), None, Some(choose)) => choose(admission),
@@ -726,6 +731,7 @@ impl TaskService {
                     goal_summary: goal.text.clone(),
                     conversation_id: request.conversation_id.clone(),
                     routing_mode: Some(routing_mode),
+                    attachments: attachments.clone(),
                 },
             )
             .into_envelope(
@@ -813,6 +819,7 @@ impl TaskService {
         .with_configuration(resolved_configuration)
         .with_instructions(instructions)
         .with_earlier_turns(earlier)
+        .with_attachments(attachments)
         .with_goal_redactions(goal.reason_codes.clone())
         .with_checkpoints(Arc::clone(&self.repositories.checkpoints))
         .continuing(None, super::ResumePlan::default(), interrupt);

@@ -1,4 +1,4 @@
-import type { EventEnvelope, TaskState } from "@tramontana/shared";
+import type { EventEnvelope, TaskAttachment, TaskState } from "@tramontana/shared";
 
 import { projectState } from "./activity.js";
 
@@ -102,4 +102,10 @@ export function titleFrom(goal: string): string {
   const line = goal.trim().split(/\r?\n/)[0]?.trim() ?? "";
   if (line === "") return "New chat";
   return line.length > 60 ? `${line.slice(0, 57).trimEnd()}…` : line;
+}
+
+/** The files the turn's message carried, from its own record (ADR 0058). */
+export function attachmentsOf(events: readonly EventEnvelope[]): readonly TaskAttachment[] {
+  const created = events.find((event) => event.payload.kind === "taskCreated")?.payload;
+  return created?.kind === "taskCreated" ? (created.attachments ?? []) : [];
 }

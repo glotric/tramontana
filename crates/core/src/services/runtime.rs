@@ -59,6 +59,8 @@ pub(crate) struct TaskDriver {
     /// The earlier turns of the task's conversation, chosen when it was
     /// created and chosen again identically on resume (ADR 0057).
     earlier: Arc<EarlierTurns>,
+    /// The files the person attached to this task's message (ADR 0058).
+    attachments: Arc<Vec<crate::contracts::TaskAttachment>>,
     /// What was removed from the goal when the task was created.
     ///
     /// Carried rather than recomputed: the goal the driver receives is already
@@ -169,6 +171,7 @@ impl TaskDriver {
             configuration: None,
             instructions: ProjectInstructions::default(),
             earlier: Arc::new(EarlierTurns::default()),
+            attachments: Arc::new(Vec::new()),
             goal_redactions: Vec::new(),
             checkpoint: None,
             handoff: None,
@@ -226,6 +229,15 @@ impl TaskDriver {
     /// Give the task the earlier turns of its conversation (ADR 0057).
     pub(crate) fn with_earlier_turns(mut self, earlier: EarlierTurns) -> Self {
         self.earlier = Arc::new(earlier);
+        self
+    }
+
+    /// Give the task the files attached to its message (ADR 0058).
+    pub(crate) fn with_attachments(
+        mut self,
+        attachments: Vec<crate::contracts::TaskAttachment>,
+    ) -> Self {
+        self.attachments = Arc::new(attachments);
         self
     }
 
@@ -390,6 +402,7 @@ impl TaskDriver {
             model_gate: tokio::sync::Mutex::new(()),
             instructions: instructions.clone(),
             earlier: Arc::clone(&self.earlier),
+            attachments: Arc::clone(&self.attachments),
             routing_mode: self.routing_mode,
             scope: self.scope.clone(),
             tools: ToolBroker {
@@ -529,11 +542,13 @@ impl TaskDriver {
             instructions,
             self.clock.now(),
         );
-        // The earlier turns come first, as the model reads them (ADR 0057).
-        let manifest = if self.earlier.is_empty() {
+        // The earlier turns come first, then the attached files, as the
+        // model reads them (ADRs 0057 and 0058).
+        let manifest = if self.earlier.is_empty() && self.attachments.is_empty() {
             assembled
         } else {
             let mut sources = self.earlier.sources();
+            sources.extend(crate::services::attachment_sources(&self.attachments));
             sources.extend(assembled.sources);
             crate::contracts::ContextManifest::new(
                 assembled.context_manifest_id,
@@ -781,6 +796,8 @@ struct BrokeredHost {
     instructions: Option<Arc<ComposedInstructions>>,
     /// The earlier turns of the conversation, as every turn will send them.
     earlier: Arc<EarlierTurns>,
+    /// The files attached to the task's message, as every turn will send them.
+    attachments: Arc<Vec<crate::contracts::TaskAttachment>>,
     /// Serialize requests so approvals and model starts cannot overlap per host.
     model_gate: tokio::sync::Mutex<()>,
     /// The standing policy in force.

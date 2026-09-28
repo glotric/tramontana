@@ -8,6 +8,7 @@
 
 mod approval;
 mod apps;
+mod attachments;
 mod bundles;
 mod commands;
 mod settings;
@@ -76,6 +77,8 @@ pub fn run() {
             commands::pending_approvals,
             commands::project_changes,
             commands::export_bundle,
+            commands::choose_attachments,
+            commands::discard_attachment,
             commands::inspect_bundle,
             commands::import_staged_bundle,
             commands::list_configured_endpoints,

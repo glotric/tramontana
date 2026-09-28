@@ -728,6 +728,86 @@ h3 {
   box-shadow: none;
 }
 
+/* ---- Attachments ------------------------------------------------------------ */
+
+.attach-button {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line2);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text);
+}
+
+.attach-button:hover:not(:disabled) {
+  background: var(--seg-on);
+}
+
+.file-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.file-chips--sent {
+  align-self: flex-end;
+  justify-content: flex-end;
+}
+
+.file-chip {
+  display: flex;
+  max-width: 280px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+
+.file-chip > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.file-chip strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-chip small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.file-chip-remove {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.file-chip-remove:hover {
+  background: var(--seg-on);
+  color: var(--text);
+}
+
 /* ---- Buttons -------------------------------------------------------------- */
 
 .button {

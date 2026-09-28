@@ -429,6 +429,7 @@ async fn task_and_initial_events_commit_as_one_transaction() {
         goal_summary: "goal".to_owned(),
         conversation_id: None,
         routing_mode: None,
+        attachments: Vec::new(),
     };
     let error = tasks
         .create_with_initial_events(&record, &[event])

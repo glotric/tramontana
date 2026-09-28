@@ -52,6 +52,8 @@ pub(crate) struct AppState {
     /// The bundle folder the person last inspected, waiting for them to
     /// confirm the import.
     pub(crate) staged_bundle: Arc<crate::bundles::StagedSlot>,
+    /// Files picked for a message and not yet sent (ADR 0058).
+    pub(crate) staged_attachments: Arc<crate::attachments::StagedAttachments>,
     /// The profile's configured endpoints, which the settings view changes.
     pub(crate) settings: Arc<SqliteProviderSettingsRepository>,
     /// The operating system's credential store.
@@ -248,6 +250,7 @@ impl AppState {
             browser,
             app_settings,
             staged_bundle: Arc::new(std::sync::Mutex::new(None)),
+            staged_attachments: Arc::default(),
             settings,
             vault,
         })

@@ -32,7 +32,18 @@ pub(crate) fn application_error(
 #[must_use]
 pub(crate) fn event_line(event: &EventEnvelope) -> String {
     let detail = match &event.payload {
-        EventPayload::TaskCreated { goal_summary, .. } => format!("goal: {goal_summary}"),
+        EventPayload::TaskCreated {
+            goal_summary,
+            attachments,
+            ..
+        } => {
+            if attachments.is_empty() {
+                format!("goal: {goal_summary}")
+            } else {
+                let names: Vec<_> = attachments.iter().map(|file| file.name.as_str()).collect();
+                format!("goal: {goal_summary} (attached: {})", names.join(", "))
+            }
+        }
         EventPayload::TaskStateChanged {
             previous,
             current,

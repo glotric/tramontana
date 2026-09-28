@@ -17,6 +17,7 @@ import { BundlesPanel } from "./BundlesPanel.js";
 import { buildCards, describeHeader, MODE_LABEL } from "./cards.js";
 import { ChangesPanel } from "./ChangesPanel.js";
 import { ChatView } from "./ChatView.js";
+import { AttachButton, PendingFiles, useAttachments } from "./Attachments.js";
 import { Glyph } from "./Glyph.js";
 import { GrantsPanel } from "./GrantsPanel.js";
 import { AppsView } from "./AppsView.js";
@@ -81,6 +82,11 @@ const MODES: readonly RoutingMode[] = ["localOnly", "automatic", "cloudPreferred
 
 /** How long the typing settles before the skills are suggested again. */
 const SUGGESTION_DELAY_MS = 300;
+
+/** The attachments option, only when there are files to send. */
+function attached(tokens: readonly string[]): { readonly attachments?: readonly string[] } {
+  return tokens.length === 0 ? {} : { attachments: tokens };
+}
 
 /** Chat or Agent: which half of the window is showing (ADR 0057). */
 type Mode = "chat" | "agent";
@@ -514,6 +520,7 @@ export function App(): React.JSX.Element {
   const cards = useMemo(() => buildCards(events), [events]);
   const header = useMemo(() => describeHeader(events), [events]);
   const goalInput = useRef<HTMLTextAreaElement>(null);
+  const agentFiles = useAttachments();
 
   // Retry puts the goal back where the person chooses again; it starts nothing.
   const onRetry = useCallback((retried: string) => {
@@ -623,6 +630,7 @@ export function App(): React.JSX.Element {
       routingMode,
       ...(chosenWorker === undefined ? {} : { worker: chosenWorker.agentId }),
       ...(chosenSkills.length === 0 ? {} : { skills: chosenSkills }),
+      ...attached(agentFiles.take()),
     }).then(
       (id) => {
         setSelectedTaskId(id);
@@ -634,6 +642,7 @@ export function App(): React.JSX.Element {
     );
   }, [
     goal,
+    agentFiles,
     chosenSkills,
     chosenWorker,
     handleUpdate,
@@ -956,6 +965,11 @@ export function App(): React.JSX.Element {
                     {failure}
                   </div>
                 )}
+                {agentFiles.error !== undefined && (
+                  <div className="notice notice--error" role="alert">
+                    {agentFiles.error}
+                  </div>
+                )}
 
                 {approvals[0] !== undefined && (
                   <ApprovalCard
@@ -1097,6 +1111,7 @@ export function App(): React.JSX.Element {
                   <label className="sr-only" htmlFor="goal">
                     Task goal
                   </label>
+                  <PendingFiles files={agentFiles.files} onRemove={agentFiles.remove} />
                   <textarea
                     ref={goalInput}
                     id="goal"
@@ -1214,6 +1229,7 @@ export function App(): React.JSX.Element {
                     )}
                   </fieldset>
                   <div className="composer-footer">
+                    <AttachButton onClick={agentFiles.choose} disabled={running} />
                     <span>
                       {configuration === undefined
                         ? "No configuration manifest"

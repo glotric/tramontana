@@ -220,6 +220,9 @@ pub(crate) struct TaskChoices {
     pub(crate) worker: Option<String>,
     /// The project's skills this task uses, by declared id.
     pub(crate) skills: Option<Vec<String>>,
+    /// Files picked with [`choose_attachments`] for this message, by token
+    /// (ADR 0058).
+    pub(crate) attachments: Option<Vec<String>>,
 }
 
 /// Start a task and stream its updates over `channel`.
@@ -280,6 +283,10 @@ where
     // task selects, so resolving the project here first would only write an
     // inventory the task is about to replace (ADRs 0052 and 0053).
     let service = state.service.clone();
+    let attachments = match &choices.attachments {
+        Some(tokens) => state.staged_attachments.take(tokens)?,
+        None => Vec::new(),
+    };
     let task_id = service
         .start_task(StartTaskRequest {
             conversation_id,
@@ -291,6 +298,7 @@ where
                 skill_ids,
                 ..ConfigurationSelection::default()
             }),
+            attachments,
         })
         .await?;
 
@@ -548,6 +556,60 @@ pub(crate) async fn import_staged_bundle(
         ));
     };
     bundles::import_from(&state.service, &directory).await
+}
+
+/// Pick files to attach to the next message (ADR 0058).
+///
+/// Each one is read here, checked as core would check it, and held under a
+/// random token; the window is told only the token, the name and the size.
+/// Empty when the person cancels.
+///
+/// # Errors
+///
+/// [`ErrorCode::InvalidRequest`] naming a file that cannot be attached, in
+/// which case none of the chosen files is held.
+#[tauri::command]
+pub(crate) async fn choose_attachments(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::attachments::StagedAttachmentView>, ErrorEnvelope> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Attach files")
+        .pick_files(move |selection| {
+            let _ = send.send(selection);
+        });
+    let selection = receive
+        .await
+        .map_err(|_| internal("the file picker closed unexpectedly"))?
+        .unwrap_or_default();
+    let mut read = Vec::with_capacity(selection.len());
+    for picked in selection {
+        let path = picked
+            .into_path()
+            .map_err(|_| invalid("a selected file is not a local file"))?;
+        read.push(crate::attachments::read_picked(&path)?);
+    }
+    let ids = UuidIdSource::new();
+    Ok(read
+        .into_iter()
+        .map(|input| {
+            state
+                .staged_attachments
+                .stage(ids.next("attachment"), input)
+        })
+        .collect())
+}
+
+/// Stop holding a picked file the person removed before sending.
+#[tauri::command]
+pub(crate) async fn discard_attachment(
+    token: String,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    state.staged_attachments.discard(&token);
+    Ok(())
 }
 
 /// Ask the native picker for a file; `None` when the person cancels.

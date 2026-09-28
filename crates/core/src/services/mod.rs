@@ -9,6 +9,7 @@
 //! skeleton needs, driving one task from creation to exactly one terminal
 //! state.
 
+mod attachments;
 mod checkpoint;
 mod earlier_turns;
 mod export;
@@ -37,6 +38,10 @@ mod task_service;
 mod tool_registry;
 mod tool_schema;
 
+pub use attachments::{
+    ATTACHMENT_BYTES, ATTACHMENT_TOTAL_BYTES, ATTACHMENTS, AttachmentInput, accept_attachments,
+    attachment_message, attachment_source_id, attachment_sources, text_media_type,
+};
 pub use checkpoint::{
     DerivedState, ResumePlan, derive_checkpoint, derive_state, reason as checkpoint_reason,
 };

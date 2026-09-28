@@ -20,6 +20,8 @@ const replayTaskEvents = vi.hoisted(() => vi.fn());
 const startTask = vi.hoisted(() => vi.fn());
 const cancelTask = vi.hoisted(() => vi.fn());
 const watchTask = vi.hoisted(() => vi.fn());
+const chooseAttachments = vi.hoisted(() => vi.fn());
+const discardAttachment = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -31,6 +33,8 @@ vi.mock("./core.js", async () => {
     startTask,
     cancelTask,
     watchTask,
+    chooseAttachments,
+    discardAttachment,
   };
 });
 
@@ -135,9 +139,12 @@ describe("ChatView", () => {
       startTask,
       cancelTask,
       watchTask,
+      chooseAttachments,
+      discardAttachment,
     ]) {
       mock.mockReset();
     }
+    discardAttachment.mockResolvedValue(undefined);
     watchTask.mockResolvedValue(undefined);
   });
 
@@ -230,5 +237,73 @@ describe("ChatView", () => {
     expect(
       await screen.findByText(/This answer failed\. No model is available\./),
     ).toBeInTheDocument();
+  });
+
+  it("sends the files the person picked, and shows them on the message", async () => {
+    const user = userEvent.setup();
+    listTasks.mockResolvedValue([]);
+    chooseAttachments.mockResolvedValue([
+      { token: "tok-1", name: "plan.md", byteCount: 2048 },
+      { token: "tok-2", name: "costs.csv", byteCount: 90 },
+    ]);
+    let sink: (update: TaskUpdate) => void = () => undefined;
+    startTask.mockImplementation((_goal: string, onUpdate: (update: TaskUpdate) => void) => {
+      sink = onUpdate;
+      return Promise.resolve("t1");
+    });
+    view(chat);
+
+    await user.click(screen.getByRole("button", { name: "Attach files" }));
+    const pending = await screen.findByRole("list", { name: "Attached files" });
+    expect(pending).toHaveTextContent("plan.md");
+    expect(pending).toHaveTextContent("2 KB");
+
+    // Removed before sending: the desktop stops holding it.
+    await user.click(screen.getByRole("button", { name: "Remove costs.csv" }));
+    expect(discardAttachment).toHaveBeenCalledWith("tok-2");
+
+    await user.type(screen.getByLabelText("Message"), "Summarize it.{Enter}");
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalled();
+    });
+    const [, , , options] = startTask.mock.calls[0] as unknown[];
+    expect(options).toMatchObject({ attachments: ["tok-1"] });
+    expect(screen.queryByRole("list", { name: "Attached files" })).not.toBeInTheDocument();
+
+    act(() => {
+      sink({
+        kind: "event",
+        event: event("t1", 1, {
+          kind: "taskCreated",
+          goalSummary: "Summarize it.",
+          attachments: [
+            {
+              name: "plan.md",
+              mediaType: "text/markdown",
+              text: "# Plan",
+              contentHash: "h",
+              byteCount: 2048,
+            },
+          ],
+        }),
+      });
+    });
+    expect(
+      await screen.findByRole("list", { name: "Files sent with this message" }),
+    ).toHaveTextContent("plan.md");
+  });
+
+  it("says why a file could not be attached", async () => {
+    const user = userEvent.setup();
+    chooseAttachments.mockRejectedValue({
+      schemaVersion: 1,
+      code: "invalidRequest",
+      message: "contract.pdf is not a text file Tramontana can read yet",
+      retryable: false,
+      correlationId: "c",
+    });
+    view(undefined);
+    await user.click(screen.getByRole("button", { name: "Attach files" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("contract.pdf is not a text file");
   });
 });

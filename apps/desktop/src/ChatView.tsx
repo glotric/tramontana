@@ -9,7 +9,8 @@ import type {
 import { isTerminal, projectState } from "./activity.js";
 import { MODE_LABEL } from "./cards.js";
 import type { ChatTurn } from "./chat.js";
-import { outcomeOf, titleFrom, withEvent } from "./chat.js";
+import { attachmentsOf, outcomeOf, titleFrom, withEvent } from "./chat.js";
+import { AttachButton, PendingFiles, SentFiles, useAttachments } from "./Attachments.js";
 import {
   asErrorEnvelope,
   cancelTask,
@@ -70,6 +71,7 @@ export function ChatView({
   const [draft, setDraft] = useState("");
   const [failure, setFailure] = useState<string | undefined>();
   const [sending, setSending] = useState(false);
+  const files = useAttachments();
   const request = useRef(0);
   // The chat this window made for its own first message: loading it again
   // would race the turn already streaming into it.
@@ -164,6 +166,7 @@ export function ChatView({
     if (goal === "" || running) return;
     setSending(true);
     setFailure(undefined);
+    const tokens = files.take();
     void (async () => {
       try {
         let id = conversationId;
@@ -184,7 +187,14 @@ export function ChatView({
             onUpdate(update, known ?? "", current);
           },
           id,
-          { writes: false, recipes: false, apps: false, browse: false, routingMode },
+          {
+            writes: false,
+            recipes: false,
+            apps: false,
+            browse: false,
+            routingMode,
+            attachments: tokens,
+          },
         );
         setTurns((existing) =>
           existing.some((turn) => turn.taskId === taskId)
@@ -199,7 +209,7 @@ export function ChatView({
         input.current?.focus();
       }
     })();
-  }, [conversationId, draft, onCreated, onUpdate, routingMode, running]);
+  }, [conversationId, draft, files, onCreated, onUpdate, routingMode, running]);
 
   const stop = useCallback(() => {
     if (latest === undefined) return;
@@ -221,6 +231,11 @@ export function ChatView({
               {failure}
             </div>
           )}
+          {files.error !== undefined && (
+            <div className="notice notice--error" role="alert">
+              {files.error}
+            </div>
+          )}
           {notice}
           {empty ? (
             <section className="chat-home" aria-labelledby="chat-home-heading">
@@ -237,6 +252,7 @@ export function ChatView({
                 const live = stream?.taskId === turn.taskId ? stream.live : undefined;
                 return (
                   <li key={turn.taskId} className="chat-turn">
+                    <SentFiles files={attachmentsOf(turn.events)} />
                     <p className="chat-bubble">{turn.goal}</p>
                     {outcome.kind === "answered" ? (
                       <div className="chat-answer">{outcome.text}</div>
@@ -279,6 +295,7 @@ export function ChatView({
           <label className="sr-only" htmlFor="chat-message">
             Message
           </label>
+          <PendingFiles files={files.files} onRemove={files.remove} />
           <textarea
             ref={input}
             id="chat-message"
@@ -300,6 +317,7 @@ export function ChatView({
             }}
           />
           <div className="composer-footer">
+            <AttachButton onClick={files.choose} disabled={running} />
             <fieldset className="composer-modes" disabled={running}>
               <legend className="sr-only">Where models may run</legend>
               {MODES.map((mode) => (

@@ -183,6 +183,7 @@ impl BrokeredHost {
             catalogue,
             self.instructions.as_deref(),
             &self.earlier,
+            &self.attachments,
         )?;
         input.request.limits.max_output_tokens = Some(u64::from(limits.turn_tokens));
         input.request.limits.deadline_ms = limits.turn_ms;

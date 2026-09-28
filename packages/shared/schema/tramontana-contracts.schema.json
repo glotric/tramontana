@@ -1272,6 +1272,13 @@
         {
           "description": "The task was created.",
           "properties": {
+            "attachments": {
+              "description": "Files the person attached to this message, as their redacted text\n(ADR 0058). Absent when there were none, and from every task\nrecorded before attachments were.",
+              "items": {
+                "$ref": "#/$defs/TaskAttachment"
+              },
+              "type": "array"
+            },
             "conversationId": {
               "$ref": "#/$defs/ConversationId",
               "description": "Conversation this task belongs to, when it has one."
@@ -3447,6 +3454,48 @@
         "streamId",
         "offset",
         "text"
+      ],
+      "type": "object"
+    },
+    "TaskAttachment": {
+      "description": "A file the person attached to a message (ADR 0058).\n\nHeld in the task's own record, beside its goal: the text is what the model\nis given, already redacted, and the hash names that text rather than the\noriginal bytes, so the record describes only what may be released.",
+      "properties": {
+        "byteCount": {
+          "description": "The length of `text` in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "contentHash": {
+          "description": "The content hash of `text`.",
+          "type": "string"
+        },
+        "mediaType": {
+          "description": "What kind of text it is, such as `text/markdown`.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The file's name, without any folder.",
+          "type": "string"
+        },
+        "redactions": {
+          "description": "What was removed from it at ingestion.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "Its redacted text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "mediaType",
+        "text",
+        "contentHash",
+        "byteCount"
       ],
       "type": "object"
     },

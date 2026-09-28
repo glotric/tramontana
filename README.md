@@ -180,6 +180,8 @@ pnpm dev:cli project open /path/to/project
 pnpm dev:cli task "Say hello"   # a read-only task
 pnpm dev:cli task "Read the README and summarize it" --allow-writes --browse \
     --worker builtin.reference@<ENDPOINT>/<MODEL> --skill-id <SKILL>
+pnpm dev:cli conversation create "Questions"   # a chat: no project, no files
+pnpm dev:cli task "Summarize this" --conversation-id <CHAT> --attach notes.md
 pnpm check:fast                 # format, contracts, lint, types, tests
 pnpm check                      # the above plus the release build
 ```
