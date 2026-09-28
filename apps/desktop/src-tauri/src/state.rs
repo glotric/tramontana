@@ -52,6 +52,8 @@ pub(crate) struct AppState {
     /// The bundle folder the person last inspected, waiting for them to
     /// confirm the import.
     pub(crate) staged_bundle: Arc<crate::bundles::StagedSlot>,
+    /// Files picked for a message and not yet sent (ADR 0058).
+    pub(crate) staged_attachments: Arc<crate::attachments::StagedAttachments>,
     /// The profile's configured endpoints, which the settings view changes.
     pub(crate) settings: Arc<SqliteProviderSettingsRepository>,
     /// The operating system's credential store.
@@ -232,8 +234,22 @@ impl AppState {
             // So a task is given the project's own instructions, read as it
             // starts (ADR 0052).
             .with_project_sources(Arc::new(tramontana_platform::ProjectFiles::new(Arc::new(
-                SqliteProjectRepository::new(database),
+                SqliteProjectRepository::new(database.clone()),
             ))))
+            // So chats can be told what the person wrote about themselves
+            // (ADR 0061).
+            .with_personal(Arc::new(
+                tramontana_persistence::SqlitePersonalRepository::new(database.clone()),
+            ))
+            // So schedules run by the computer's local time (ADR 0063).
+            .with_schedules(
+                Arc::new(tramontana_persistence::SqliteScheduleRepository::new(
+                    database.clone(),
+                )),
+                Arc::new(tramontana_platform::SystemLocalClock::new()),
+            )
+            // So PDF and Word files can be attached (ADR 0062).
+            .with_document_reader(Arc::new(tramontana_adapters_documents::Documents::new()))
             .with_execution_guard(lease);
         service
             .recover()
@@ -248,6 +264,7 @@ impl AppState {
             browser,
             app_settings,
             staged_bundle: Arc::new(std::sync::Mutex::new(None)),
+            staged_attachments: Arc::default(),
             settings,
             vault,
         })

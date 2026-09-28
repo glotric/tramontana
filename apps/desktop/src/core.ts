@@ -2,6 +2,13 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   ApprovalDecisionKind,
+  NewSchedule,
+  PersonalDetails,
+  PersonalProfile,
+  Schedule,
+  ScheduleView,
+  SearchResults,
+  TranscriptOptions,
   ApprovalRequest,
   ConversationRecord,
   CoreInfo,
@@ -61,17 +68,26 @@ export async function inspectProject(projectId: string): Promise<ProjectInspecti
   return invoke<ProjectInspection>("inspect_project", { projectId });
 }
 
-/** Create a durable project conversation. */
+/**
+ * Create a durable conversation in a project, or a chat when no project is
+ * named: a conversation with no files, whose tasks are asked to answer
+ * (ADR 0057).
+ */
 export async function createConversation(
-  projectId: string,
+  projectId: string | undefined,
   title: string,
 ): Promise<ConversationRecord> {
-  return invoke<ConversationRecord>("create_conversation", { projectId, title });
+  return invoke<ConversationRecord>("create_conversation", {
+    projectId: projectId ?? null,
+    title,
+  });
 }
 
-/** List durable conversations in a project. */
-export async function listConversations(projectId: string): Promise<readonly ConversationRecord[]> {
-  return invoke<ConversationRecord[]>("list_conversations", { projectId });
+/** List durable conversations in a project, or the chats when none is named. */
+export async function listConversations(
+  projectId: string | undefined,
+): Promise<readonly ConversationRecord[]> {
+  return invoke<ConversationRecord[]>("list_conversations", { projectId: projectId ?? null });
 }
 
 /** List task records, optionally within one conversation. */
@@ -400,6 +416,11 @@ export interface TaskOptions {
    * order named. A skill grants nothing.
    */
   readonly skills?: readonly string[];
+  /**
+   * Files picked with {@link chooseAttachments} for this message, by token
+   * (ADR 0058). Their text is given to the model before the goal.
+   */
+  readonly attachments?: readonly string[];
 }
 
 /**
@@ -433,6 +454,7 @@ export async function startTask(
             routingMode: options.routingMode,
             worker: options.worker ?? null,
             skills: options.skills === undefined ? null : [...options.skills],
+            attachments: options.attachments === undefined ? null : [...options.attachments],
           },
     channel,
   });
@@ -689,4 +711,110 @@ export function asErrorEnvelope(error: unknown): ErrorEnvelope | undefined {
   return typeof candidate.code === "string" && typeof candidate.message === "string"
     ? (candidate as ErrorEnvelope)
     : undefined;
+}
+
+/** A file picked for the next message, held by the desktop until it is sent. */
+export interface StagedAttachment {
+  readonly token: string;
+  readonly name: string;
+  readonly byteCount: number;
+}
+
+/**
+ * Pick files to attach to the next message (ADR 0058). The desktop reads
+ * and holds them; the window only ever sees their names and sizes. Empty when
+ * the person cancels.
+ */
+export async function chooseAttachments(): Promise<readonly StagedAttachment[]> {
+  return invoke<StagedAttachment[]>("choose_attachments");
+}
+
+/** Stop holding a picked file the person removed before sending. */
+export async function discardAttachment(token: string): Promise<void> {
+  return invoke("discard_attachment", { token });
+}
+
+/** Give a conversation a new title (ADR 0059). */
+export async function renameConversation(
+  conversationId: string,
+  title: string,
+): Promise<ConversationRecord> {
+  return invoke<ConversationRecord>("rename_conversation", { conversationId, title });
+}
+
+/**
+ * Delete a conversation and every task, event and checkpoint recorded under
+ * it (ADR 0059). Ask the person first: this cannot be undone.
+ */
+export async function deleteConversation(conversationId: string): Promise<void> {
+  return invoke("delete_conversation", { conversationId });
+}
+
+/** Search conversation titles, what was asked in them, and projects (ADR 0059). */
+export async function search(query: string): Promise<SearchResults> {
+  return invoke<SearchResults>("search", { query });
+}
+
+/** The transcript a share would save, to read first (ADR 0060). */
+export async function previewTranscript(
+  conversationId: string,
+  options: TranscriptOptions,
+): Promise<string> {
+  return invoke<string>("preview_transcript", { conversationId, options });
+}
+
+/**
+ * Save a conversation's transcript where the person chooses (ADR 0060).
+ * Resolves with where it was written, or `undefined` when they cancel.
+ */
+export async function saveTranscript(
+  conversationId: string,
+  options: TranscriptOptions,
+): Promise<string | undefined> {
+  return (await invoke<string | null>("save_transcript", { conversationId, options })) ?? undefined;
+}
+
+/** The person's profile and memory notes (ADR 0061). */
+export async function personalProfile(): Promise<PersonalProfile> {
+  return invoke<PersonalProfile>("personal_profile");
+}
+
+/** Change what chats are told about the person. */
+export async function updatePersonal(details: PersonalDetails): Promise<PersonalProfile> {
+  return invoke<PersonalProfile>("update_personal", { details });
+}
+
+/** Add a note for chats to remember. */
+export async function remember(text: string): Promise<PersonalProfile> {
+  return invoke<PersonalProfile>("remember", { text });
+}
+
+/** Forget one note. */
+export async function forget(noteId: string): Promise<PersonalProfile> {
+  return invoke<PersonalProfile>("forget", { noteId });
+}
+
+/** Every schedule, with when it runs next (ADR 0063). */
+export async function listSchedules(): Promise<readonly ScheduleView[]> {
+  return invoke<ScheduleView[]>("list_schedules");
+}
+
+/** Create a schedule and the conversation its runs are turns in. */
+export async function createSchedule(schedule: NewSchedule): Promise<ScheduleView> {
+  return invoke<ScheduleView>("create_schedule", { schedule });
+}
+
+/** Turn a schedule on or off. */
+export async function setScheduleEnabled(scheduleId: string, enabled: boolean): Promise<Schedule> {
+  return invoke<Schedule>("set_schedule_enabled", { scheduleId, enabled });
+}
+
+/** Delete a schedule; its conversation is kept. */
+export async function deleteSchedule(scheduleId: string): Promise<void> {
+  return invoke("delete_schedule", { scheduleId });
+}
+
+/** Run a schedule now. */
+export async function runScheduleNow(scheduleId: string): Promise<string> {
+  return invoke<string>("run_schedule_now", { scheduleId });
 }

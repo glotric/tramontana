@@ -196,6 +196,15 @@ impl EventStore for SqliteEventStore {
 
         Ok(u64::try_from(sequence).unwrap_or(0))
     }
+
+    async fn delete_stream(&self, task_id: &TaskId) -> Result<(), EventStoreError> {
+        sqlx::query("DELETE FROM task_event WHERE task_id = ?")
+            .bind(task_id.as_str())
+            .execute(self.database.pool())
+            .await
+            .map_err(|error| unavailable(&error))
+            .map(|_| ())
+    }
 }
 
 /// Parse a bare enum value that was stored without its JSON quotes.

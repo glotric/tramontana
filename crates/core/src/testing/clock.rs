@@ -87,3 +87,41 @@ mod tests {
         );
     }
 }
+
+/// A local clock that reads whatever the test sets (ADR 0063).
+#[derive(Debug)]
+pub struct FakeLocalClock {
+    now: std::sync::Mutex<crate::contracts::LocalDateTime>,
+}
+
+impl FakeLocalClock {
+    /// A clock reading `now` until it is set again.
+    #[must_use]
+    pub fn at(now: crate::contracts::LocalDateTime) -> Self {
+        Self {
+            now: std::sync::Mutex::new(now),
+        }
+    }
+
+    /// Move the clock to `now`.
+    pub fn set(&self, now: crate::contracts::LocalDateTime) {
+        if let Ok(mut current) = self.now.lock() {
+            *current = now;
+        }
+    }
+}
+
+impl crate::ports::LocalClock for FakeLocalClock {
+    fn local_now(&self) -> crate::contracts::LocalDateTime {
+        self.now.lock().map_or(
+            crate::contracts::LocalDateTime {
+                year: 1970,
+                month: 1,
+                day: 1,
+                hour: 0,
+                minute: 0,
+            },
+            |now| *now,
+        )
+    }
+}

@@ -8,6 +8,7 @@
 
 mod approval;
 mod apps;
+mod attachments;
 mod bundles;
 mod commands;
 mod settings;
@@ -47,6 +48,18 @@ pub fn run() {
                 app.handle().clone(),
             ))
             .map_err(std::io::Error::other)?;
+            // Scheduled tasks run while the application is open, never after
+            // (ADR 0063): once now, to catch up, then every 30 seconds.
+            let service = std::sync::Arc::clone(&state.service);
+            tauri::async_runtime::spawn(async move {
+                let mut ticks = tokio::time::interval(std::time::Duration::from_secs(30));
+                loop {
+                    ticks.tick().await;
+                    if let Err(error) = service.run_due_schedules().await {
+                        tracing::warn!(code = ?error.code, "scheduled tasks could not be checked");
+                    }
+                }
+            });
             app.manage(state);
             Ok(())
         })
@@ -76,6 +89,22 @@ pub fn run() {
             commands::pending_approvals,
             commands::project_changes,
             commands::export_bundle,
+            commands::choose_attachments,
+            commands::rename_conversation,
+            commands::delete_conversation,
+            commands::search,
+            commands::list_schedules,
+            commands::create_schedule,
+            commands::set_schedule_enabled,
+            commands::delete_schedule,
+            commands::run_schedule_now,
+            commands::personal_profile,
+            commands::update_personal,
+            commands::remember,
+            commands::forget,
+            commands::preview_transcript,
+            commands::save_transcript,
+            commands::discard_attachment,
             commands::inspect_bundle,
             commands::import_staged_bundle,
             commands::list_configured_endpoints,

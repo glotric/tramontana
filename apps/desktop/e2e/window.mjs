@@ -135,7 +135,9 @@ async function main() {
     await shows("//footer", "contracts v1");
     step("the window reached the core over IPC, and the contract versions agree");
 
-    // 2. The profile the CLI wrote is the one the window reads.
+    // 2. The profile the CLI wrote is the one the window reads. Projects are
+    // Agent mode's; the window opens in Chat (ADR 0057).
+    await click(button("Agent"));
     await until("the seeded project", () => find(button("repository")));
     await click(button("repository"));
     step("the project the CLI opened is listed, and opens");

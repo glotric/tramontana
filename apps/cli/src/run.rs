@@ -101,6 +101,13 @@ pub(crate) struct TaskArgs {
     #[arg(long, value_name = "WORKER")]
     worker: Option<String>,
 
+    /// Attach a file to this message: a text file's contents, or the text of
+    /// a PDF or Word (.docx) document, are given to the model before the
+    /// goal, as data (ADRs 0058 and 0062). Repeat for more files, up to five. Only the file's text is kept, in the task's record; the task
+    /// is given no access to its folder.
+    #[arg(long = "attach", value_name = "PATH")]
+    attach: Vec<std::path::PathBuf>,
+
     /// Emit each event as a JSON line instead of a formatted table.
     #[arg(long)]
     json: bool,
@@ -239,7 +246,7 @@ pub(crate) async fn execute(mut args: TaskArgs) -> ExitCode {
 
 /// A routing mode, as `--mode` spells it.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum ModeArg {
+pub(crate) enum ModeArg {
     /// Models run on this device, and nothing is sent to a cloud model.
     LocalOnly,
     /// A model is chosen; anything sent to a cloud model is asked about first.
@@ -310,6 +317,19 @@ async fn run(args: TaskArgs) -> ExitCode {
         suggest(&service, conversation_id.as_ref(), &args.goal).await;
     }
 
+    // Read here, where the person named the file; whether it may be
+    // attached is core's to say (ADR 0058).
+    let mut attachments = Vec::with_capacity(args.attach.len());
+    for path in &args.attach {
+        match read_attachment(path) {
+            Ok(input) => attachments.push(input),
+            Err(message) => {
+                eprintln!("error: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     let task_id = match service
         .start_task(StartTaskRequest {
             conversation_id,
@@ -317,6 +337,7 @@ async fn run(args: TaskArgs) -> ExitCode {
             routing_mode: args.mode.map(Into::into),
             worker: args.worker.clone(),
             selection: Some(selection),
+            attachments,
             ..Default::default()
         })
         .await
@@ -712,4 +733,27 @@ async fn suggest(
         suggested.join(", ")
     );
     eprintln!("      this task uses none; pass --skill-id <ID> to use one");
+}
+
+/// Read a file named with `--attach`, at most one byte more than an
+/// attachment may hold, so an oversized file is refused without being read
+/// whole.
+fn read_attachment(
+    path: &std::path::Path,
+) -> Result<tramontana_core::services::AttachmentInput, String> {
+    use std::io::Read;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("{} has no file name", path.display()))?
+        .to_owned();
+    let limit = u64::try_from(
+        tramontana_core::services::ATTACHMENT_BYTES.max(tramontana_core::services::DOCUMENT_BYTES),
+    )
+    .unwrap_or(u64::MAX);
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|file| file.take(limit.saturating_add(1)).read_to_end(&mut bytes))
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    Ok(tramontana_core::services::AttachmentInput { name, bytes })
 }

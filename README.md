@@ -119,7 +119,7 @@ only once you know the model makes
 native tool calls. A new endpoint is used the next time Tramontana starts:
 quit and run `pnpm dev` again.
 
-**2. Open a project.** **+ Open project** and choose a folder, ideally a Git
+**2. Open a project.** **Open project** and choose a folder, ideally a Git
 repository. To let a task run the project's own commands, such as its
 tests, declare them as recipes in `.tramontana/project.md`:
 
@@ -180,6 +180,8 @@ pnpm dev:cli project open /path/to/project
 pnpm dev:cli task "Say hello"   # a read-only task
 pnpm dev:cli task "Read the README and summarize it" --allow-writes --browse \
     --worker builtin.reference@<ENDPOINT>/<MODEL> --skill-id <SKILL>
+pnpm dev:cli conversation create "Questions"   # a chat: no project, no files
+pnpm dev:cli task "Summarize this" --conversation-id <CHAT> --attach notes.md
 pnpm check:fast                 # format, contracts, lint, types, tests
 pnpm check                      # the above plus the release build
 ```

@@ -28,6 +28,7 @@ tramontana-adapters-mcp = { workspace = true }
 tramontana-adapters-tools = { workspace = true }
 tramontana-persistence = { workspace = true }
 tramontana-platform = { workspace = true }
+tramontana-adapters-documents = { workspace = true }
 tauri = { version = "2.11.5", features = [] }
 tauri-plugin-dialog = { workspace = true }
 async-trait = { workspace = true }

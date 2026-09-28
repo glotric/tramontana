@@ -27,11 +27,13 @@ mod ids;
 mod message;
 mod model;
 mod permission;
+mod personal;
 mod primitives;
 mod provider;
 mod records;
 mod release;
 mod routing;
+mod schedule;
 mod task;
 mod time;
 
@@ -62,7 +64,7 @@ pub use descriptor::{
 pub use error::{ErrorCode, ErrorEnvelope};
 pub use event::{
     CancellationOrigin, EventDraft, EventEnvelope, EventPayload, PermissionOrigin, StreamFrame,
-    TaskEventKind, TaskUpdate,
+    TaskAttachment, TaskEventKind, TaskUpdate,
 };
 pub use export::{
     BUNDLE_MAJOR_VERSION, BUNDLE_MINOR_VERSION, BundleEntry, ExportBundle, ExportManifest,
@@ -83,17 +85,22 @@ pub use permission::{
     Capability, CapabilityScope, GrantKind, ProjectGrant,
 };
 pub(crate) use permission::{AuthorizedTarget, GrantedAuthority};
+pub use personal::{AnswerStyle, MemoryNote, PersonalDetails, PersonalProfile};
 pub use primitives::{
     DataClass, ExecutionLocation, RiskClass, RoutingMode, SecretRef, SecretStore, SideEffect,
     Visibility,
 };
 pub use provider::{ProviderConfig, ProviderEndpoint, RuntimeProvenance, is_loopback_url};
-pub use records::{ConversationRecord, ProjectRecord, TaskRecord};
+pub use records::{
+    ConversationHit, ConversationRecord, ProjectRecord, SearchField, SearchResults, TaskRecord,
+    TranscriptFormat, TranscriptOptions,
+};
 pub use release::{
     ContextReleasePlan, ReleaseAuthorization, ReleaseExclusion, ReleasedCategory,
     reason as release_reason,
 };
 pub use routing::{RoutedModel, RoutingDecision, RoutingFallback, reason as routing_reason};
+pub use schedule::{Cadence, LocalDateTime, NewSchedule, Schedule, ScheduleView, Weekday};
 pub use task::{InvalidTransition, TaskSnapshot, TaskState};
 pub use time::Timestamp;
 

@@ -150,10 +150,11 @@ pub(crate) async fn inspect_project(
     })
 }
 
-/// Create a durable conversation in a project.
+/// Create a durable conversation in a project, or a chat that belongs to
+/// none (ADR 0057).
 #[tauri::command]
 pub(crate) async fn create_conversation(
-    project_id: ProjectId,
+    project_id: Option<ProjectId>,
     title: String,
     state: State<'_, AppState>,
 ) -> Result<ConversationRecord, ErrorEnvelope> {
@@ -166,19 +167,270 @@ pub(crate) async fn create_conversation(
             "a conversation title may be at most {MAX_TITLE_BYTES} bytes"
         )));
     }
+    state.service.create_conversation(project_id, title).await
+}
+
+/// List durable conversations for one project, or the chats that belong to
+/// none when no project is named (ADR 0057).
+#[tauri::command]
+pub(crate) async fn list_conversations(
+    project_id: Option<ProjectId>,
+    state: State<'_, AppState>,
+) -> Result<Vec<ConversationRecord>, ErrorEnvelope> {
+    state.service.list_conversations(project_id.as_ref()).await
+}
+
+/// Give a conversation a new title (ADR 0059).
+///
+/// # Errors
+///
+/// Whatever the service reports: an empty or oversized title, or an unknown
+/// conversation.
+#[tauri::command]
+pub(crate) async fn rename_conversation(
+    conversation_id: ConversationId,
+    title: String,
+    state: State<'_, AppState>,
+) -> Result<ConversationRecord, ErrorEnvelope> {
     state
         .service
-        .create_conversation(Some(project_id), title)
+        .rename_conversation(&conversation_id, &title)
         .await
 }
 
-/// List durable conversations for one project.
+/// Delete a conversation and everything recorded under it (ADR 0059). The
+/// window asks the person first; this does not.
+///
+/// # Errors
+///
+/// Whatever the service reports, including a conflict while one of its tasks
+/// runs.
 #[tauri::command]
-pub(crate) async fn list_conversations(
-    project_id: ProjectId,
+pub(crate) async fn delete_conversation(
+    conversation_id: ConversationId,
     state: State<'_, AppState>,
-) -> Result<Vec<ConversationRecord>, ErrorEnvelope> {
-    state.service.list_conversations(Some(&project_id)).await
+) -> Result<(), ErrorEnvelope> {
+    state.service.delete_conversation(&conversation_id).await
+}
+
+/// The transcript a share would save, for the person to read first
+/// (ADR 0060).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn preview_transcript(
+    conversation_id: ConversationId,
+    options: tramontana_core::contracts::TranscriptOptions,
+    state: State<'_, AppState>,
+) -> Result<String, ErrorEnvelope> {
+    state.service.transcript(&conversation_id, options).await
+}
+
+/// Save a conversation's transcript where the person chooses (ADR 0060).
+///
+/// The text is rendered again here from the record, never taken from the
+/// window. Returns where it was written, or `None` when the person cancels.
+///
+/// # Errors
+///
+/// Whatever the service reports, or [`ErrorCode::Internal`] when the file
+/// cannot be written.
+#[tauri::command]
+pub(crate) async fn save_transcript(
+    conversation_id: ConversationId,
+    options: tramontana_core::contracts::TranscriptOptions,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, ErrorEnvelope> {
+    let conversation = state.service.get_conversation(&conversation_id).await?;
+    let text = state.service.transcript(&conversation_id, options).await?;
+    let extension = match options.format {
+        tramontana_core::contracts::TranscriptFormat::Markdown => "md",
+        tramontana_core::contracts::TranscriptFormat::Html => "html",
+    };
+    let stem: String = conversation
+        .title
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || character == ' ' || character == '-' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(80)
+        .collect();
+    let stem = if stem.is_empty() {
+        "Conversation".to_owned()
+    } else {
+        stem
+    };
+    let (send, receive) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Save the conversation")
+        .set_file_name(format!("{stem}.{extension}"))
+        .add_filter(
+            if extension == "md" {
+                "Markdown"
+            } else {
+                "Web page"
+            },
+            &[extension],
+        )
+        .save_file(move |selection| {
+            let _ = send.send(selection);
+        });
+    let Some(selection) = receive
+        .await
+        .map_err(|_| internal("the save dialog closed unexpectedly"))?
+    else {
+        return Ok(None);
+    };
+    let path = selection
+        .into_path()
+        .map_err(|_| invalid("the chosen place is not a local file"))?;
+    std::fs::write(&path, text)
+        .map_err(|_| internal("the conversation could not be saved there"))?;
+    Ok(Some(path.display().to_string()))
+}
+
+/// Every schedule, with when it runs next (ADR 0063).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn list_schedules(
+    state: State<'_, AppState>,
+) -> Result<Vec<tramontana_core::contracts::ScheduleView>, ErrorEnvelope> {
+    state.service.list_schedules().await
+}
+
+/// Create a schedule and its conversation (ADR 0063).
+///
+/// # Errors
+///
+/// Whatever the service reports, such as an empty goal.
+#[tauri::command]
+pub(crate) async fn create_schedule(
+    schedule: tramontana_core::contracts::NewSchedule,
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::ScheduleView, ErrorEnvelope> {
+    state.service.create_schedule(&schedule).await
+}
+
+/// Turn a schedule on or off (ADR 0063).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn set_schedule_enabled(
+    schedule_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::Schedule, ErrorEnvelope> {
+    state
+        .service
+        .set_schedule_enabled(&schedule_id, enabled)
+        .await
+}
+
+/// Delete a schedule, keeping its conversation (ADR 0063).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn delete_schedule(
+    schedule_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    state.service.delete_schedule(&schedule_id).await
+}
+
+/// Run a schedule now (ADR 0063).
+///
+/// # Errors
+///
+/// Whatever the service reports, such as its previous run still going.
+#[tauri::command]
+pub(crate) async fn run_schedule_now(
+    schedule_id: String,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ErrorEnvelope> {
+    state.service.run_schedule_now(&schedule_id).await
+}
+
+/// The person's profile and memory notes (ADR 0061).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn personal_profile(
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::PersonalProfile, ErrorEnvelope> {
+    state.service.personal_profile().await
+}
+
+/// Change what chats are told about the person (ADR 0061).
+///
+/// # Errors
+///
+/// Whatever the service reports, such as a field that is too long.
+#[tauri::command]
+pub(crate) async fn update_personal(
+    details: tramontana_core::contracts::PersonalDetails,
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::PersonalProfile, ErrorEnvelope> {
+    state.service.update_personal(&details).await
+}
+
+/// Add a note for chats to remember (ADR 0061).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn remember(
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::PersonalProfile, ErrorEnvelope> {
+    state.service.remember(&text).await
+}
+
+/// Forget one note (ADR 0061).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn forget(
+    note_id: String,
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::PersonalProfile, ErrorEnvelope> {
+    state.service.forget(&note_id).await
+}
+
+/// Search conversation titles, what was asked in them, and project names
+/// and folders (ADR 0059).
+///
+/// # Errors
+///
+/// Whatever the service reports, such as an empty query.
+#[tauri::command]
+pub(crate) async fn search(
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::SearchResults, ErrorEnvelope> {
+    state.service.search(&query).await
 }
 
 /// List durable tasks, optionally narrowed to a conversation.
@@ -221,6 +473,9 @@ pub(crate) struct TaskChoices {
     pub(crate) worker: Option<String>,
     /// The project's skills this task uses, by declared id.
     pub(crate) skills: Option<Vec<String>>,
+    /// Files picked with [`choose_attachments`] for this message, by token
+    /// (ADR 0058).
+    pub(crate) attachments: Option<Vec<String>>,
 }
 
 /// Start a task and stream its updates over `channel`.
@@ -281,6 +536,10 @@ where
     // task selects, so resolving the project here first would only write an
     // inventory the task is about to replace (ADRs 0052 and 0053).
     let service = state.service.clone();
+    let attachments = match &choices.attachments {
+        Some(tokens) => state.staged_attachments.take(tokens)?,
+        None => Vec::new(),
+    };
     let task_id = service
         .start_task(StartTaskRequest {
             conversation_id,
@@ -292,6 +551,7 @@ where
                 skill_ids,
                 ..ConfigurationSelection::default()
             }),
+            attachments,
         })
         .await?;
 
@@ -549,6 +809,67 @@ pub(crate) async fn import_staged_bundle(
         ));
     };
     bundles::import_from(&state.service, &directory).await
+}
+
+/// Pick files to attach to the next message (ADR 0058).
+///
+/// Each one is read here, checked as core would check it, and held under a
+/// random token; the window is told only the token, the name and the size.
+/// Empty when the person cancels.
+///
+/// # Errors
+///
+/// [`ErrorCode::InvalidRequest`] naming a file that cannot be attached, in
+/// which case none of the chosen files is held.
+#[tauri::command]
+pub(crate) async fn choose_attachments(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::attachments::StagedAttachmentView>, ErrorEnvelope> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Attach files")
+        .pick_files(move |selection| {
+            let _ = send.send(selection);
+        });
+    let selection = receive
+        .await
+        .map_err(|_| internal("the file picker closed unexpectedly"))?
+        .unwrap_or_default();
+    let mut read = Vec::with_capacity(selection.len());
+    for picked in selection {
+        let path = picked
+            .into_path()
+            .map_err(|_| invalid("a selected file is not a local file"))?;
+        let input = crate::attachments::read_picked(&path)?;
+        // Asked now, so a file that cannot be attached is refused when it is
+        // picked rather than when the message is sent (ADRs 0058 and 0062).
+        state
+            .service
+            .accept_attachments(vec![input.clone()])
+            .await?;
+        read.push(input);
+    }
+    let ids = UuidIdSource::new();
+    Ok(read
+        .into_iter()
+        .map(|input| {
+            state
+                .staged_attachments
+                .stage(ids.next("attachment"), input)
+        })
+        .collect())
+}
+
+/// Stop holding a picked file the person removed before sending.
+#[tauri::command]
+pub(crate) async fn discard_attachment(
+    token: String,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    state.staged_attachments.discard(&token);
+    Ok(())
 }
 
 /// Ask the native picker for a file; `None` when the person cancels.

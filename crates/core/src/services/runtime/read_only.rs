@@ -77,15 +77,19 @@ impl BrokeredHost {
         CanonicalModelHistory::select(&task, initial, &events, &[])?;
         // Under Local Only, an App that is not on this computer is not
         // offered: its every call sends the task's data to it (ADR 0050).
+        //
+        // A task with no project is offered only the tools that need none:
+        // its Apps' and the browser's. The empty scope would refuse the rest
+        // anyway; this stops the model being told it could call them
+        // (ADR 0057). With none left, the model is asked to answer.
+        let projectless = self.scope.project_id.is_none();
         let names: Vec<_> = tools
             .iter()
             .map(String::as_str)
             .filter(|name| !self.reaches_off_device_under_local_only(name))
+            .filter(|name| !projectless || self.needs_no_project(name))
             .collect();
         let catalogue = ModelToolCatalogue::select(&self.tools.registry, &names, admission)?;
-        if names.is_empty() {
-            return Err(error(ErrorCode::CapabilityUnsupported));
-        }
 
         // A completed answer can outlive the driver before its terminal event.
         // Use its canonical message, never call the model again in that window.
@@ -178,6 +182,11 @@ impl BrokeredHost {
             self.journal.next_id("context"),
             catalogue,
             self.instructions.as_deref(),
+            crate::services::ConversationContext {
+                earlier: &self.earlier,
+                attachments: &self.attachments,
+                personal: self.personal.as_deref(),
+            },
         )?;
         input.request.limits.max_output_tokens = Some(u64::from(limits.turn_tokens));
         input.request.limits.deadline_ms = limits.turn_ms;
@@ -213,10 +222,14 @@ impl BrokeredHost {
             ));
         }
         // Explicit capability facts, never provider or model name heuristics.
+        // A turn offered no tools is a chat, which any model can answer
+        // (ADR 0057); only a turn offering tools needs one that calls them.
+        let offers_tools = !input.request.tools.is_empty();
         if !snapshot.models.iter().any(|model| {
-            model
-                .capabilities
-                .contains(&crate::contracts::ModelCapability::ToolCalls)
+            (!offers_tools
+                || model
+                    .capabilities
+                    .contains(&crate::contracts::ModelCapability::ToolCalls))
                 && (self.routing_mode != RoutingMode::LocalOnly
                     || model.location == crate::contracts::ModelLocation::Local)
         }) {

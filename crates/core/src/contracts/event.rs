@@ -22,6 +22,29 @@ use super::{
     TaskState, Timestamp, Visibility,
 };
 
+/// A file the person attached to a message (ADR 0058).
+///
+/// Held in the task's own record, beside its goal: the text is what the model
+/// is given, already redacted, and the hash names that text rather than the
+/// original bytes, so the record describes only what may be released.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskAttachment {
+    /// The file's name, without any folder.
+    pub name: String,
+    /// What kind of text it is, such as `text/markdown`.
+    pub media_type: String,
+    /// Its redacted text.
+    pub text: String,
+    /// The content hash of `text`.
+    pub content_hash: String,
+    /// The length of `text` in bytes.
+    pub byte_count: u64,
+    /// What was removed from it at ingestion.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub redactions: Vec<String>,
+}
+
 /// What a durable event is about.
 ///
 /// `#[non_exhaustive]` and the `Unsupported` fallback in
@@ -112,6 +135,16 @@ pub enum EventPayload {
         /// the profile's mode (ADR 0031).
         #[serde(skip_serializing_if = "Option::is_none", default)]
         routing_mode: Option<RoutingMode>,
+        /// Files the person attached to this message, as their redacted text
+        /// (ADR 0058). Absent when there were none, and from every task
+        /// recorded before attachments were.
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        attachments: Vec<TaskAttachment>,
+        /// What the person's profile told this task's model about them, as
+        /// it was when the task started (ADR 0061). Absent when nothing was
+        /// told: every task with a project, and every chat before profiles.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        personal: Option<String>,
     },
     /// The task moved between states.
     #[serde(rename_all = "camelCase")]

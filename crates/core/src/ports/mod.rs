@@ -9,6 +9,7 @@
 //! `ContextProvider` arrive with the milestones that need them.
 
 mod clock;
+mod document;
 mod event_store;
 mod ids;
 mod model;
@@ -20,7 +21,8 @@ mod secret;
 mod tool;
 mod worker;
 
-pub use clock::Clock;
+pub use clock::{Clock, LocalClock};
+pub use document::{DocumentError, DocumentReader};
 pub use event_store::{EventStore, EventStoreError};
 pub use ids::IdSource;
 pub use model::ModelProvider;
@@ -32,7 +34,8 @@ pub use project_sources::ProjectSourceReader;
 pub use read_only::{ReadOnlyLimits, ReadOnlyTurn, TOOL_RUN_LIMIT, ToolAdmission};
 pub use repository::{
     AppSettingsRepository, CheckpointRepository, ConfigurationRepository, ConversationRepository,
-    ProjectRepository, ProviderSettingsRepository, RepositoryError, TaskRepository,
+    PersonalRepository, ProjectRepository, ProviderSettingsRepository, RepositoryError,
+    ScheduleRepository, TaskRepository,
 };
 pub use secret::{SecretResolver, SecretVault};
 pub use tool::{ToolInvocation, ToolOutcome, ToolProvider, ToolTarget};

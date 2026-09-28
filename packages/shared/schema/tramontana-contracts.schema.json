@@ -57,6 +57,26 @@
       ],
       "type": "object"
     },
+    "AnswerStyle": {
+      "description": "How answers should be written.",
+      "oneOf": [
+        {
+          "const": "quick",
+          "description": "Short answers, as fast as possible.",
+          "type": "string"
+        },
+        {
+          "const": "balanced",
+          "description": "Clear, complete answers for everyday work.",
+          "type": "string"
+        },
+        {
+          "const": "thorough",
+          "description": "Takes longer, and thinks things through.",
+          "type": "string"
+        }
+      ]
+    },
     "ApprovalDecisionKind": {
       "description": "What the user may choose when asked.",
       "oneOf": [
@@ -308,6 +328,103 @@
         "byteCount"
       ],
       "type": "object"
+    },
+    "Cadence": {
+      "description": "When a schedule runs, in local wall-clock time.",
+      "oneOf": [
+        {
+          "description": "Every day at a time.",
+          "properties": {
+            "hour": {
+              "description": "The hour, 0 to 23.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "daily",
+              "type": "string"
+            },
+            "minute": {
+              "description": "The minute, 0 to 59.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "hour",
+            "minute"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Monday to Friday at a time.",
+          "properties": {
+            "hour": {
+              "description": "The hour, 0 to 23.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "weekdays",
+              "type": "string"
+            },
+            "minute": {
+              "description": "The minute, 0 to 59.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "hour",
+            "minute"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One day a week at a time.",
+          "properties": {
+            "hour": {
+              "description": "The hour, 0 to 23.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "weekly",
+              "type": "string"
+            },
+            "minute": {
+              "description": "The minute, 0 to 59.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "weekday": {
+              "$ref": "#/$defs/Weekday",
+              "description": "The day."
+            }
+          },
+          "required": [
+            "kind",
+            "weekday",
+            "hour",
+            "minute"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "CancellationOrigin": {
       "description": "Who requested a cancellation.",
@@ -872,6 +989,32 @@
       ],
       "type": "object"
     },
+    "ConversationHit": {
+      "description": "A conversation a search found, and why (ADR 0059).",
+      "properties": {
+        "conversation": {
+          "$ref": "#/$defs/ConversationRecord",
+          "description": "The conversation."
+        },
+        "excerpt": {
+          "description": "The message that matched, when it was a message.",
+          "type": "string"
+        },
+        "matchedIn": {
+          "$ref": "#/$defs/SearchField",
+          "description": "Where the match was."
+        },
+        "projectName": {
+          "description": "The name of its project, when it belongs to one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation",
+        "matchedIn"
+      ],
+      "type": "object"
+    },
     "ConversationId": {
       "description": "A conversation within a project, or a projectless conversation.",
       "type": "string"
@@ -1272,6 +1415,13 @@
         {
           "description": "The task was created.",
           "properties": {
+            "attachments": {
+              "description": "Files the person attached to this message, as their redacted text\n(ADR 0058). Absent when there were none, and from every task\nrecorded before attachments were.",
+              "items": {
+                "$ref": "#/$defs/TaskAttachment"
+              },
+              "type": "array"
+            },
             "conversationId": {
               "$ref": "#/$defs/ConversationId",
               "description": "Conversation this task belongs to, when it has one."
@@ -1282,6 +1432,10 @@
             },
             "kind": {
               "const": "taskCreated",
+              "type": "string"
+            },
+            "personal": {
+              "description": "What the person's profile told this task's model about them, as\nit was when the task started (ADR 0061). Absent when nothing was\ntold: every task with a project, and every chat before profiles.",
               "type": "string"
             },
             "routingMode": {
@@ -2176,6 +2330,75 @@
       "description": "One tool invocation.",
       "type": "string"
     },
+    "LocalDateTime": {
+      "description": "A local wall-clock date and time, to the minute: what a person means by\n\"Friday at 15:00\" on this computer.",
+      "properties": {
+        "day": {
+          "description": "The day of the month, 1 to 31.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hour": {
+          "description": "The hour, 0 to 23.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minute": {
+          "description": "The minute, 0 to 59.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "month": {
+          "description": "The month, 1 to 12.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "year": {
+          "description": "The year.",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "year",
+        "month",
+        "day",
+        "hour",
+        "minute"
+      ],
+      "type": "object"
+    },
+    "MemoryNote": {
+      "description": "One thing the person asked Tramontana to remember.",
+      "properties": {
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it was added."
+        },
+        "noteId": {
+          "description": "Stable identifier.",
+          "type": "string"
+        },
+        "text": {
+          "description": "The note, redacted when it was saved.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "noteId",
+        "text",
+        "createdAt"
+      ],
+      "type": "object"
+    },
     "MessageId": {
       "description": "A durable message in a conversation.",
       "type": "string"
@@ -2679,6 +2902,38 @@
         }
       ]
     },
+    "NewSchedule": {
+      "description": "What a person fills in to create a schedule.",
+      "properties": {
+        "cadence": {
+          "$ref": "#/$defs/Cadence",
+          "description": "When it runs."
+        },
+        "goal": {
+          "description": "What each run is asked to do.",
+          "type": "string"
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId",
+          "description": "The project to work in; absent for a chat."
+        },
+        "routingMode": {
+          "$ref": "#/$defs/RoutingMode",
+          "description": "Where its models may run."
+        },
+        "title": {
+          "description": "What to call it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "goal",
+        "cadence",
+        "routingMode"
+      ],
+      "type": "object"
+    },
     "NormalizedMessage": {
       "description": "A durable, provider-neutral message.",
       "properties": {
@@ -2918,6 +3173,79 @@
           "type": "object"
         }
       ]
+    },
+    "PersonalDetails": {
+      "description": "The parts of the profile a person edits together.",
+      "properties": {
+        "about": {
+          "default": "",
+          "description": "About their work; empty clears it.",
+          "type": "string"
+        },
+        "answerStyle": {
+          "$ref": "#/$defs/AnswerStyle",
+          "description": "How answers should be written."
+        },
+        "memoryEnabled": {
+          "description": "Whether the notes are given to chats.",
+          "type": "boolean"
+        },
+        "name": {
+          "default": "",
+          "description": "What to call the person; empty clears it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "about",
+        "answerStyle",
+        "memoryEnabled"
+      ],
+      "type": "object"
+    },
+    "PersonalProfile": {
+      "description": "The person's profile: kept in the local profile, never in a project, and\ngiven only to chats (ADR 0061).",
+      "properties": {
+        "about": {
+          "description": "A sentence or two about their work.",
+          "type": "string"
+        },
+        "answerStyle": {
+          "$ref": "#/$defs/AnswerStyle",
+          "default": "balanced",
+          "description": "How answers should be written."
+        },
+        "memoryEnabled": {
+          "description": "Whether the notes are given to chats. Notes are kept either way.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "What to call the person.",
+          "type": "string"
+        },
+        "notes": {
+          "default": [],
+          "description": "The notes, oldest first.",
+          "items": {
+            "$ref": "#/$defs/MemoryNote"
+          },
+          "type": "array"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "answerStyle",
+        "memoryEnabled",
+        "notes"
+      ],
+      "type": "object"
     },
     "ProjectGrant": {
       "description": "A persistent, revocable grant.",
@@ -3347,6 +3675,146 @@
         }
       ]
     },
+    "Schedule": {
+      "description": "Regular work: a goal, where it runs, and when (ADR 0063).",
+      "properties": {
+        "cadence": {
+          "$ref": "#/$defs/Cadence",
+          "description": "When it runs."
+        },
+        "conversationId": {
+          "$ref": "#/$defs/ConversationId",
+          "description": "The conversation every run is a turn in."
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it was created."
+        },
+        "createdLocal": {
+          "$ref": "#/$defs/LocalDateTime",
+          "description": "When it was created, in local wall-clock time: no occurrence before\nthis runs."
+        },
+        "enabled": {
+          "description": "Whether it runs at all.",
+          "type": "boolean"
+        },
+        "goal": {
+          "description": "What each run is asked to do, redacted when saved.",
+          "type": "string"
+        },
+        "lastRun": {
+          "$ref": "#/$defs/LocalDateTime",
+          "description": "The occurrence it last ran for, or passed because a run was still\nunder way."
+        },
+        "lastTaskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "The task its last run started."
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId",
+          "description": "The project it works in; absent for a chat."
+        },
+        "routingMode": {
+          "$ref": "#/$defs/RoutingMode",
+          "description": "Where its models may run."
+        },
+        "scheduleId": {
+          "description": "Stable identifier.",
+          "type": "string"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "title": {
+          "description": "What the person calls it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "scheduleId",
+        "title",
+        "goal",
+        "conversationId",
+        "cadence",
+        "routingMode",
+        "enabled",
+        "createdAt",
+        "createdLocal"
+      ],
+      "type": "object"
+    },
+    "ScheduleView": {
+      "description": "A schedule, and when it runs next.",
+      "properties": {
+        "nextRun": {
+          "$ref": "#/$defs/LocalDateTime",
+          "description": "Its next occurrence after now, in local time; absent when it is off."
+        },
+        "schedule": {
+          "$ref": "#/$defs/Schedule",
+          "description": "The schedule."
+        }
+      },
+      "required": [
+        "schedule"
+      ],
+      "type": "object"
+    },
+    "SearchField": {
+      "description": "Where a search found what it was asked for (ADR 0059).",
+      "oneOf": [
+        {
+          "const": "title",
+          "description": "The conversation's title.",
+          "type": "string"
+        },
+        {
+          "const": "goal",
+          "description": "What was asked in one of its messages.",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "description": "The name or folder of the project it belongs to.",
+          "type": "string"
+        }
+      ]
+    },
+    "SearchResults": {
+      "description": "What a search of conversation titles and project metadata found\n(`PHASE_1_SPEC.md` §4.1, ADR 0059).",
+      "properties": {
+        "conversations": {
+          "description": "Matching conversations, newest first.",
+          "items": {
+            "$ref": "#/$defs/ConversationHit"
+          },
+          "type": "array"
+        },
+        "projects": {
+          "description": "Matching projects, by name or folder.",
+          "items": {
+            "$ref": "#/$defs/ProjectRecord"
+          },
+          "type": "array"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "conversations",
+        "projects"
+      ],
+      "type": "object"
+    },
     "SecretRef": {
       "description": "An opaque handle to a credential.\n\nThis is the only representation of a secret that may be persisted, logged,\nexported, or sent over IPC. `key` is an application-generated identifier\nand never carries any part of the value it refers to\n(`SECURITY_AND_PERMISSIONS.md` §7).",
       "properties": {
@@ -3447,6 +3915,48 @@
         "streamId",
         "offset",
         "text"
+      ],
+      "type": "object"
+    },
+    "TaskAttachment": {
+      "description": "A file the person attached to a message (ADR 0058).\n\nHeld in the task's own record, beside its goal: the text is what the model\nis given, already redacted, and the hash names that text rather than the\noriginal bytes, so the record describes only what may be released.",
+      "properties": {
+        "byteCount": {
+          "description": "The length of `text` in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "contentHash": {
+          "description": "The content hash of `text`.",
+          "type": "string"
+        },
+        "mediaType": {
+          "description": "What kind of text it is, such as `text/markdown`.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The file's name, without any folder.",
+          "type": "string"
+        },
+        "redactions": {
+          "description": "What was removed from it at ingestion.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "Its redacted text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "mediaType",
+        "text",
+        "contentHash",
+        "byteCount"
       ],
       "type": "object"
     },
@@ -3924,6 +4434,40 @@
       ],
       "type": "object"
     },
+    "TranscriptFormat": {
+      "description": "How a shared transcript is written (ADR 0060).",
+      "oneOf": [
+        {
+          "const": "markdown",
+          "description": "Markdown text.",
+          "type": "string"
+        },
+        {
+          "const": "html",
+          "description": "A self-contained HTML page with no scripts or external resources.",
+          "type": "string"
+        }
+      ]
+    },
+    "TranscriptOptions": {
+      "description": "What a shared transcript holds (ADR 0060).",
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/TranscriptFormat",
+          "description": "How it is written."
+        },
+        "includeAttachments": {
+          "default": false,
+          "description": "Whether attached files' text is included, not only their names.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "format",
+        "includeAttachments"
+      ],
+      "type": "object"
+    },
     "Usage": {
       "description": "Token counts for one request.",
       "properties": {
@@ -3965,6 +4509,46 @@
         {
           "const": "secret",
           "description": "Internal audit marker; never delivered to the user interface.",
+          "type": "string"
+        }
+      ]
+    },
+    "Weekday": {
+      "description": "A day of the week.",
+      "oneOf": [
+        {
+          "const": "monday",
+          "description": "Monday.",
+          "type": "string"
+        },
+        {
+          "const": "tuesday",
+          "description": "Tuesday.",
+          "type": "string"
+        },
+        {
+          "const": "wednesday",
+          "description": "Wednesday.",
+          "type": "string"
+        },
+        {
+          "const": "thursday",
+          "description": "Thursday.",
+          "type": "string"
+        },
+        {
+          "const": "friday",
+          "description": "Friday.",
+          "type": "string"
+        },
+        {
+          "const": "saturday",
+          "description": "Saturday.",
+          "type": "string"
+        },
+        {
+          "const": "sunday",
+          "description": "Sunday.",
           "type": "string"
         }
       ]

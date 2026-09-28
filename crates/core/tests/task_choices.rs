@@ -400,6 +400,7 @@ async fn a_resumed_task_keeps_the_worker_and_mode_it_started_with() {
             routing_mode: Some(RoutingMode::LocalOnly),
             worker: None,
             selection: None,
+            attachments: Vec::new(),
         })
         .await
         .unwrap();

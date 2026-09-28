@@ -18,6 +18,7 @@ use crate::contracts::{
 };
 use crate::ports::{AgentProvider, ModelProvider, WorkerHost, WorkerOutcome, WorkerRequest};
 use crate::ports::{Clock, PermissionQuery};
+use crate::services::EarlierTurns;
 use crate::services::PermissionManager;
 use crate::services::ToolRegistry;
 use crate::services::checkpoint::ResumePlan;
@@ -55,6 +56,13 @@ pub(crate) struct TaskDriver {
     /// could read them. Held apart from the configuration because the record
     /// names sources and the model needs their words (ADR 0052).
     instructions: ProjectInstructions,
+    /// The earlier turns of the task's conversation, chosen when it was
+    /// created and chosen again identically on resume (ADR 0057).
+    earlier: Arc<EarlierTurns>,
+    /// The files the person attached to this task's message (ADR 0058).
+    attachments: Arc<Vec<crate::contracts::TaskAttachment>>,
+    /// What the person's profile tells a chat's model (ADR 0061).
+    personal: Option<Arc<str>>,
     /// What was removed from the goal when the task was created.
     ///
     /// Carried rather than recomputed: the goal the driver receives is already
@@ -164,6 +172,9 @@ impl TaskDriver {
             routing_mode: RoutingMode::Automatic,
             configuration: None,
             instructions: ProjectInstructions::default(),
+            earlier: Arc::new(EarlierTurns::default()),
+            attachments: Arc::new(Vec::new()),
+            personal: None,
             goal_redactions: Vec::new(),
             checkpoint: None,
             handoff: None,
@@ -215,6 +226,27 @@ impl TaskDriver {
     /// Attach the text of the project-authored sources in force.
     pub(crate) fn with_instructions(mut self, instructions: ProjectInstructions) -> Self {
         self.instructions = instructions;
+        self
+    }
+
+    /// Give the task the earlier turns of its conversation (ADR 0057).
+    pub(crate) fn with_earlier_turns(mut self, earlier: EarlierTurns) -> Self {
+        self.earlier = Arc::new(earlier);
+        self
+    }
+
+    /// Give the task the files attached to its message (ADR 0058).
+    pub(crate) fn with_attachments(
+        mut self,
+        attachments: Vec<crate::contracts::TaskAttachment>,
+    ) -> Self {
+        self.attachments = Arc::new(attachments);
+        self
+    }
+
+    /// Tell the task's model what the person's profile says (ADR 0061).
+    pub(crate) fn with_personal(mut self, personal: Option<String>) -> Self {
+        self.personal = personal.map(Arc::from);
         self
     }
 
@@ -378,6 +410,9 @@ impl TaskDriver {
             context: context.clone(),
             model_gate: tokio::sync::Mutex::new(()),
             instructions: instructions.clone(),
+            earlier: Arc::clone(&self.earlier),
+            attachments: Arc::clone(&self.attachments),
+            personal: self.personal.clone(),
             routing_mode: self.routing_mode,
             scope: self.scope.clone(),
             tools: ToolBroker {
@@ -508,7 +543,7 @@ impl TaskDriver {
         goal: &str,
         instructions: Option<&ComposedInstructions>,
     ) -> Result<crate::contracts::ContextManifest, ErrorEnvelope> {
-        let manifest = assemble_context(
+        let assembled = assemble_context(
             self.journal.next_id("context"),
             self.journal.task_id().clone(),
             goal,
@@ -517,6 +552,38 @@ impl TaskDriver {
             instructions,
             self.clock.now(),
         );
+        // The earlier turns come first, then the attached files, as the
+        // model reads them (ADRs 0057 and 0058).
+        let manifest =
+            if self.earlier.is_empty() && self.attachments.is_empty() && self.personal.is_none() {
+                assembled
+            } else {
+                // The profile is personal data the person wrote (ADR 0061):
+                // sensitive, and named so a disclosure can say so.
+                let mut sources: Vec<_> = self
+                    .personal
+                    .iter()
+                    .map(|text| {
+                        crate::contracts::ContextSource::redacted(
+                            crate::services::PERSONAL_SOURCE_ID,
+                            crate::contracts::ContextCategory::Instruction,
+                            crate::contracts::DataClass::Sensitive,
+                            text,
+                            Vec::new(),
+                        )
+                    })
+                    .collect();
+                sources.extend(self.earlier.sources());
+                sources.extend(crate::services::attachment_sources(&self.attachments));
+                sources.extend(assembled.sources);
+                crate::contracts::ContextManifest::new(
+                    assembled.context_manifest_id,
+                    assembled.task_id,
+                    assembled.destination_class,
+                    sources,
+                    assembled.created_at,
+                )
+            };
 
         self.record(EventDraft::user(
             TaskEventKind::ContextPrepared,
@@ -753,6 +820,12 @@ struct BrokeredHost {
     context: Option<ContextManifest>,
     /// The project's own instructions, as every turn will send them.
     instructions: Option<Arc<ComposedInstructions>>,
+    /// The earlier turns of the conversation, as every turn will send them.
+    earlier: Arc<EarlierTurns>,
+    /// The files attached to the task's message, as every turn will send them.
+    attachments: Arc<Vec<crate::contracts::TaskAttachment>>,
+    /// What the person's profile tells a chat's model, as every turn sends it.
+    personal: Option<Arc<str>>,
     /// Serialize requests so approvals and model starts cannot overlap per host.
     model_gate: tokio::sync::Mutex<()>,
     /// The standing policy in force.

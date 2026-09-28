@@ -201,6 +201,24 @@ where
         .await
         .unwrap();
     assert_eq!(store.last_sequence(&task).await.unwrap(), 2);
+
+    // Deleting a stream removes that task's events and no other's, and a
+    // stream that holds nothing deletes without error (ADR 0059).
+    let store = build().await;
+    let kept = TaskId::new("task-kept");
+    store
+        .append(&task, 0, vec![event_at(&task, 1), event_at(&task, 2)])
+        .await
+        .unwrap();
+    store
+        .append(&kept, 0, vec![event_at(&kept, 1)])
+        .await
+        .unwrap();
+    store.delete_stream(&task).await.unwrap();
+    assert!(store.replay(&task, 0).await.unwrap().is_empty());
+    assert_eq!(store.last_sequence(&task).await.unwrap(), 0);
+    assert_eq!(store.replay(&kept, 0).await.unwrap().len(), 1);
+    store.delete_stream(&task).await.unwrap();
 }
 
 /// The tasks [`checkpoint_repository_contract`] writes checkpoints for.

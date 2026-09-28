@@ -123,6 +123,36 @@ impl ConversationRepository for InMemoryConversationRepository {
         record.archived_at = Some(at.clone());
         Ok(())
     }
+
+    async fn rename(
+        &self,
+        conversation_id: &ConversationId,
+        title: &str,
+    ) -> Result<(), RepositoryError> {
+        let mut conversations = lock(&self.conversations)?;
+        let record = conversations
+            .iter_mut()
+            .find(|record| record.conversation_id == *conversation_id)
+            .ok_or_else(|| RepositoryError::NotFound {
+                kind: "conversation",
+                id: conversation_id.to_string(),
+            })?;
+        title.clone_into(&mut record.title);
+        Ok(())
+    }
+
+    async fn delete(&self, conversation_id: &ConversationId) -> Result<(), RepositoryError> {
+        let mut conversations = lock(&self.conversations)?;
+        let before = conversations.len();
+        conversations.retain(|record| record.conversation_id != *conversation_id);
+        if conversations.len() == before {
+            return Err(RepositoryError::NotFound {
+                kind: "conversation",
+                id: conversation_id.to_string(),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Task rows held in memory, optionally backed by an event store.
@@ -162,6 +192,19 @@ impl InMemoryTaskRepository {
 
 #[async_trait]
 impl TaskRepository for InMemoryTaskRepository {
+    async fn delete(&self, task_id: &TaskId) -> Result<(), RepositoryError> {
+        let mut tasks = lock(&self.tasks)?;
+        let before = tasks.len();
+        tasks.retain(|record| record.task_id != *task_id);
+        if tasks.len() == before {
+            return Err(RepositoryError::NotFound {
+                kind: "task",
+                id: task_id.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     async fn create(&self, record: &TaskRecord) -> Result<(), RepositoryError> {
         lock(&self.tasks)?.push(record.clone());
         Ok(())
@@ -447,5 +490,80 @@ impl CheckpointRepository for InMemoryCheckpointRepository {
             .collect();
         found.sort_by_key(|checkpoint| checkpoint.event_sequence);
         Ok(found)
+    }
+}
+
+/// The person's profile, held in memory (ADR 0061).
+#[derive(Debug, Default)]
+pub struct InMemoryPersonalRepository {
+    profile: Mutex<Option<crate::contracts::PersonalProfile>>,
+}
+
+impl InMemoryPersonalRepository {
+    /// An empty store: loading gives the default profile.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl crate::ports::PersonalRepository for InMemoryPersonalRepository {
+    async fn load(&self) -> Result<crate::contracts::PersonalProfile, RepositoryError> {
+        Ok(lock(&self.profile)?.clone().unwrap_or_default())
+    }
+
+    async fn save(
+        &self,
+        profile: &crate::contracts::PersonalProfile,
+    ) -> Result<(), RepositoryError> {
+        *lock(&self.profile)? = Some(profile.clone());
+        Ok(())
+    }
+}
+
+/// Schedules, held in memory (ADR 0063).
+#[derive(Debug, Default)]
+pub struct InMemoryScheduleRepository {
+    schedules: Mutex<Vec<crate::contracts::Schedule>>,
+}
+
+impl InMemoryScheduleRepository {
+    /// An empty store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl crate::ports::ScheduleRepository for InMemoryScheduleRepository {
+    async fn list(&self) -> Result<Vec<crate::contracts::Schedule>, RepositoryError> {
+        Ok(lock(&self.schedules)?.clone())
+    }
+
+    async fn save(&self, schedule: &crate::contracts::Schedule) -> Result<(), RepositoryError> {
+        let mut schedules = lock(&self.schedules)?;
+        match schedules
+            .iter_mut()
+            .find(|kept| kept.schedule_id == schedule.schedule_id)
+        {
+            Some(kept) => *kept = schedule.clone(),
+            None => schedules.push(schedule.clone()),
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, schedule_id: &str) -> Result<(), RepositoryError> {
+        let mut schedules = lock(&self.schedules)?;
+        let before = schedules.len();
+        schedules.retain(|kept| kept.schedule_id != schedule_id);
+        if schedules.len() == before {
+            return Err(RepositoryError::NotFound {
+                kind: "schedule",
+                id: schedule_id.to_owned(),
+            });
+        }
+        Ok(())
     }
 }

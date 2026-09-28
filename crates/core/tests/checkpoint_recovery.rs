@@ -441,6 +441,8 @@ async fn startup_recovers_every_nonterminal_state_once_without_executing_any_wor
                     goal_summary: "Synthetic crashed task".into(),
                     conversation_id: None,
                     routing_mode: None,
+                    attachments: Vec::new(),
+                    personal: None,
                 },
                 TaskEventKind::TaskCreated,
                 &task,

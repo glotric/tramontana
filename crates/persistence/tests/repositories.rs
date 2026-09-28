@@ -184,6 +184,77 @@ async fn archiving_a_conversation_records_when_it_happened() {
 }
 
 #[tokio::test]
+async fn a_conversation_is_renamed_and_deleted_with_its_tasks_checkpoints_and_events() {
+    use tramontana_core::ports::CheckpointRepository;
+    use tramontana_core::testing::contract_suites::checkpoint_at;
+    use tramontana_persistence::SqliteCheckpointRepository;
+
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(&directory, "delete-conversation").await;
+    let conversations = SqliteConversationRepository::new(db.clone());
+    let tasks = SqliteTaskRepository::new(db.clone());
+    let events = SqliteEventStore::new(db.clone());
+    let checkpoints = SqliteCheckpointRepository::new(db.clone());
+
+    let mut kept_task = None;
+    for (conversation, task) in [("gone", "task-gone"), ("kept", "task-kept")] {
+        let conversation_id = ConversationId::new(conversation);
+        conversations
+            .create(&ConversationRecord::new(
+                conversation_id.clone(),
+                None,
+                conversation,
+                at(0),
+            ))
+            .await
+            .unwrap();
+        let task_id = TaskId::new(task);
+        tasks
+            .create(&TaskRecord::new(
+                task_id.clone(),
+                Some(conversation_id),
+                None,
+                "goal",
+                at(1),
+            ))
+            .await
+            .unwrap();
+        events
+            .append(&task_id, 0, vec![event_at(&task_id, 1)])
+            .await
+            .unwrap();
+        checkpoints.save(&checkpoint_at(&task_id, 1)).await.unwrap();
+        kept_task = Some(task_id);
+    }
+
+    let gone = ConversationId::new("gone");
+    conversations.rename(&gone, "Renamed").await.unwrap();
+    assert_eq!(conversations.get(&gone).await.unwrap().title, "Renamed");
+
+    let task = TaskId::new("task-gone");
+    tasks.delete(&task).await.unwrap();
+    events.delete_stream(&task).await.unwrap();
+    conversations.delete(&gone).await.unwrap();
+
+    assert!(matches!(
+        conversations.get(&gone).await.unwrap_err(),
+        RepositoryError::NotFound { .. }
+    ));
+    assert!(tasks.get(&task).await.is_err());
+    assert!(events.replay(&task, 0).await.unwrap().is_empty());
+    assert!(checkpoints.latest(&task).await.unwrap().is_none());
+    // The other conversation is untouched.
+    let kept = kept_task.unwrap();
+    assert!(tasks.get(&kept).await.is_ok());
+    assert_eq!(events.replay(&kept, 0).await.unwrap().len(), 1);
+    assert!(checkpoints.latest(&kept).await.unwrap().is_some());
+    assert!(matches!(
+        conversations.delete(&gone).await.unwrap_err(),
+        RepositoryError::NotFound { .. }
+    ));
+}
+
+#[tokio::test]
 async fn deleting_a_project_cascades_to_its_conversations() {
     // Foreign keys are only enforced if SQLite is told to; this is the test
     // that proves the pragma is actually on rather than merely declared.
@@ -429,6 +500,8 @@ async fn task_and_initial_events_commit_as_one_transaction() {
         goal_summary: "goal".to_owned(),
         conversation_id: None,
         routing_mode: None,
+        attachments: Vec::new(),
+        personal: None,
     };
     let error = tasks
         .create_with_initial_events(&record, &[event])
@@ -678,4 +751,113 @@ async fn provider_endpoints_round_trip_and_never_hold_a_credential() {
     assert!(settings.delete("anthropic").await.unwrap());
     assert!(!settings.delete("anthropic").await.unwrap());
     assert_eq!(settings.list().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_personal_profile_round_trips_with_its_notes_in_order() {
+    use tramontana_core::contracts::{AnswerStyle, MemoryNote, PersonalProfile};
+    use tramontana_core::ports::PersonalRepository;
+    use tramontana_persistence::SqlitePersonalRepository;
+
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(&directory, "personal").await;
+    let store = SqlitePersonalRepository::new(db.clone());
+
+    // Nothing saved yet: the default profile, not an error.
+    assert_eq!(store.load().await.unwrap(), PersonalProfile::default());
+
+    let mut profile = PersonalProfile {
+        name: Some("Gasper".into()),
+        about: Some("I plan crane maintenance.".into()),
+        answer_style: AnswerStyle::Thorough,
+        memory_enabled: false,
+        ..PersonalProfile::default()
+    };
+    for (index, text) in ["Site in Koper", "Prefers metric", "Team of six"]
+        .iter()
+        .enumerate()
+    {
+        profile.notes.push(MemoryNote {
+            note_id: format!("note-{}", 9 - index),
+            text: (*text).into(),
+            created_at: at(u32::try_from(index).unwrap()),
+        });
+    }
+    store.save(&profile).await.unwrap();
+    // Read back through a fresh handle, as after a restart.
+    assert_eq!(
+        SqlitePersonalRepository::new(db.clone())
+            .load()
+            .await
+            .unwrap(),
+        profile
+    );
+
+    // Saving again replaces, notes included.
+    profile.notes.remove(1);
+    profile.name = None;
+    store.save(&profile).await.unwrap();
+    let reloaded = store.load().await.unwrap();
+    assert_eq!(reloaded, profile);
+    assert_eq!(reloaded.notes.len(), 2);
+}
+
+#[tokio::test]
+async fn a_schedule_round_trips_and_is_replaced_and_deleted() {
+    use tramontana_core::contracts::{
+        Cadence, LocalDateTime, RoutingMode, SCHEMA_VERSION, Schedule, Weekday,
+    };
+    use tramontana_core::ports::ScheduleRepository;
+    use tramontana_persistence::SqliteScheduleRepository;
+
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(&directory, "schedules").await;
+    let store = SqliteScheduleRepository::new(db.clone());
+    let local = |day: u8| LocalDateTime {
+        year: 2026,
+        month: 9,
+        day,
+        hour: 15,
+        minute: 0,
+    };
+    let mut schedule = Schedule {
+        schema_version: SCHEMA_VERSION,
+        schedule_id: "schedule-1".into(),
+        title: "Weekly update".into(),
+        goal: "Summarize the week.".into(),
+        project_id: None,
+        conversation_id: ConversationId::new("conversation-1"),
+        cadence: Cadence::Weekly {
+            weekday: Weekday::Friday,
+            hour: 15,
+            minute: 0,
+        },
+        routing_mode: RoutingMode::LocalOnly,
+        enabled: true,
+        created_at: at(0),
+        created_local: local(28),
+        last_run: None,
+        last_task_id: None,
+    };
+    store.save(&schedule).await.unwrap();
+    assert_eq!(
+        SqliteScheduleRepository::new(db.clone())
+            .list()
+            .await
+            .unwrap(),
+        [schedule.clone()]
+    );
+
+    schedule.enabled = false;
+    schedule.last_run = Some(local(25));
+    schedule.last_task_id = Some(TaskId::new("task-9"));
+    store.save(&schedule).await.unwrap();
+    assert_eq!(store.list().await.unwrap(), [schedule.clone()]);
+
+    store.delete("schedule-1").await.unwrap();
+    assert!(store.list().await.unwrap().is_empty());
+    assert!(matches!(
+        store.delete("schedule-1").await.unwrap_err(),
+        RepositoryError::NotFound { .. }
+    ));
 }

@@ -35,6 +35,26 @@ fn admissions() -> impl Iterator<Item = ToolAdmission> {
 /// The routing mode a task was created under, when its record says.
 ///
 /// Tasks created before the mode was recorded say nothing.
+/// The files attached to the task's message, from its own record (ADR 0058).
+fn created_attachments(events: &[EventEnvelope]) -> Vec<crate::contracts::TaskAttachment> {
+    events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::TaskCreated { attachments, .. } => Some(attachments.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// What the task's model was told about the person, from its own record
+/// (ADR 0061).
+fn created_personal(events: &[EventEnvelope]) -> Option<String> {
+    events.iter().find_map(|event| match &event.payload {
+        EventPayload::TaskCreated { personal, .. } => personal.clone(),
+        _ => None,
+    })
+}
+
 fn created_mode(events: &[EventEnvelope]) -> Option<RoutingMode> {
     events.iter().find_map(|event| match &event.payload {
         EventPayload::TaskCreated { routing_mode, .. } => *routing_mode,
@@ -602,10 +622,14 @@ impl TaskService {
         // the profile's, as it always did.
         let routing_mode = created_mode(&events).unwrap_or_else(|| self.routing_mode());
         let plan = ResumePlan::from_events(&events);
+        let earlier = self.earlier_turns(&record).await;
         let driver = TaskDriver::new(journal, self.providers.clone(), scope, self.clock.clone())
             .with_routing_mode(routing_mode)
             .with_configuration(configuration)
             .with_instructions(instructions)
+            .with_earlier_turns(earlier)
+            .with_attachments(created_attachments(&events))
+            .with_personal(created_personal(&events))
             .with_checkpoints(Arc::clone(&self.repositories.checkpoints));
         let driver = match handoff {
             Some(handoff) => driver.handing_over(worker, handoff, plan, interrupt),

@@ -22,6 +22,35 @@ use crate::services::projection::TaskProjectionWriter;
 use crate::services::runtime::TaskDriver;
 use crate::services::{PermissionManager, ToolRegistry};
 
+/// Where schedules are kept, and the local clock they run by (ADR 0063).
+pub(super) type SchedulePorts = (
+    Arc<dyn crate::ports::ScheduleRepository>,
+    Arc<dyn crate::ports::LocalClock>,
+);
+
+/// How long one message's documents may take to read (ADR 0062).
+pub const DOCUMENT_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The longest conversation title kept, in bytes (ADR 0059).
+pub const MAX_CONVERSATION_TITLE_BYTES: usize = 200;
+
+/// The longest search asked for, in bytes (ADR 0059).
+pub const MAX_SEARCH_QUERY_BYTES: usize = 200;
+
+/// At most this many conversations, and this many projects, are returned by
+/// one search.
+const SEARCH_RESULTS: usize = 50;
+
+/// A matching message, shortened for a result list.
+fn excerpt(text: &str) -> String {
+    const CHARS: usize = 120;
+    if text.chars().count() <= CHARS {
+        return text.to_owned();
+    }
+    let short: String = text.chars().take(CHARS - 1).collect();
+    format!("{}…", short.trim_end())
+}
+
 /// How many updates a subscriber may fall behind before it must replay.
 ///
 /// Lagging past this loses live updates, which is safe rather than fatal: the
@@ -59,6 +88,9 @@ pub struct StartTaskRequest {
     /// has always run under. Selecting a definition contributes its text and
     /// nothing else: no skill grants a tool, a root, or a destination.
     pub selection: Option<ConfigurationSelection>,
+    /// Files the person attached to this message (ADR 0058). Checked, and
+    /// their text redacted, before anything is written.
+    pub attachments: Vec<super::AttachmentInput>,
 }
 
 /// Runtime state for a task that is currently running.
@@ -199,6 +231,15 @@ pub struct TaskService {
     /// harness; a task then runs on the last inventory the project resolved,
     /// without its text (ADR 0052).
     pub(super) project_sources: Option<Arc<dyn ProjectSourceReader>>,
+    /// What reads PDF and Word attachments (ADR 0062). Without one, only
+    /// text files can be attached.
+    pub(super) documents: Option<Arc<dyn crate::ports::DocumentReader>>,
+    /// The person's profile and memory (ADR 0061). Without it, chats are
+    /// told nothing about the person.
+    pub(super) personal: Option<Arc<dyn crate::ports::PersonalRepository>>,
+    /// Where schedules are kept, and the local clock they run by
+    /// (ADR 0063). Without them, nothing is scheduled.
+    pub(super) schedules: Option<SchedulePorts>,
     pub(super) execution_allowed: bool,
     pub(super) execution_guard: Option<Arc<dyn Send + Sync>>,
 }
@@ -231,6 +272,9 @@ impl TaskService {
             workers: None,
             pinned: None,
             project_sources: None,
+            documents: None,
+            personal: None,
+            schedules: None,
             execution_allowed: true,
             execution_guard: None,
         }
@@ -257,6 +301,168 @@ impl TaskService {
     pub fn with_project_sources(mut self, reader: Arc<dyn ProjectSourceReader>) -> Self {
         self.project_sources = Some(reader);
         self
+    }
+
+    /// Keep schedules in `store`, and run them by `clock` (ADR 0063).
+    #[must_use]
+    pub fn with_schedules(
+        mut self,
+        store: Arc<dyn crate::ports::ScheduleRepository>,
+        clock: Arc<dyn crate::ports::LocalClock>,
+    ) -> Self {
+        self.schedules = Some((store, clock));
+        self
+    }
+
+    /// Keep the person's profile and memory in `store`, and tell chats
+    /// about them (ADR 0061).
+    #[must_use]
+    pub fn with_personal(mut self, store: Arc<dyn crate::ports::PersonalRepository>) -> Self {
+        self.personal = Some(store);
+        self
+    }
+
+    fn personal_store(&self) -> Result<&Arc<dyn crate::ports::PersonalRepository>, ErrorEnvelope> {
+        self.personal.as_ref().ok_or_else(|| {
+            self.error(
+                ErrorCode::CapabilityUnsupported,
+                "This application keeps no personal profile",
+            )
+        })
+    }
+
+    /// The person's profile and memory notes (ADR 0061).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::CapabilityUnsupported`] when the service keeps no
+    /// profile, or a persistence error.
+    pub async fn personal_profile(
+        &self,
+    ) -> Result<crate::contracts::PersonalProfile, ErrorEnvelope> {
+        self.personal_store()?
+            .load()
+            .await
+            .map_err(|error| self.repository_error(&error))
+    }
+
+    /// Change what the person told Tramontana about themselves.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidRequest`] for a field that cannot be kept, or as
+    /// [`Self::personal_profile`].
+    pub async fn update_personal(
+        &self,
+        details: &crate::contracts::PersonalDetails,
+    ) -> Result<crate::contracts::PersonalProfile, ErrorEnvelope> {
+        let profile = super::apply_details(self.personal_profile().await?, details)?;
+        self.personal_store()?
+            .save(&profile)
+            .await
+            .map_err(|error| self.repository_error(&error))?;
+        Ok(profile)
+    }
+
+    /// Add a note for chats to remember. Only the person adds one; nothing
+    /// is remembered on its own (ADR 0061).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidRequest`] for an empty or long note, or when the
+    /// profile holds as many as it may, or as [`Self::personal_profile`].
+    pub async fn remember(
+        &self,
+        text: &str,
+    ) -> Result<crate::contracts::PersonalProfile, ErrorEnvelope> {
+        let mut profile = self.personal_profile().await?;
+        let note = super::new_note(&profile, self.ids.next("note"), text, self.clock.now())?;
+        profile.notes.push(note);
+        self.personal_store()?
+            .save(&profile)
+            .await
+            .map_err(|error| self.repository_error(&error))?;
+        Ok(profile)
+    }
+
+    /// Forget one note.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::NotFound`] when no note has that id, or as
+    /// [`Self::personal_profile`].
+    pub async fn forget(
+        &self,
+        note_id: &str,
+    ) -> Result<crate::contracts::PersonalProfile, ErrorEnvelope> {
+        let mut profile = self.personal_profile().await?;
+        let before = profile.notes.len();
+        profile.notes.retain(|note| note.note_id != note_id);
+        if profile.notes.len() == before {
+            return Err(self.error(ErrorCode::NotFound, "No note has that id"));
+        }
+        self.personal_store()?
+            .save(&profile)
+            .await
+            .map_err(|error| self.repository_error(&error))?;
+        Ok(profile)
+    }
+
+    /// What a chat starting now is told about the person, if anything.
+    /// A profile that cannot be read tells nothing: less context is safe.
+    async fn personal_for(&self, project_id: Option<&ProjectId>) -> Option<String> {
+        if project_id.is_some() {
+            return None;
+        }
+        let profile = self.personal.as_ref()?.load().await.ok()?;
+        super::personal_context(&profile)
+    }
+
+    /// Read PDF and Word attachments with `reader` (ADR 0062).
+    #[must_use]
+    pub fn with_document_reader(mut self, reader: Arc<dyn crate::ports::DocumentReader>) -> Self {
+        self.documents = Some(reader);
+        self
+    }
+
+    /// Check a message's attachments and read their text, as a task started
+    /// with them would (ADRs 0058 and 0062). The desktop asks this as soon as
+    /// a file is picked, so a refusal is shown then.
+    ///
+    /// A document is read off the async runtime, and given
+    /// [`DOCUMENT_READ_DEADLINE`] to finish.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidRequest`] naming a file that cannot be attached,
+    /// or [`ErrorCode::Timeout`] when a document takes too long to read.
+    pub async fn accept_attachments(
+        &self,
+        inputs: Vec<super::AttachmentInput>,
+    ) -> Result<Vec<crate::contracts::TaskAttachment>, ErrorEnvelope> {
+        let documents = self.documents.clone();
+        let reads_documents = documents.as_ref().is_some_and(|reader| {
+            inputs
+                .iter()
+                .any(|input| reader.media_type(&input.name).is_some())
+        });
+        if !reads_documents {
+            return super::accept_attachments(&inputs, None);
+        }
+        let reading = tokio::task::spawn_blocking(move || {
+            super::accept_attachments(&inputs, documents.as_deref())
+        });
+        match tokio::time::timeout(DOCUMENT_READ_DEADLINE, reading).await {
+            Ok(Ok(accepted)) => accepted,
+            Ok(Err(_)) => Err(self.error(
+                ErrorCode::InvalidRequest,
+                "An attached document could not be read",
+            )),
+            Err(_) => Err(self.error(
+                ErrorCode::Timeout,
+                "An attached document took too long to read",
+            )),
+        }
     }
 
     /// Offer the built-in worker pinned to each of `models` as a worker a
@@ -525,6 +731,227 @@ impl TaskService {
             .map_err(|error| self.repository_error(&error))
     }
 
+    /// Give a conversation a new title (ADR 0059).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidRequest`] for an empty title or one over
+    /// [`MAX_CONVERSATION_TITLE_BYTES`], or [`ErrorCode::NotFound`].
+    pub async fn rename_conversation(
+        &self,
+        conversation_id: &ConversationId,
+        title: &str,
+    ) -> Result<ConversationRecord, ErrorEnvelope> {
+        let title = title.trim();
+        if title.is_empty() || title.len() > MAX_CONVERSATION_TITLE_BYTES {
+            return Err(self.error(
+                ErrorCode::InvalidRequest,
+                format!("A conversation's title must be 1 to {MAX_CONVERSATION_TITLE_BYTES} bytes"),
+            ));
+        }
+        self.repositories
+            .conversations
+            .rename(conversation_id, title)
+            .await
+            .map_err(|error| self.repository_error(&error))?;
+        self.get_conversation(conversation_id).await
+    }
+
+    /// Delete a conversation and everything recorded under it: its tasks,
+    /// their events and checkpoints (ADR 0059).
+    ///
+    /// Refused while any of its tasks is still under way, so a person stops
+    /// work before throwing its record away. A task that was interrupted is
+    /// not under way, and goes with the rest.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::NotFound`] when it does not exist, [`ErrorCode::Conflict`]
+    /// while one of its tasks runs, or a persistence error.
+    pub async fn delete_conversation(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<(), ErrorEnvelope> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.get_conversation(conversation_id).await?;
+        let tasks = self.list_tasks(Some(conversation_id)).await?;
+        if tasks.iter().any(|task| {
+            !(task.state.is_terminal() || task.state == crate::contracts::TaskState::Interrupted)
+        }) {
+            return Err(self.error(
+                ErrorCode::Conflict,
+                "Stop the conversation's running task before deleting it",
+            ));
+        }
+        // A task whose record has ended may still have its driver finishing
+        // up for a moment. Wait for it rather than delete under it, and
+        // refuse if it does not finish.
+        let finishing: Vec<_> = {
+            let live = self.lock_live()?;
+            tasks
+                .iter()
+                .filter_map(|task| live.get(&task.task_id).map(|live| live.finished.clone()))
+                .collect()
+        };
+        for mut finished in finishing {
+            let done = matches!(
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    finished.wait_for(|done| *done),
+                )
+                .await,
+                Ok(Ok(_))
+            );
+            if !done && !*finished.borrow() {
+                return Err(self.error(
+                    ErrorCode::Conflict,
+                    "Stop the conversation's running task before deleting it",
+                ));
+            }
+        }
+        for task in &tasks {
+            // The row first: events without a row are unreachable, while a
+            // row without its events would be an invalid record.
+            self.repositories
+                .tasks
+                .delete(&task.task_id)
+                .await
+                .map_err(|error| self.repository_error(&error))?;
+            self.repositories
+                .events
+                .delete_stream(&task.task_id)
+                .await
+                .map_err(|error| self.error(ErrorCode::PersistenceError, error.to_string()))?;
+        }
+        self.repositories
+            .conversations
+            .delete(conversation_id)
+            .await
+            .map_err(|error| self.repository_error(&error))
+    }
+
+    /// A readable transcript of one conversation, to share as a file
+    /// (ADR 0060): its tasks oldest first, each with what was asked, the
+    /// names of its attached files, and its final answer.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::NotFound`] when it does not exist, or a persistence error.
+    pub async fn transcript(
+        &self,
+        conversation_id: &ConversationId,
+        options: crate::contracts::TranscriptOptions,
+    ) -> Result<String, ErrorEnvelope> {
+        let conversation = self.get_conversation(conversation_id).await?;
+        let project_name = match &conversation.project_id {
+            Some(id) => Some(self.get_project(id).await?.name),
+            None => None,
+        };
+        let mut tasks = self.list_tasks(Some(conversation_id)).await?;
+        tasks.sort_by(|a, b| {
+            (a.created_at.as_str(), a.task_id.as_str())
+                .cmp(&(b.created_at.as_str(), b.task_id.as_str()))
+        });
+        let mut turns = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let events = self.replay_task_events(&task.task_id, 0).await?;
+            turns.push((task, events));
+        }
+        Ok(super::render_transcript(
+            &conversation,
+            project_name.as_deref(),
+            &turns,
+            &options,
+        ))
+    }
+
+    /// Search conversation titles, what was asked in them, and project names
+    /// and folders (`PHASE_1_SPEC.md` §4.1, ADR 0059).
+    ///
+    /// Plain text, ignoring case: no index and no semantic search. Answers
+    /// are not searched, because they live only in each task's events.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidRequest`] for an empty query or one over
+    /// [`MAX_SEARCH_QUERY_BYTES`], or a persistence error.
+    pub async fn search(
+        &self,
+        query: &str,
+    ) -> Result<crate::contracts::SearchResults, ErrorEnvelope> {
+        use crate::contracts::{ConversationHit, SearchField, SearchResults};
+        let query = query.trim();
+        if query.is_empty() || query.len() > MAX_SEARCH_QUERY_BYTES {
+            return Err(self.error(
+                ErrorCode::InvalidRequest,
+                format!("A search must be 1 to {MAX_SEARCH_QUERY_BYTES} bytes"),
+            ));
+        }
+        let needle = query.to_lowercase();
+        let found = |text: &str| text.to_lowercase().contains(&needle);
+
+        let projects = self.list_projects().await?;
+        let mut conversations = self.list_conversations(None).await?;
+        for project in &projects {
+            conversations.extend(self.list_conversations(Some(&project.project_id)).await?);
+        }
+        let tasks = self.list_tasks(None).await?;
+
+        let mut hits = Vec::new();
+        for conversation in conversations {
+            let project = conversation
+                .project_id
+                .as_ref()
+                .and_then(|id| projects.iter().find(|project| &project.project_id == id));
+            let asked = || {
+                tasks
+                    .iter()
+                    .filter(|task| {
+                        task.conversation_id.as_ref() == Some(&conversation.conversation_id)
+                    })
+                    .find(|task| found(&task.goal_summary))
+            };
+            let (matched_in, excerpt) = if found(&conversation.title) {
+                (SearchField::Title, None)
+            } else if let Some(task) = asked() {
+                (SearchField::Goal, Some(excerpt(&task.goal_summary)))
+            } else if project.is_some_and(|project| {
+                found(&project.name) || project.roots.iter().any(|root| found(root))
+            }) {
+                (SearchField::Project, None)
+            } else {
+                continue;
+            };
+            hits.push(ConversationHit {
+                project_name: project.map(|project| project.name.clone()),
+                conversation,
+                matched_in,
+                excerpt,
+            });
+        }
+        hits.sort_by(|a, b| {
+            (
+                b.conversation.created_at.as_str(),
+                b.conversation.conversation_id.as_str(),
+            )
+                .cmp(&(
+                    a.conversation.created_at.as_str(),
+                    a.conversation.conversation_id.as_str(),
+                ))
+        });
+        hits.truncate(SEARCH_RESULTS);
+        let mut matching: Vec<_> = projects
+            .into_iter()
+            .filter(|project| found(&project.name) || project.roots.iter().any(|root| found(root)))
+            .collect();
+        matching.truncate(SEARCH_RESULTS);
+        Ok(SearchResults {
+            schema_version: crate::contracts::SCHEMA_VERSION,
+            conversations: hits,
+            projects: matching,
+        })
+    }
+
     /// Tasks in a conversation, or every task when absent.
     ///
     /// # Errors
@@ -585,12 +1012,16 @@ impl TaskService {
     ///
     /// [`ErrorCode::NotFound`] for an unknown conversation, or a persistence
     /// error if the opening event cannot be journaled.
-    pub async fn start_task(&self, request: StartTaskRequest) -> Result<TaskId, ErrorEnvelope> {
+    pub async fn start_task(&self, mut request: StartTaskRequest) -> Result<TaskId, ErrorEnvelope> {
         let _lifecycle = self.lifecycle.lock().await;
         self.require_execution()?;
         // Both chosen before anything is written, so a refusal leaves no
         // task behind.
         let routing_mode = request.routing_mode.unwrap_or_else(|| self.routing_mode());
+        // Before anything is written, so a refused file leaves no task.
+        let attachments = self
+            .accept_attachments(std::mem::take(&mut request.attachments))
+            .await?;
         let worker = match (request.admission, request.worker.as_deref(), &self.workers) {
             (None, None, _) => Arc::clone(&self.providers.worker),
             (Some(admission), None, Some(choose)) => choose(admission),
@@ -706,6 +1137,9 @@ impl TaskService {
         // here on there is only the redacted text
         // (`SECURITY_AND_PERMISSIONS.md` §7).
         let goal = crate::services::redact(&request.goal);
+        // Chosen now and recorded, so a resumed task is told the same
+        // (ADR 0061). Only a chat is told anything.
+        let personal = self.personal_for(project_id.as_ref()).await;
 
         let created_at = self.clock.now();
         let mut record = TaskRecord::new(
@@ -726,6 +1160,8 @@ impl TaskService {
                     goal_summary: goal.text.clone(),
                     conversation_id: request.conversation_id.clone(),
                     routing_mode: Some(routing_mode),
+                    attachments: attachments.clone(),
+                    personal: personal.clone(),
                 },
             )
             .into_envelope(
@@ -801,6 +1237,7 @@ impl TaskService {
             journal.publish_persisted(event);
         }
 
+        let earlier = self.earlier_turns(&record).await;
         let driver = TaskDriver::new(
             journal,
             self.providers.clone(),
@@ -811,6 +1248,9 @@ impl TaskService {
         .with_worker(worker)
         .with_configuration(resolved_configuration)
         .with_instructions(instructions)
+        .with_earlier_turns(earlier)
+        .with_attachments(attachments)
+        .with_personal(personal)
         .with_goal_redactions(goal.reason_codes.clone())
         .with_checkpoints(Arc::clone(&self.repositories.checkpoints))
         .continuing(None, super::ResumePlan::default(), interrupt);
@@ -825,6 +1265,38 @@ impl TaskService {
         });
 
         Ok(task_id)
+    }
+
+    /// The earlier turns of `task`'s conversation (ADR 0057).
+    ///
+    /// Only the newest completed tasks created before it are read, so the
+    /// same task chooses the same turns on resume. A task whose record cannot
+    /// be read is left out: less context is safe, and a turn made up from a
+    /// partial record would not be.
+    pub(crate) async fn earlier_turns(&self, task: &TaskRecord) -> super::EarlierTurns {
+        let Some(conversation_id) = &task.conversation_id else {
+            return super::EarlierTurns::default();
+        };
+        let Ok(mut tasks) = self.list_tasks(Some(conversation_id)).await else {
+            return super::EarlierTurns::default();
+        };
+        tasks.retain(|record| {
+            record.state == crate::contracts::TaskState::Completed
+                && (record.created_at.as_str(), record.task_id.as_str())
+                    < (task.created_at.as_str(), task.task_id.as_str())
+        });
+        tasks.sort_by(|a, b| {
+            (b.created_at.as_str(), b.task_id.as_str())
+                .cmp(&(a.created_at.as_str(), a.task_id.as_str()))
+        });
+        tasks.truncate(super::EARLIER_TURNS);
+        let mut earlier = Vec::with_capacity(tasks.len());
+        for record in tasks {
+            if let Ok(events) = self.replay_task_events(&record.task_id, 0).await {
+                earlier.push((record, events));
+            }
+        }
+        super::EarlierTurns::choose(task, &earlier)
     }
 
     /// Request cancellation.

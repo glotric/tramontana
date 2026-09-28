@@ -55,6 +55,11 @@ export interface AgentDescriptor {
 }
 
 /**
+ * How answers should be written.
+ */
+export type AnswerStyle = "quick" | "balanced" | "thorough";
+
+/**
  * What the user may choose when asked.
  */
 export type ApprovalDecisionKind = "allowOnce" | "allowProject" | "allowSite" | "deny";
@@ -227,6 +232,48 @@ export interface BundleEntry {
    */
   sha256: string;
 }
+
+/**
+ * When a schedule runs, in local wall-clock time.
+ */
+export type Cadence =
+  | {
+      /**
+       * The hour, 0 to 23.
+       */
+      hour: number;
+      kind: "daily";
+      /**
+       * The minute, 0 to 59.
+       */
+      minute: number;
+    }
+  | {
+      /**
+       * The hour, 0 to 23.
+       */
+      hour: number;
+      kind: "weekdays";
+      /**
+       * The minute, 0 to 59.
+       */
+      minute: number;
+    }
+  | {
+      /**
+       * The hour, 0 to 23.
+       */
+      hour: number;
+      kind: "weekly";
+      /**
+       * The minute, 0 to 59.
+       */
+      minute: number;
+      /**
+       * The day.
+       */
+      weekday: "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+    };
 
 /**
  * Who requested a cancellation.
@@ -662,6 +709,25 @@ export interface ContextSource {
 }
 
 /**
+ * A conversation a search found, and why (ADR 0059).
+ */
+export interface ConversationHit {
+  conversation: ConversationRecord;
+  /**
+   * The message that matched, when it was a message.
+   */
+  excerpt?: string;
+  /**
+   * Where the match was.
+   */
+  matchedIn: "title" | "goal" | "project";
+  /**
+   * The name of its project, when it belongs to one.
+   */
+  projectName?: string;
+}
+
+/**
  * A conversation within a project, or a projectless conversation.
  */
 export type ConversationId = string;
@@ -905,6 +971,12 @@ export interface EventEnvelope {
       }
     | {
         /**
+         * Files the person attached to this message, as their redacted text
+         * (ADR 0058). Absent when there were none, and from every task
+         * recorded before attachments were.
+         */
+        attachments?: TaskAttachment[];
+        /**
          * Conversation this task belongs to, when it has one.
          */
         conversationId?: string;
@@ -913,6 +985,12 @@ export interface EventEnvelope {
          */
         goalSummary: string;
         kind: "taskCreated";
+        /**
+         * What the person's profile told this task's model about them, as
+         * it was when the task started (ADR 0061). Absent when nothing was
+         * told: every task with a project, and every chat before profiles.
+         */
+        personal?: string;
         /**
          * Where this task's models may run, chosen when it was created and
          * kept if it is resumed.
@@ -1206,6 +1284,12 @@ export type EventPayload =
     }
   | {
       /**
+       * Files the person attached to this message, as their redacted text
+       * (ADR 0058). Absent when there were none, and from every task
+       * recorded before attachments were.
+       */
+      attachments?: TaskAttachment[];
+      /**
        * Conversation this task belongs to, when it has one.
        */
       conversationId?: string;
@@ -1214,6 +1298,12 @@ export type EventPayload =
        */
       goalSummary: string;
       kind: "taskCreated";
+      /**
+       * What the person's profile told this task's model about them, as
+       * it was when the task started (ADR 0061). Absent when nothing was
+       * told: every task with a project, and every chat before profiles.
+       */
+      personal?: string;
       /**
        * Where this task's models may run, chosen when it was created and
        * kept if it is resumed.
@@ -1710,6 +1800,51 @@ export type IntegrationMode = "embedded" | "acp" | "customProcess";
 export type InvocationId = string;
 
 /**
+ * A local wall-clock date and time, to the minute: what a person means by
+ * "Friday at 15:00" on this computer.
+ */
+export interface LocalDateTime {
+  /**
+   * The day of the month, 1 to 31.
+   */
+  day: number;
+  /**
+   * The hour, 0 to 23.
+   */
+  hour: number;
+  /**
+   * The minute, 0 to 59.
+   */
+  minute: number;
+  /**
+   * The month, 1 to 12.
+   */
+  month: number;
+  /**
+   * The year.
+   */
+  year: number;
+}
+
+/**
+ * One thing the person asked Tramontana to remember.
+ */
+export interface MemoryNote {
+  /**
+   * When it was added.
+   */
+  createdAt: string;
+  /**
+   * Stable identifier.
+   */
+  noteId: string;
+  /**
+   * The note, redacted when it was saved.
+   */
+  text: string;
+}
+
+/**
  * A durable message in a conversation.
  */
 export type MessageId = string;
@@ -1976,6 +2111,69 @@ export interface ModelRequest {
 export type NetworkControl = "denied" | "brokered" | "constrained" | "unobservable";
 
 /**
+ * What a person fills in to create a schedule.
+ */
+export interface NewSchedule {
+  /**
+   * When it runs.
+   */
+  cadence:
+    | {
+        /**
+         * The hour, 0 to 23.
+         */
+        hour: number;
+        kind: "daily";
+        /**
+         * The minute, 0 to 59.
+         */
+        minute: number;
+      }
+    | {
+        /**
+         * The hour, 0 to 23.
+         */
+        hour: number;
+        kind: "weekdays";
+        /**
+         * The minute, 0 to 59.
+         */
+        minute: number;
+      }
+    | {
+        /**
+         * The hour, 0 to 23.
+         */
+        hour: number;
+        kind: "weekly";
+        /**
+         * The minute, 0 to 59.
+         */
+        minute: number;
+        /**
+         * The day.
+         */
+        weekday: "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+      };
+  /**
+   * What each run is asked to do.
+   */
+  goal: string;
+  /**
+   * The project to work in; absent for a chat.
+   */
+  projectId?: string;
+  /**
+   * Where its models may run.
+   */
+  routingMode: "localOnly" | "automatic" | "cloudPreferred";
+  /**
+   * What to call it.
+   */
+  title: string;
+}
+
+/**
  * A durable, provider-neutral message.
  */
 export interface NormalizedMessage {
@@ -2119,6 +2317,59 @@ export type PermissionOrigin =
        */
       workflowId: string;
     };
+
+/**
+ * The parts of the profile a person edits together.
+ */
+export interface PersonalDetails {
+  /**
+   * About their work; empty clears it.
+   */
+  about: string;
+  /**
+   * How answers should be written.
+   */
+  answerStyle: "quick" | "balanced" | "thorough";
+  /**
+   * Whether the notes are given to chats.
+   */
+  memoryEnabled: boolean;
+  /**
+   * What to call the person; empty clears it.
+   */
+  name: string;
+}
+
+/**
+ * The person's profile: kept in the local profile, never in a project, and
+ * given only to chats (ADR 0061).
+ */
+export interface PersonalProfile {
+  /**
+   * A sentence or two about their work.
+   */
+  about?: string;
+  /**
+   * How answers should be written.
+   */
+  answerStyle: "quick" | "balanced" | "thorough";
+  /**
+   * Whether the notes are given to chats. Notes are kept either way.
+   */
+  memoryEnabled: boolean;
+  /**
+   * What to call the person.
+   */
+  name?: string;
+  /**
+   * The notes, oldest first.
+   */
+  notes: MemoryNote[];
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+}
 
 /**
  * A persistent, revocable grant.
@@ -2450,6 +2701,127 @@ export interface RoutingFallback {
 export type RoutingMode = "localOnly" | "automatic" | "cloudPreferred";
 
 /**
+ * Regular work: a goal, where it runs, and when (ADR 0063).
+ */
+export interface Schedule {
+  /**
+   * When it runs.
+   */
+  cadence:
+    | {
+        /**
+         * The hour, 0 to 23.
+         */
+        hour: number;
+        kind: "daily";
+        /**
+         * The minute, 0 to 59.
+         */
+        minute: number;
+      }
+    | {
+        /**
+         * The hour, 0 to 23.
+         */
+        hour: number;
+        kind: "weekdays";
+        /**
+         * The minute, 0 to 59.
+         */
+        minute: number;
+      }
+    | {
+        /**
+         * The hour, 0 to 23.
+         */
+        hour: number;
+        kind: "weekly";
+        /**
+         * The minute, 0 to 59.
+         */
+        minute: number;
+        /**
+         * The day.
+         */
+        weekday: "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+      };
+  /**
+   * The conversation every run is a turn in.
+   */
+  conversationId: string;
+  /**
+   * When it was created.
+   */
+  createdAt: string;
+  createdLocal: LocalDateTime;
+  /**
+   * Whether it runs at all.
+   */
+  enabled: boolean;
+  /**
+   * What each run is asked to do, redacted when saved.
+   */
+  goal: string;
+  lastRun?: LocalDateTime;
+  /**
+   * The task its last run started.
+   */
+  lastTaskId?: string;
+  /**
+   * The project it works in; absent for a chat.
+   */
+  projectId?: string;
+  /**
+   * Where its models may run.
+   */
+  routingMode: "localOnly" | "automatic" | "cloudPreferred";
+  /**
+   * Stable identifier.
+   */
+  scheduleId: string;
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  /**
+   * What the person calls it.
+   */
+  title: string;
+}
+
+/**
+ * A schedule, and when it runs next.
+ */
+export interface ScheduleView {
+  nextRun?: LocalDateTime;
+  schedule: Schedule;
+}
+
+/**
+ * Where a search found what it was asked for (ADR 0059).
+ */
+export type SearchField = "title" | "goal" | "project";
+
+/**
+ * What a search of conversation titles and project metadata found
+ * (`PHASE_1_SPEC.md` §4.1, ADR 0059).
+ */
+export interface SearchResults {
+  /**
+   * Matching conversations, newest first.
+   */
+  conversations: ConversationHit[];
+  /**
+   * Matching projects, by name or folder.
+   */
+  projects: ProjectRecord[];
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+}
+
+/**
  * An opaque handle to a credential.
  *
  * This is the only representation of a secret that may be persisted, logged,
@@ -2505,6 +2877,40 @@ export interface StreamFrame {
   streamId: string;
   /**
    * The text produced.
+   */
+  text: string;
+}
+
+/**
+ * A file the person attached to a message (ADR 0058).
+ *
+ * Held in the task's own record, beside its goal: the text is what the model
+ * is given, already redacted, and the hash names that text rather than the
+ * original bytes, so the record describes only what may be released.
+ */
+export interface TaskAttachment {
+  /**
+   * The length of `text` in bytes.
+   */
+  byteCount: number;
+  /**
+   * The content hash of `text`.
+   */
+  contentHash: string;
+  /**
+   * What kind of text it is, such as `text/markdown`.
+   */
+  mediaType: string;
+  /**
+   * The file's name, without any folder.
+   */
+  name: string;
+  /**
+   * What was removed from it at ingestion.
+   */
+  redactions?: string[];
+  /**
+   * Its redacted text.
    */
   text: string;
 }
@@ -2827,6 +3233,25 @@ export interface ToolDescriptor {
 }
 
 /**
+ * How a shared transcript is written (ADR 0060).
+ */
+export type TranscriptFormat = "markdown" | "html";
+
+/**
+ * What a shared transcript holds (ADR 0060).
+ */
+export interface TranscriptOptions {
+  /**
+   * How it is written.
+   */
+  format: "markdown" | "html";
+  /**
+   * Whether attached files' text is included, not only their names.
+   */
+  includeAttachments: boolean;
+}
+
+/**
  * Token counts for one request.
  */
 export interface Usage {
@@ -2855,3 +3280,8 @@ export interface Usage {
  * (`CORE_CONTRACTS.md` §5).
  */
 export type Visibility = "user" | "diagnostic" | "secret";
+
+/**
+ * A day of the week.
+ */
+export type Weekday = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";

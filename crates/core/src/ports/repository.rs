@@ -101,6 +101,26 @@ pub trait ConversationRepository: Send + Sync {
         conversation_id: &ConversationId,
         at: &Timestamp,
     ) -> Result<(), RepositoryError>;
+
+    /// Give a conversation a new title (ADR 0059).
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::NotFound`] when it does not exist.
+    async fn rename(
+        &self,
+        conversation_id: &ConversationId,
+        title: &str,
+    ) -> Result<(), RepositoryError>;
+
+    /// Remove a conversation (ADR 0059). Its tasks are removed first, with
+    /// [`TaskRepository::delete`]; a store that cascades may also remove any
+    /// left.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::NotFound`] when it does not exist.
+    async fn delete(&self, conversation_id: &ConversationId) -> Result<(), RepositoryError>;
 }
 
 /// Task records.
@@ -176,6 +196,17 @@ pub trait TaskRepository: Send + Sync {
     ///
     /// [`RepositoryError::Unavailable`] when storage failed.
     async fn rebuild_from_events(&self) -> Result<usize, RepositoryError>;
+
+    /// Remove a task's row and what is kept with it, such as its checkpoint
+    /// (ADR 0059). Its events are removed separately, with
+    /// [`crate::ports::EventStore::delete_stream`], after the row: a row
+    /// without its events would be an invalid record, and events without a
+    /// row are only unreachable.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::NotFound`] when it does not exist.
+    async fn delete(&self, task_id: &TaskId) -> Result<(), RepositoryError>;
 }
 
 /// Secret-free effective-configuration manifests.
@@ -315,4 +346,50 @@ pub trait CheckpointRepository: Send + Sync {
     ///
     /// [`RepositoryError::Unavailable`] when storage failed.
     async fn list(&self, task_id: &TaskId) -> Result<Vec<TaskCheckpoint>, RepositoryError>;
+}
+
+/// The person's profile and memory notes, in the local profile (ADR 0061).
+#[async_trait]
+pub trait PersonalRepository: Send + Sync {
+    /// The profile, or the default one when nothing was ever saved.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn load(&self) -> Result<crate::contracts::PersonalProfile, RepositoryError>;
+
+    /// Replace the profile, its notes included, in one write.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn save(
+        &self,
+        profile: &crate::contracts::PersonalProfile,
+    ) -> Result<(), RepositoryError>;
+}
+
+/// Schedules (ADR 0063).
+#[async_trait]
+pub trait ScheduleRepository: Send + Sync {
+    /// Every schedule, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn list(&self) -> Result<Vec<crate::contracts::Schedule>, RepositoryError>;
+
+    /// Create or replace a schedule.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn save(&self, schedule: &crate::contracts::Schedule) -> Result<(), RepositoryError>;
+
+    /// Remove a schedule. Its conversation is kept.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::NotFound`] when it does not exist.
+    async fn delete(&self, schedule_id: &str) -> Result<(), RepositoryError>;
 }

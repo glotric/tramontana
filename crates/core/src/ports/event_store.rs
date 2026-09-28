@@ -83,4 +83,13 @@ pub trait EventStore: Send + Sync {
     ///
     /// [`EventStoreError::Unavailable`] when storage failed.
     async fn last_sequence(&self, task_id: &TaskId) -> Result<u64, EventStoreError>;
+
+    /// Remove every event of one task (ADR 0059): only when the person
+    /// deletes the conversation it belongs to, never to tidy or rewrite a
+    /// record. Removing a stream that holds nothing is not an error.
+    ///
+    /// # Errors
+    ///
+    /// [`EventStoreError::Unavailable`] when storage failed.
+    async fn delete_stream(&self, task_id: &TaskId) -> Result<(), EventStoreError>;
 }
