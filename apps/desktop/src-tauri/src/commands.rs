@@ -300,6 +300,74 @@ pub(crate) async fn save_transcript(
     Ok(Some(path.display().to_string()))
 }
 
+/// Every schedule, with when it runs next (ADR 0063).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn list_schedules(
+    state: State<'_, AppState>,
+) -> Result<Vec<tramontana_core::contracts::ScheduleView>, ErrorEnvelope> {
+    state.service.list_schedules().await
+}
+
+/// Create a schedule and its conversation (ADR 0063).
+///
+/// # Errors
+///
+/// Whatever the service reports, such as an empty goal.
+#[tauri::command]
+pub(crate) async fn create_schedule(
+    schedule: tramontana_core::contracts::NewSchedule,
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::ScheduleView, ErrorEnvelope> {
+    state.service.create_schedule(&schedule).await
+}
+
+/// Turn a schedule on or off (ADR 0063).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn set_schedule_enabled(
+    schedule_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::Schedule, ErrorEnvelope> {
+    state
+        .service
+        .set_schedule_enabled(&schedule_id, enabled)
+        .await
+}
+
+/// Delete a schedule, keeping its conversation (ADR 0063).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn delete_schedule(
+    schedule_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    state.service.delete_schedule(&schedule_id).await
+}
+
+/// Run a schedule now (ADR 0063).
+///
+/// # Errors
+///
+/// Whatever the service reports, such as its previous run still going.
+#[tauri::command]
+pub(crate) async fn run_schedule_now(
+    schedule_id: String,
+    state: State<'_, AppState>,
+) -> Result<TaskId, ErrorEnvelope> {
+    state.service.run_schedule_now(&schedule_id).await
+}
+
 /// The person's profile and memory notes (ADR 0061).
 ///
 /// # Errors

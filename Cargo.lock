@@ -5444,6 +5444,7 @@ version = "0.1.0"
 dependencies = [
  "apple-native-keyring-store",
  "async-trait",
+ "chrono",
  "keyring",
  "serde_json",
  "tempfile",

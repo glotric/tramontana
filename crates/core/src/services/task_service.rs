@@ -22,6 +22,12 @@ use crate::services::projection::TaskProjectionWriter;
 use crate::services::runtime::TaskDriver;
 use crate::services::{PermissionManager, ToolRegistry};
 
+/// Where schedules are kept, and the local clock they run by (ADR 0063).
+pub(super) type SchedulePorts = (
+    Arc<dyn crate::ports::ScheduleRepository>,
+    Arc<dyn crate::ports::LocalClock>,
+);
+
 /// How long one message's documents may take to read (ADR 0062).
 pub const DOCUMENT_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -231,6 +237,9 @@ pub struct TaskService {
     /// The person's profile and memory (ADR 0061). Without it, chats are
     /// told nothing about the person.
     pub(super) personal: Option<Arc<dyn crate::ports::PersonalRepository>>,
+    /// Where schedules are kept, and the local clock they run by
+    /// (ADR 0063). Without them, nothing is scheduled.
+    pub(super) schedules: Option<SchedulePorts>,
     pub(super) execution_allowed: bool,
     pub(super) execution_guard: Option<Arc<dyn Send + Sync>>,
 }
@@ -265,6 +274,7 @@ impl TaskService {
             project_sources: None,
             documents: None,
             personal: None,
+            schedules: None,
             execution_allowed: true,
             execution_guard: None,
         }
@@ -290,6 +300,17 @@ impl TaskService {
     #[must_use]
     pub fn with_project_sources(mut self, reader: Arc<dyn ProjectSourceReader>) -> Self {
         self.project_sources = Some(reader);
+        self
+    }
+
+    /// Keep schedules in `store`, and run them by `clock` (ADR 0063).
+    #[must_use]
+    pub fn with_schedules(
+        mut self,
+        store: Arc<dyn crate::ports::ScheduleRepository>,
+        clock: Arc<dyn crate::ports::LocalClock>,
+    ) -> Self {
+        self.schedules = Some((store, clock));
         self
     }
 

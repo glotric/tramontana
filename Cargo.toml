@@ -44,6 +44,9 @@ anyhow = "1.0.104"
 # needs: zip reads Word's container with the Rust deflate backend, quick-xml is
 # the version the tree already carries, and pdf-extract reads PDF text.
 pdf-extract = { version = "=0.12.1", default-features = false }
+# The computer's local wall-clock time for schedules (ADR 0063): the version
+# already in the tree, with only its clock.
+chrono = { version = "=0.4.45", default-features = false, features = ["clock", "std"] }
 quick-xml = { version = "=0.42.0", default-features = false }
 zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2"] }
 async-trait = "0.1.92"

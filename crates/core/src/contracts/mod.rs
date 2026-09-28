@@ -33,6 +33,7 @@ mod provider;
 mod records;
 mod release;
 mod routing;
+mod schedule;
 mod task;
 mod time;
 
@@ -99,6 +100,7 @@ pub use release::{
     reason as release_reason,
 };
 pub use routing::{RoutedModel, RoutingDecision, RoutingFallback, reason as routing_reason};
+pub use schedule::{Cadence, LocalDateTime, NewSchedule, Schedule, ScheduleView, Weekday};
 pub use task::{InvalidTransition, TaskSnapshot, TaskState};
 pub use time::Timestamp;
 

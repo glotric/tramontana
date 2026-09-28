@@ -29,6 +29,35 @@ impl Clock for SystemClock {
     }
 }
 
+/// The computer's local wall-clock time, read from the operating system's
+/// time zone each time it is asked (ADR 0063), so a changed zone is
+/// followed at once.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemLocalClock;
+
+impl SystemLocalClock {
+    /// A clock reading the operating system's local time.
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl tramontana_core::ports::LocalClock for SystemLocalClock {
+    fn local_now(&self) -> tramontana_core::contracts::LocalDateTime {
+        use chrono::{Datelike, Timelike};
+        let now = chrono::Local::now();
+        let small = |value: u32| u8::try_from(value).unwrap_or(0);
+        tramontana_core::contracts::LocalDateTime {
+            year: now.year(),
+            month: small(now.month()),
+            day: small(now.day()),
+            hour: small(now.hour()),
+            minute: small(now.minute()),
+        }
+    }
+}
+
 /// Format seconds since the Unix epoch as `YYYY-MM-DDThh:mm:ss.sssZ`.
 fn format_rfc3339(seconds: u64, millis: u32) -> String {
     let days = seconds / 86_400;
@@ -94,6 +123,10 @@ mod tests {
 
     #[test]
     fn the_system_clock_advances() {
+        use tramontana_core::ports::LocalClock;
+        let local = SystemLocalClock::new().local_now();
+        assert!((1..=12).contains(&local.month) && (1..=31).contains(&local.day));
+        assert!(local.hour < 24 && local.minute < 60);
         let clock = SystemClock::new();
         let first = clock.now();
         assert!(first.as_str().ends_with('Z'));

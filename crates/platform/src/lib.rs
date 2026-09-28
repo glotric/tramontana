@@ -16,7 +16,7 @@ mod project_sources;
 mod secrets;
 
 pub use bundle::{BundleError, MANIFEST_FILE, read_bundle, write_bundle};
-pub use clock::SystemClock;
+pub use clock::{SystemClock, SystemLocalClock};
 pub use discovery::discover;
 pub use ids::UuidIdSource;
 pub use loopback::{Redirect, RedirectError};

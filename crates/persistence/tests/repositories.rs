@@ -801,3 +801,63 @@ async fn the_personal_profile_round_trips_with_its_notes_in_order() {
     assert_eq!(reloaded, profile);
     assert_eq!(reloaded.notes.len(), 2);
 }
+
+#[tokio::test]
+async fn a_schedule_round_trips_and_is_replaced_and_deleted() {
+    use tramontana_core::contracts::{
+        Cadence, LocalDateTime, RoutingMode, SCHEMA_VERSION, Schedule, Weekday,
+    };
+    use tramontana_core::ports::ScheduleRepository;
+    use tramontana_persistence::SqliteScheduleRepository;
+
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(&directory, "schedules").await;
+    let store = SqliteScheduleRepository::new(db.clone());
+    let local = |day: u8| LocalDateTime {
+        year: 2026,
+        month: 9,
+        day,
+        hour: 15,
+        minute: 0,
+    };
+    let mut schedule = Schedule {
+        schema_version: SCHEMA_VERSION,
+        schedule_id: "schedule-1".into(),
+        title: "Weekly update".into(),
+        goal: "Summarize the week.".into(),
+        project_id: None,
+        conversation_id: ConversationId::new("conversation-1"),
+        cadence: Cadence::Weekly {
+            weekday: Weekday::Friday,
+            hour: 15,
+            minute: 0,
+        },
+        routing_mode: RoutingMode::LocalOnly,
+        enabled: true,
+        created_at: at(0),
+        created_local: local(28),
+        last_run: None,
+        last_task_id: None,
+    };
+    store.save(&schedule).await.unwrap();
+    assert_eq!(
+        SqliteScheduleRepository::new(db.clone())
+            .list()
+            .await
+            .unwrap(),
+        [schedule.clone()]
+    );
+
+    schedule.enabled = false;
+    schedule.last_run = Some(local(25));
+    schedule.last_task_id = Some(TaskId::new("task-9"));
+    store.save(&schedule).await.unwrap();
+    assert_eq!(store.list().await.unwrap(), [schedule.clone()]);
+
+    store.delete("schedule-1").await.unwrap();
+    assert!(store.list().await.unwrap().is_empty());
+    assert!(matches!(
+        store.delete("schedule-1").await.unwrap_err(),
+        RepositoryError::NotFound { .. }
+    ));
+}

@@ -521,3 +521,49 @@ impl crate::ports::PersonalRepository for InMemoryPersonalRepository {
         Ok(())
     }
 }
+
+/// Schedules, held in memory (ADR 0063).
+#[derive(Debug, Default)]
+pub struct InMemoryScheduleRepository {
+    schedules: Mutex<Vec<crate::contracts::Schedule>>,
+}
+
+impl InMemoryScheduleRepository {
+    /// An empty store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl crate::ports::ScheduleRepository for InMemoryScheduleRepository {
+    async fn list(&self) -> Result<Vec<crate::contracts::Schedule>, RepositoryError> {
+        Ok(lock(&self.schedules)?.clone())
+    }
+
+    async fn save(&self, schedule: &crate::contracts::Schedule) -> Result<(), RepositoryError> {
+        let mut schedules = lock(&self.schedules)?;
+        match schedules
+            .iter_mut()
+            .find(|kept| kept.schedule_id == schedule.schedule_id)
+        {
+            Some(kept) => *kept = schedule.clone(),
+            None => schedules.push(schedule.clone()),
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, schedule_id: &str) -> Result<(), RepositoryError> {
+        let mut schedules = lock(&self.schedules)?;
+        let before = schedules.len();
+        schedules.retain(|kept| kept.schedule_id != schedule_id);
+        if schedules.len() == before {
+            return Err(RepositoryError::NotFound {
+                kind: "schedule",
+                id: schedule_id.to_owned(),
+            });
+        }
+        Ok(())
+    }
+}

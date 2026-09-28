@@ -2500,6 +2500,89 @@ h3 {
   font-size: 14px;
 }
 
+/* ---- Scheduled --------------------------------------------------------------- */
+
+.section-title {
+  margin-bottom: 12px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.schedule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.schedule-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--card);
+}
+
+.schedule-row .button {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+
+.schedule-text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.schedule-text strong {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.schedule-text span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.schedule-confirm {
+  display: flex;
+  gap: 6px;
+}
+
+.schedule-form {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.schedule-when {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.schedule-when label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.schedule-when select,
+.schedule-when input {
+  height: 40px;
+  padding: 0 12px;
+  font-size: 14px;
+  font-weight: 400;
+}
+
 /* ---- Narrow windows ------------------------------------------------------- */
 
 @media (max-width: 1180px) {

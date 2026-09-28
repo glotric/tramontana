@@ -32,6 +32,8 @@ mod reference_worker;
 mod release;
 mod routing;
 mod runtime;
+mod schedule;
+mod scheduling;
 mod suggestion;
 mod task_export;
 mod task_recovery;
@@ -84,6 +86,10 @@ pub use projection::TaskProjectionWriter;
 pub use recipe::{COMMAND_ENVIRONMENT, RECIPE_TOOL_ID};
 pub use redaction::{
     PLACEHOLDER, Redacted, carries_credential, reason as redaction_reason, redact, redacted_hash,
+};
+pub use schedule::{
+    SCHEDULE_GOAL_BYTES, SCHEDULE_TITLE_BYTES, SCHEDULES, check_new_schedule, due_occurrence,
+    latest_occurrence, next_occurrence, weekday_of,
 };
 pub use transcript::render_transcript;
 /// The reason a task moved on to another worker, from which that worker's

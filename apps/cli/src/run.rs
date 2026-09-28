@@ -246,7 +246,7 @@ pub(crate) async fn execute(mut args: TaskArgs) -> ExitCode {
 
 /// A routing mode, as `--mode` spells it.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum ModeArg {
+pub(crate) enum ModeArg {
     /// Models run on this device, and nothing is sent to a cloud model.
     LocalOnly,
     /// A model is chosen; anything sent to a cloud model is asked about first.

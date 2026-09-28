@@ -15,6 +15,7 @@ mod database;
 mod event_store;
 mod personal;
 mod repositories;
+mod schedules;
 
 pub use apps::SqliteAppSettingsRepository;
 
@@ -25,3 +26,4 @@ pub use repositories::{
     SqliteCheckpointRepository, SqliteConfigurationRepository, SqliteConversationRepository,
     SqliteProjectRepository, SqliteProviderSettingsRepository, SqliteTaskRepository,
 };
+pub use schedules::SqliteScheduleRepository;

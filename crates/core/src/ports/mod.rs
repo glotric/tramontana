@@ -21,7 +21,7 @@ mod secret;
 mod tool;
 mod worker;
 
-pub use clock::Clock;
+pub use clock::{Clock, LocalClock};
 pub use document::{DocumentError, DocumentReader};
 pub use event_store::{EventStore, EventStoreError};
 pub use ids::IdSource;
@@ -35,7 +35,7 @@ pub use read_only::{ReadOnlyLimits, ReadOnlyTurn, TOOL_RUN_LIMIT, ToolAdmission}
 pub use repository::{
     AppSettingsRepository, CheckpointRepository, ConfigurationRepository, ConversationRepository,
     PersonalRepository, ProjectRepository, ProviderSettingsRepository, RepositoryError,
-    TaskRepository,
+    ScheduleRepository, TaskRepository,
 };
 pub use secret::{SecretResolver, SecretVault};
 pub use tool::{ToolInvocation, ToolOutcome, ToolProvider, ToolTarget};

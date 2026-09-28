@@ -17,6 +17,7 @@ export type GlyphIcon =
   | "doc"
   | "chart"
   | "shield"
+  | "sun"
   | "wind"
   | "search"
   | "pen"
@@ -40,6 +41,16 @@ const HUES: Record<GlyphHue, readonly [string, string]> = {
 
 function circle(cx: number, cy: number, r: number): string {
   return `M${cx - r} ${cy}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0Z`;
+}
+
+function burst(cx: number, cy: number, n: number, ro: number, ri: number): string {
+  let d = "";
+  for (let i = 0; i < n * 2; i += 1) {
+    const r = i % 2 === 1 ? ri : ro;
+    const a = (Math.PI * i) / n - Math.PI / 2;
+    d += `${i === 0 ? "M" : "L"}${(cx + r * Math.cos(a)).toFixed(1)} ${(cy + r * Math.sin(a)).toFixed(1)}`;
+  }
+  return `${d}Z`;
 }
 
 function gear(cx: number, cy: number, n: number, ro: number, ri: number): string {
@@ -84,6 +95,7 @@ const SHAPES: Record<GlyphIcon, { readonly front: string; readonly detail: strin
       "M5 38a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v20H5ZM23 26a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v32H23ZM41 14a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v44H41Z",
     detail: "",
   },
+  sun: { front: burst(29, 35, 12, 26, 20), detail: circle(29, 35, 9) },
   shield: {
     front: "M29 7l23 8v15c0 14-9 25-23 30C15 55 6 44 6 30V15Z",
     detail: "M19 33l7 7 13-14",

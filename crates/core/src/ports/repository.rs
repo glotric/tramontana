@@ -368,3 +368,28 @@ pub trait PersonalRepository: Send + Sync {
         profile: &crate::contracts::PersonalProfile,
     ) -> Result<(), RepositoryError>;
 }
+
+/// Schedules (ADR 0063).
+#[async_trait]
+pub trait ScheduleRepository: Send + Sync {
+    /// Every schedule, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn list(&self) -> Result<Vec<crate::contracts::Schedule>, RepositoryError>;
+
+    /// Create or replace a schedule.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn save(&self, schedule: &crate::contracts::Schedule) -> Result<(), RepositoryError>;
+
+    /// Remove a schedule. Its conversation is kept.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::NotFound`] when it does not exist.
+    async fn delete(&self, schedule_id: &str) -> Result<(), RepositoryError>;
+}

@@ -19,6 +19,7 @@ import { ChangesPanel } from "./ChangesPanel.js";
 import { ChatView } from "./ChatView.js";
 import { ConversationMenu } from "./ConversationMenu.js";
 import { SearchPanel } from "./SearchPanel.js";
+import { ScheduledView } from "./ScheduledView.js";
 import { SettingsView } from "./SettingsView.js";
 import { ShareDialog } from "./ShareDialog.js";
 import { AttachButton, PendingFiles, useAttachments } from "./Attachments.js";
@@ -211,7 +212,9 @@ export function App(): React.JSX.Element {
   // Moves on whenever a task ends, so the Changes panel reads the tree again.
   const [revision, setRevision] = useState(0);
   // The work area, or the models and credentials the tasks run against.
-  const [view, setView] = useState<"work" | "models" | "apps" | "projects" | "settings">("work");
+  const [view, setView] = useState<
+    "work" | "models" | "apps" | "projects" | "settings" | "scheduled"
+  >("work");
   // Both side panels can be put away, leaving the work column on its own.
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(true);
@@ -799,6 +802,17 @@ export function App(): React.JSX.Element {
           <button
             type="button"
             className="rail-row rail-row--nav"
+            aria-pressed={view === "scheduled"}
+            onClick={() => {
+              setView((current) => (current === "scheduled" ? "work" : "scheduled"));
+            }}
+          >
+            <Glyph icon="clock" hue="orange" size={28} />
+            <span>Scheduled</span>
+          </button>
+          <button
+            type="button"
+            className="rail-row rail-row--nav"
             aria-pressed={view === "models"}
             onClick={() => {
               setView((current) => (current === "models" ? "work" : "models"));
@@ -949,7 +963,23 @@ export function App(): React.JSX.Element {
       )}
 
       <main className="workspace">
-        {view === "settings" ? (
+        {view === "scheduled" ? (
+          <ScheduledView
+            projects={projects}
+            onOpen={(schedule) => {
+              if (schedule.projectId === undefined) {
+                chooseMode("chat");
+                refreshChats();
+                setSelectedChatId(schedule.conversationId);
+              } else {
+                chooseMode("agent");
+                void selectProject(schedule.projectId).then(() =>
+                  selectConversation(schedule.conversationId),
+                );
+              }
+            }}
+          />
+        ) : view === "settings" ? (
           <SettingsView />
         ) : view === "projects" ? (
           <ProjectsView

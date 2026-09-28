@@ -329,6 +329,103 @@
       ],
       "type": "object"
     },
+    "Cadence": {
+      "description": "When a schedule runs, in local wall-clock time.",
+      "oneOf": [
+        {
+          "description": "Every day at a time.",
+          "properties": {
+            "hour": {
+              "description": "The hour, 0 to 23.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "daily",
+              "type": "string"
+            },
+            "minute": {
+              "description": "The minute, 0 to 59.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "hour",
+            "minute"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Monday to Friday at a time.",
+          "properties": {
+            "hour": {
+              "description": "The hour, 0 to 23.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "weekdays",
+              "type": "string"
+            },
+            "minute": {
+              "description": "The minute, 0 to 59.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "hour",
+            "minute"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One day a week at a time.",
+          "properties": {
+            "hour": {
+              "description": "The hour, 0 to 23.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "weekly",
+              "type": "string"
+            },
+            "minute": {
+              "description": "The minute, 0 to 59.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "weekday": {
+              "$ref": "#/$defs/Weekday",
+              "description": "The day."
+            }
+          },
+          "required": [
+            "kind",
+            "weekday",
+            "hour",
+            "minute"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "CancellationOrigin": {
       "description": "Who requested a cancellation.",
       "oneOf": [
@@ -2233,6 +2330,52 @@
       "description": "One tool invocation.",
       "type": "string"
     },
+    "LocalDateTime": {
+      "description": "A local wall-clock date and time, to the minute: what a person means by\n\"Friday at 15:00\" on this computer.",
+      "properties": {
+        "day": {
+          "description": "The day of the month, 1 to 31.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hour": {
+          "description": "The hour, 0 to 23.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minute": {
+          "description": "The minute, 0 to 59.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "month": {
+          "description": "The month, 1 to 12.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "year": {
+          "description": "The year.",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "year",
+        "month",
+        "day",
+        "hour",
+        "minute"
+      ],
+      "type": "object"
+    },
     "MemoryNote": {
       "description": "One thing the person asked Tramontana to remember.",
       "properties": {
@@ -2758,6 +2901,38 @@
           "type": "string"
         }
       ]
+    },
+    "NewSchedule": {
+      "description": "What a person fills in to create a schedule.",
+      "properties": {
+        "cadence": {
+          "$ref": "#/$defs/Cadence",
+          "description": "When it runs."
+        },
+        "goal": {
+          "description": "What each run is asked to do.",
+          "type": "string"
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId",
+          "description": "The project to work in; absent for a chat."
+        },
+        "routingMode": {
+          "$ref": "#/$defs/RoutingMode",
+          "description": "Where its models may run."
+        },
+        "title": {
+          "description": "What to call it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "goal",
+        "cadence",
+        "routingMode"
+      ],
+      "type": "object"
     },
     "NormalizedMessage": {
       "description": "A durable, provider-neutral message.",
@@ -3499,6 +3674,95 @@
           "type": "string"
         }
       ]
+    },
+    "Schedule": {
+      "description": "Regular work: a goal, where it runs, and when (ADR 0063).",
+      "properties": {
+        "cadence": {
+          "$ref": "#/$defs/Cadence",
+          "description": "When it runs."
+        },
+        "conversationId": {
+          "$ref": "#/$defs/ConversationId",
+          "description": "The conversation every run is a turn in."
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it was created."
+        },
+        "createdLocal": {
+          "$ref": "#/$defs/LocalDateTime",
+          "description": "When it was created, in local wall-clock time: no occurrence before\nthis runs."
+        },
+        "enabled": {
+          "description": "Whether it runs at all.",
+          "type": "boolean"
+        },
+        "goal": {
+          "description": "What each run is asked to do, redacted when saved.",
+          "type": "string"
+        },
+        "lastRun": {
+          "$ref": "#/$defs/LocalDateTime",
+          "description": "The occurrence it last ran for, or passed because a run was still\nunder way."
+        },
+        "lastTaskId": {
+          "$ref": "#/$defs/TaskId",
+          "description": "The task its last run started."
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId",
+          "description": "The project it works in; absent for a chat."
+        },
+        "routingMode": {
+          "$ref": "#/$defs/RoutingMode",
+          "description": "Where its models may run."
+        },
+        "scheduleId": {
+          "description": "Stable identifier.",
+          "type": "string"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "title": {
+          "description": "What the person calls it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "scheduleId",
+        "title",
+        "goal",
+        "conversationId",
+        "cadence",
+        "routingMode",
+        "enabled",
+        "createdAt",
+        "createdLocal"
+      ],
+      "type": "object"
+    },
+    "ScheduleView": {
+      "description": "A schedule, and when it runs next.",
+      "properties": {
+        "nextRun": {
+          "$ref": "#/$defs/LocalDateTime",
+          "description": "Its next occurrence after now, in local time; absent when it is off."
+        },
+        "schedule": {
+          "$ref": "#/$defs/Schedule",
+          "description": "The schedule."
+        }
+      },
+      "required": [
+        "schedule"
+      ],
+      "type": "object"
     },
     "SearchField": {
       "description": "Where a search found what it was asked for (ADR 0059).",
@@ -4245,6 +4509,46 @@
         {
           "const": "secret",
           "description": "Internal audit marker; never delivered to the user interface.",
+          "type": "string"
+        }
+      ]
+    },
+    "Weekday": {
+      "description": "A day of the week.",
+      "oneOf": [
+        {
+          "const": "monday",
+          "description": "Monday.",
+          "type": "string"
+        },
+        {
+          "const": "tuesday",
+          "description": "Tuesday.",
+          "type": "string"
+        },
+        {
+          "const": "wednesday",
+          "description": "Wednesday.",
+          "type": "string"
+        },
+        {
+          "const": "thursday",
+          "description": "Thursday.",
+          "type": "string"
+        },
+        {
+          "const": "friday",
+          "description": "Friday.",
+          "type": "string"
+        },
+        {
+          "const": "saturday",
+          "description": "Saturday.",
+          "type": "string"
+        },
+        {
+          "const": "sunday",
+          "description": "Sunday.",
           "type": "string"
         }
       ]

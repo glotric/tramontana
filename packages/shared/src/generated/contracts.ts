@@ -234,6 +234,48 @@ export interface BundleEntry {
 }
 
 /**
+ * When a schedule runs, in local wall-clock time.
+ */
+export type Cadence =
+  | {
+      /**
+       * The hour, 0 to 23.
+       */
+      hour: number;
+      kind: "daily";
+      /**
+       * The minute, 0 to 59.
+       */
+      minute: number;
+    }
+  | {
+      /**
+       * The hour, 0 to 23.
+       */
+      hour: number;
+      kind: "weekdays";
+      /**
+       * The minute, 0 to 59.
+       */
+      minute: number;
+    }
+  | {
+      /**
+       * The hour, 0 to 23.
+       */
+      hour: number;
+      kind: "weekly";
+      /**
+       * The minute, 0 to 59.
+       */
+      minute: number;
+      /**
+       * The day.
+       */
+      weekday: "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+    };
+
+/**
  * Who requested a cancellation.
  */
 export type CancellationOrigin = "user" | "system";
@@ -1758,6 +1800,33 @@ export type IntegrationMode = "embedded" | "acp" | "customProcess";
 export type InvocationId = string;
 
 /**
+ * A local wall-clock date and time, to the minute: what a person means by
+ * "Friday at 15:00" on this computer.
+ */
+export interface LocalDateTime {
+  /**
+   * The day of the month, 1 to 31.
+   */
+  day: number;
+  /**
+   * The hour, 0 to 23.
+   */
+  hour: number;
+  /**
+   * The minute, 0 to 59.
+   */
+  minute: number;
+  /**
+   * The month, 1 to 12.
+   */
+  month: number;
+  /**
+   * The year.
+   */
+  year: number;
+}
+
+/**
  * One thing the person asked Tramontana to remember.
  */
 export interface MemoryNote {
@@ -2040,6 +2109,69 @@ export interface ModelRequest {
  * What a worker can do on the network.
  */
 export type NetworkControl = "denied" | "brokered" | "constrained" | "unobservable";
+
+/**
+ * What a person fills in to create a schedule.
+ */
+export interface NewSchedule {
+  /**
+   * When it runs.
+   */
+  cadence:
+    | {
+        /**
+         * The hour, 0 to 23.
+         */
+        hour: number;
+        kind: "daily";
+        /**
+         * The minute, 0 to 59.
+         */
+        minute: number;
+      }
+    | {
+        /**
+         * The hour, 0 to 23.
+         */
+        hour: number;
+        kind: "weekdays";
+        /**
+         * The minute, 0 to 59.
+         */
+        minute: number;
+      }
+    | {
+        /**
+         * The hour, 0 to 23.
+         */
+        hour: number;
+        kind: "weekly";
+        /**
+         * The minute, 0 to 59.
+         */
+        minute: number;
+        /**
+         * The day.
+         */
+        weekday: "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+      };
+  /**
+   * What each run is asked to do.
+   */
+  goal: string;
+  /**
+   * The project to work in; absent for a chat.
+   */
+  projectId?: string;
+  /**
+   * Where its models may run.
+   */
+  routingMode: "localOnly" | "automatic" | "cloudPreferred";
+  /**
+   * What to call it.
+   */
+  title: string;
+}
 
 /**
  * A durable, provider-neutral message.
@@ -2569,6 +2701,103 @@ export interface RoutingFallback {
 export type RoutingMode = "localOnly" | "automatic" | "cloudPreferred";
 
 /**
+ * Regular work: a goal, where it runs, and when (ADR 0063).
+ */
+export interface Schedule {
+  /**
+   * When it runs.
+   */
+  cadence:
+    | {
+        /**
+         * The hour, 0 to 23.
+         */
+        hour: number;
+        kind: "daily";
+        /**
+         * The minute, 0 to 59.
+         */
+        minute: number;
+      }
+    | {
+        /**
+         * The hour, 0 to 23.
+         */
+        hour: number;
+        kind: "weekdays";
+        /**
+         * The minute, 0 to 59.
+         */
+        minute: number;
+      }
+    | {
+        /**
+         * The hour, 0 to 23.
+         */
+        hour: number;
+        kind: "weekly";
+        /**
+         * The minute, 0 to 59.
+         */
+        minute: number;
+        /**
+         * The day.
+         */
+        weekday: "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+      };
+  /**
+   * The conversation every run is a turn in.
+   */
+  conversationId: string;
+  /**
+   * When it was created.
+   */
+  createdAt: string;
+  createdLocal: LocalDateTime;
+  /**
+   * Whether it runs at all.
+   */
+  enabled: boolean;
+  /**
+   * What each run is asked to do, redacted when saved.
+   */
+  goal: string;
+  lastRun?: LocalDateTime;
+  /**
+   * The task its last run started.
+   */
+  lastTaskId?: string;
+  /**
+   * The project it works in; absent for a chat.
+   */
+  projectId?: string;
+  /**
+   * Where its models may run.
+   */
+  routingMode: "localOnly" | "automatic" | "cloudPreferred";
+  /**
+   * Stable identifier.
+   */
+  scheduleId: string;
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+  /**
+   * What the person calls it.
+   */
+  title: string;
+}
+
+/**
+ * A schedule, and when it runs next.
+ */
+export interface ScheduleView {
+  nextRun?: LocalDateTime;
+  schedule: Schedule;
+}
+
+/**
  * Where a search found what it was asked for (ADR 0059).
  */
 export type SearchField = "title" | "goal" | "project";
@@ -3051,3 +3280,8 @@ export interface Usage {
  * (`CORE_CONTRACTS.md` §5).
  */
 export type Visibility = "user" | "diagnostic" | "secret";
+
+/**
+ * A day of the week.
+ */
+export type Weekday = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";

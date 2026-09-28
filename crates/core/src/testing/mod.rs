@@ -25,7 +25,7 @@ mod tool;
 mod tool_plane;
 mod worker;
 
-pub use clock::FakeClock;
+pub use clock::{FakeClock, FakeLocalClock};
 pub use event_store::InMemoryEventStore;
 pub use ids::SequentialIdSource;
 pub use model::{FakeModelProvider, FakeModelScript};
@@ -33,7 +33,8 @@ pub use permission::{InMemoryApprovalStore, ScriptedApprover};
 pub use receiving_worker::{HANDOFF_RECEIVED, RECEIVING_AGENT_ID, ReceivingWorker};
 pub use repositories::{
     InMemoryCheckpointRepository, InMemoryConfigurationRepository, InMemoryConversationRepository,
-    InMemoryPersonalRepository, InMemoryProjectRepository, InMemoryTaskRepository,
+    InMemoryPersonalRepository, InMemoryProjectRepository, InMemoryScheduleRepository,
+    InMemoryTaskRepository,
 };
 pub use secret::InMemorySecretVault;
 pub use tool::{FAKE_TOOL_ID, FAKE_WRITE_TOOL_ID, FakeToolProvider, FakeWriteTool};

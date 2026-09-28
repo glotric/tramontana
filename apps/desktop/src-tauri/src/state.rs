@@ -241,6 +241,13 @@ impl AppState {
             .with_personal(Arc::new(
                 tramontana_persistence::SqlitePersonalRepository::new(database.clone()),
             ))
+            // So schedules run by the computer's local time (ADR 0063).
+            .with_schedules(
+                Arc::new(tramontana_persistence::SqliteScheduleRepository::new(
+                    database.clone(),
+                )),
+                Arc::new(tramontana_platform::SystemLocalClock::new()),
+            )
             // So PDF and Word files can be attached (ADR 0062).
             .with_document_reader(Arc::new(tramontana_adapters_documents::Documents::new()))
             .with_execution_guard(lease);

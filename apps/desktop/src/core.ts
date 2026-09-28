@@ -2,8 +2,11 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   ApprovalDecisionKind,
+  NewSchedule,
   PersonalDetails,
   PersonalProfile,
+  Schedule,
+  ScheduleView,
   SearchResults,
   TranscriptOptions,
   ApprovalRequest,
@@ -789,4 +792,29 @@ export async function remember(text: string): Promise<PersonalProfile> {
 /** Forget one note. */
 export async function forget(noteId: string): Promise<PersonalProfile> {
   return invoke<PersonalProfile>("forget", { noteId });
+}
+
+/** Every schedule, with when it runs next (ADR 0063). */
+export async function listSchedules(): Promise<readonly ScheduleView[]> {
+  return invoke<ScheduleView[]>("list_schedules");
+}
+
+/** Create a schedule and the conversation its runs are turns in. */
+export async function createSchedule(schedule: NewSchedule): Promise<ScheduleView> {
+  return invoke<ScheduleView>("create_schedule", { schedule });
+}
+
+/** Turn a schedule on or off. */
+export async function setScheduleEnabled(scheduleId: string, enabled: boolean): Promise<Schedule> {
+  return invoke<Schedule>("set_schedule_enabled", { scheduleId, enabled });
+}
+
+/** Delete a schedule; its conversation is kept. */
+export async function deleteSchedule(scheduleId: string): Promise<void> {
+  return invoke("delete_schedule", { scheduleId });
+}
+
+/** Run a schedule now. */
+export async function runScheduleNow(scheduleId: string): Promise<string> {
+  return invoke<string>("run_schedule_now", { scheduleId });
 }

@@ -779,3 +779,179 @@ async fn notes_are_kept_but_not_told_when_memory_is_off_and_can_be_forgotten() {
         ErrorCode::NotFound
     );
 }
+
+fn local(year: i32, month: u8, day: u8, hour: u8, minute: u8) -> LocalDateTime {
+    LocalDateTime {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+    }
+}
+
+async fn settled(service: &TaskService, task: &TaskId) -> Vec<EventEnvelope> {
+    timeout(Duration::from_secs(20), async {
+        loop {
+            let events = service.replay_task_events(task, 0).await.unwrap();
+            if events.last().is_some_and(|event| {
+                matches!(
+                    event.kind,
+                    TaskEventKind::TaskCompleted
+                        | TaskEventKind::TaskFailed
+                        | TaskEventKind::TaskCancelled
+                )
+            }) {
+                return events;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_schedule_runs_once_per_occurrence_as_a_turn_in_its_own_conversation() {
+    let model = Numbered::new();
+    // Monday 2026-09-28, 7:00.
+    let clock = Arc::new(FakeLocalClock::at(local(2026, 9, 28, 7, 0)));
+    let service = service(&model).with_schedules(
+        Arc::new(InMemoryScheduleRepository::new()),
+        Arc::clone(&clock) as Arc<dyn LocalClock>,
+    );
+    let created = service
+        .create_schedule(&NewSchedule {
+            title: "Morning briefing".into(),
+            goal: "Plan my day.".into(),
+            project_id: None,
+            cadence: Cadence::Weekdays { hour: 8, minute: 0 },
+            routing_mode: RoutingMode::LocalOnly,
+        })
+        .await
+        .unwrap();
+    assert_eq!(created.next_run, Some(local(2026, 9, 28, 8, 0)));
+    let conversation = service
+        .get_conversation(&created.schedule.conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(conversation.title, "Morning briefing");
+    assert_eq!(conversation.project_id, None);
+
+    // Not yet 8:00: nothing runs.
+    assert!(service.run_due_schedules().await.unwrap().is_empty());
+
+    clock.set(local(2026, 9, 28, 8, 0));
+    let started = service.run_due_schedules().await.unwrap();
+    assert_eq!(started.len(), 1);
+    settled(&service, &started[0]).await;
+    // A second check in the same minute runs nothing more.
+    assert!(service.run_due_schedules().await.unwrap().is_empty());
+
+    // Away until Thursday afternoon: one catch-up run, not three.
+    clock.set(local(2026, 10, 1, 14, 0));
+    let caught_up = service.run_due_schedules().await.unwrap();
+    assert_eq!(caught_up.len(), 1);
+    settled(&service, &caught_up[0]).await;
+    assert!(service.run_due_schedules().await.unwrap().is_empty());
+
+    // Both runs are turns in the schedule's conversation; the second sees
+    // the first's answer.
+    let tasks = service
+        .list_tasks(Some(&created.schedule.conversation_id))
+        .await
+        .unwrap();
+    assert_eq!(tasks.len(), 2);
+    let conversation: Vec<_> = model
+        .last()
+        .messages
+        .iter()
+        .filter(|message| message.role != MessageRole::System)
+        .map(text)
+        .collect();
+    assert_eq!(conversation, ["Plan my day.", "Answer 1.", "Plan my day."]);
+}
+
+#[tokio::test]
+async fn a_paused_schedule_does_not_run_and_is_not_owed_what_passed_while_off() {
+    let model = Numbered::new();
+    let clock = Arc::new(FakeLocalClock::at(local(2026, 9, 28, 7, 0)));
+    let service = service(&model).with_schedules(
+        Arc::new(InMemoryScheduleRepository::new()),
+        Arc::clone(&clock) as Arc<dyn LocalClock>,
+    );
+    let id = service
+        .create_schedule(&NewSchedule {
+            title: "Daily".into(),
+            goal: "Hello?".into(),
+            project_id: None,
+            cadence: Cadence::Daily { hour: 8, minute: 0 },
+            routing_mode: RoutingMode::LocalOnly,
+        })
+        .await
+        .unwrap()
+        .schedule
+        .schedule_id;
+
+    service.set_schedule_enabled(&id, false).await.unwrap();
+    clock.set(local(2026, 9, 29, 9, 0));
+    assert!(service.run_due_schedules().await.unwrap().is_empty());
+    assert_eq!(service.list_schedules().await.unwrap()[0].next_run, None);
+
+    // On again at 9:00: today's 8:00 passed while it was off.
+    service.set_schedule_enabled(&id, true).await.unwrap();
+    assert!(service.run_due_schedules().await.unwrap().is_empty());
+    clock.set(local(2026, 9, 30, 8, 0));
+    assert_eq!(service.run_due_schedules().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_schedule_whose_last_run_is_still_under_way_is_not_run_again() {
+    let model = Numbered::new();
+    model.hold.store(true, std::sync::atomic::Ordering::SeqCst);
+    let clock = Arc::new(FakeLocalClock::at(local(2026, 9, 28, 8, 0)));
+    let service = service(&model).with_schedules(
+        Arc::new(InMemoryScheduleRepository::new()),
+        Arc::clone(&clock) as Arc<dyn LocalClock>,
+    );
+    let created = service
+        .create_schedule(&NewSchedule {
+            title: "Slow".into(),
+            goal: "Think.".into(),
+            project_id: None,
+            cadence: Cadence::Daily { hour: 9, minute: 0 },
+            routing_mode: RoutingMode::LocalOnly,
+        })
+        .await
+        .unwrap();
+    let first = service
+        .run_schedule_now(&created.schedule.schedule_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .run_schedule_now(&created.schedule.schedule_id)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    // Its 9:00 occurrence passes rather than piling up behind the first.
+    clock.set(local(2026, 9, 28, 9, 0));
+    assert!(service.run_due_schedules().await.unwrap().is_empty());
+    assert!(service.run_due_schedules().await.unwrap().is_empty());
+    service.cancel_task(&first).await.unwrap();
+
+    // Deleting the schedule keeps its conversation.
+    service
+        .delete_schedule(&created.schedule.schedule_id)
+        .await
+        .unwrap();
+    assert!(service.list_schedules().await.unwrap().is_empty());
+    assert!(
+        service
+            .get_conversation(&created.schedule.conversation_id)
+            .await
+            .is_ok()
+    );
+}
