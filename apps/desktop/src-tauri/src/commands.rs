@@ -180,6 +180,53 @@ pub(crate) async fn list_conversations(
     state.service.list_conversations(project_id.as_ref()).await
 }
 
+/// Give a conversation a new title (ADR 0059).
+///
+/// # Errors
+///
+/// Whatever the service reports: an empty or oversized title, or an unknown
+/// conversation.
+#[tauri::command]
+pub(crate) async fn rename_conversation(
+    conversation_id: ConversationId,
+    title: String,
+    state: State<'_, AppState>,
+) -> Result<ConversationRecord, ErrorEnvelope> {
+    state
+        .service
+        .rename_conversation(&conversation_id, &title)
+        .await
+}
+
+/// Delete a conversation and everything recorded under it (ADR 0059). The
+/// window asks the person first; this does not.
+///
+/// # Errors
+///
+/// Whatever the service reports, including a conflict while one of its tasks
+/// runs.
+#[tauri::command]
+pub(crate) async fn delete_conversation(
+    conversation_id: ConversationId,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    state.service.delete_conversation(&conversation_id).await
+}
+
+/// Search conversation titles, what was asked in them, and project names
+/// and folders (ADR 0059).
+///
+/// # Errors
+///
+/// Whatever the service reports, such as an empty query.
+#[tauri::command]
+pub(crate) async fn search(
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::SearchResults, ErrorEnvelope> {
+    state.service.search(&query).await
+}
+
 /// List durable tasks, optionally narrowed to a conversation.
 #[tauri::command]
 pub(crate) async fn list_tasks(

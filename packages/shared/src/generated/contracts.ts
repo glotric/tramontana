@@ -662,6 +662,25 @@ export interface ContextSource {
 }
 
 /**
+ * A conversation a search found, and why (ADR 0059).
+ */
+export interface ConversationHit {
+  conversation: ConversationRecord;
+  /**
+   * The message that matched, when it was a message.
+   */
+  excerpt?: string;
+  /**
+   * Where the match was.
+   */
+  matchedIn: "title" | "goal" | "project";
+  /**
+   * The name of its project, when it belongs to one.
+   */
+  projectName?: string;
+}
+
+/**
  * A conversation within a project, or a projectless conversation.
  */
 export type ConversationId = string;
@@ -2460,6 +2479,30 @@ export interface RoutingFallback {
  * The user's standing policy for where inference may run.
  */
 export type RoutingMode = "localOnly" | "automatic" | "cloudPreferred";
+
+/**
+ * Where a search found what it was asked for (ADR 0059).
+ */
+export type SearchField = "title" | "goal" | "project";
+
+/**
+ * What a search of conversation titles and project metadata found
+ * (`PHASE_1_SPEC.md` §4.1, ADR 0059).
+ */
+export interface SearchResults {
+  /**
+   * Matching conversations, newest first.
+   */
+  conversations: ConversationHit[];
+  /**
+   * Matching projects, by name or folder.
+   */
+  projects: ProjectRecord[];
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+}
 
 /**
  * An opaque handle to a credential.

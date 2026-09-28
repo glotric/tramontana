@@ -872,6 +872,32 @@
       ],
       "type": "object"
     },
+    "ConversationHit": {
+      "description": "A conversation a search found, and why (ADR 0059).",
+      "properties": {
+        "conversation": {
+          "$ref": "#/$defs/ConversationRecord",
+          "description": "The conversation."
+        },
+        "excerpt": {
+          "description": "The message that matched, when it was a message.",
+          "type": "string"
+        },
+        "matchedIn": {
+          "$ref": "#/$defs/SearchField",
+          "description": "Where the match was."
+        },
+        "projectName": {
+          "description": "The name of its project, when it belongs to one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation",
+        "matchedIn"
+      ],
+      "type": "object"
+    },
     "ConversationId": {
       "description": "A conversation within a project, or a projectless conversation.",
       "type": "string"
@@ -3353,6 +3379,57 @@
           "type": "string"
         }
       ]
+    },
+    "SearchField": {
+      "description": "Where a search found what it was asked for (ADR 0059).",
+      "oneOf": [
+        {
+          "const": "title",
+          "description": "The conversation's title.",
+          "type": "string"
+        },
+        {
+          "const": "goal",
+          "description": "What was asked in one of its messages.",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "description": "The name or folder of the project it belongs to.",
+          "type": "string"
+        }
+      ]
+    },
+    "SearchResults": {
+      "description": "What a search of conversation titles and project metadata found\n(`PHASE_1_SPEC.md` §4.1, ADR 0059).",
+      "properties": {
+        "conversations": {
+          "description": "Matching conversations, newest first.",
+          "items": {
+            "$ref": "#/$defs/ConversationHit"
+          },
+          "type": "array"
+        },
+        "projects": {
+          "description": "Matching projects, by name or folder.",
+          "items": {
+            "$ref": "#/$defs/ProjectRecord"
+          },
+          "type": "array"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "conversations",
+        "projects"
+      ],
+      "type": "object"
     },
     "SecretRef": {
       "description": "An opaque handle to a credential.\n\nThis is the only representation of a secret that may be persisted, logged,\nexported, or sent over IPC. `key` is an application-generated identifier\nand never carries any part of the value it refers to\n(`SECURITY_AND_PERMISSIONS.md` §7).",

@@ -294,6 +294,37 @@ impl ConversationRepository for SqliteConversationRepository {
         }
         Ok(())
     }
+
+    async fn rename(
+        &self,
+        conversation_id: &ConversationId,
+        title: &str,
+    ) -> Result<(), RepositoryError> {
+        let result = sqlx::query("UPDATE conversation SET title = ? WHERE conversation_id = ?")
+            .bind(title)
+            .bind(conversation_id.as_str())
+            .execute(self.database.pool())
+            .await
+            .map_err(|error| unavailable(&error))?;
+        if result.rows_affected() == 0 {
+            return Err(not_found("conversation", conversation_id));
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, conversation_id: &ConversationId) -> Result<(), RepositoryError> {
+        // The schema cascades to the conversation's messages, and to any task
+        // row still under it with its checkpoint.
+        let result = sqlx::query("DELETE FROM conversation WHERE conversation_id = ?")
+            .bind(conversation_id.as_str())
+            .execute(self.database.pool())
+            .await
+            .map_err(|error| unavailable(&error))?;
+        if result.rows_affected() == 0 {
+            return Err(not_found("conversation", conversation_id));
+        }
+        Ok(())
+    }
 }
 
 /// Task rows and their cached projection.
@@ -644,6 +675,20 @@ fn task_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<TaskRecord, Repository
 // readable as the literal it is.
 #[async_trait]
 impl TaskRepository for SqliteTaskRepository {
+    async fn delete(&self, task_id: &TaskId) -> Result<(), RepositoryError> {
+        // Cascades to its checkpoint; its messages keep their conversation
+        // and lose the task, as the schema says.
+        let result = sqlx::query("DELETE FROM task WHERE task_id = ?")
+            .bind(task_id.as_str())
+            .execute(self.database.pool())
+            .await
+            .map_err(|error| unavailable(&error))?;
+        if result.rows_affected() == 0 {
+            return Err(not_found("task", task_id));
+        }
+        Ok(())
+    }
+
     async fn create(&self, record: &TaskRecord) -> Result<(), RepositoryError> {
         sqlx::query(
             "INSERT INTO task (task_id, conversation_id, project_id, goal_summary,

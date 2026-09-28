@@ -123,6 +123,36 @@ impl ConversationRepository for InMemoryConversationRepository {
         record.archived_at = Some(at.clone());
         Ok(())
     }
+
+    async fn rename(
+        &self,
+        conversation_id: &ConversationId,
+        title: &str,
+    ) -> Result<(), RepositoryError> {
+        let mut conversations = lock(&self.conversations)?;
+        let record = conversations
+            .iter_mut()
+            .find(|record| record.conversation_id == *conversation_id)
+            .ok_or_else(|| RepositoryError::NotFound {
+                kind: "conversation",
+                id: conversation_id.to_string(),
+            })?;
+        title.clone_into(&mut record.title);
+        Ok(())
+    }
+
+    async fn delete(&self, conversation_id: &ConversationId) -> Result<(), RepositoryError> {
+        let mut conversations = lock(&self.conversations)?;
+        let before = conversations.len();
+        conversations.retain(|record| record.conversation_id != *conversation_id);
+        if conversations.len() == before {
+            return Err(RepositoryError::NotFound {
+                kind: "conversation",
+                id: conversation_id.to_string(),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Task rows held in memory, optionally backed by an event store.
@@ -162,6 +192,19 @@ impl InMemoryTaskRepository {
 
 #[async_trait]
 impl TaskRepository for InMemoryTaskRepository {
+    async fn delete(&self, task_id: &TaskId) -> Result<(), RepositoryError> {
+        let mut tasks = lock(&self.tasks)?;
+        let before = tasks.len();
+        tasks.retain(|record| record.task_id != *task_id);
+        if tasks.len() == before {
+            return Err(RepositoryError::NotFound {
+                kind: "task",
+                id: task_id.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     async fn create(&self, record: &TaskRecord) -> Result<(), RepositoryError> {
         lock(&self.tasks)?.push(record.clone());
         Ok(())

@@ -2,6 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   ApprovalDecisionKind,
+  SearchResults,
   ApprovalRequest,
   ConversationRecord,
   CoreInfo,
@@ -725,4 +726,25 @@ export async function chooseAttachments(): Promise<readonly StagedAttachment[]> 
 /** Stop holding a picked file the person removed before sending. */
 export async function discardAttachment(token: string): Promise<void> {
   return invoke("discard_attachment", { token });
+}
+
+/** Give a conversation a new title (ADR 0059). */
+export async function renameConversation(
+  conversationId: string,
+  title: string,
+): Promise<ConversationRecord> {
+  return invoke<ConversationRecord>("rename_conversation", { conversationId, title });
+}
+
+/**
+ * Delete a conversation and every task, event and checkpoint recorded under
+ * it (ADR 0059). Ask the person first: this cannot be undone.
+ */
+export async function deleteConversation(conversationId: string): Promise<void> {
+  return invoke("delete_conversation", { conversationId });
+}
+
+/** Search conversation titles, what was asked in them, and projects (ADR 0059). */
+export async function search(query: string): Promise<SearchResults> {
+  return invoke<SearchResults>("search", { query });
 }

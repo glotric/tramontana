@@ -23,6 +23,51 @@ enum ConversationCommand {
     List(ListConversationArgs),
     /// Inspect one durable conversation.
     Inspect(InspectConversationArgs),
+    /// Give a conversation a new title.
+    Rename(RenameConversationArgs),
+    /// Delete a conversation and every task, event and checkpoint recorded
+    /// under it. This cannot be undone.
+    Delete(DeleteConversationArgs),
+    /// Search conversation titles, what was asked in them, and project names
+    /// and folders.
+    Search(SearchArgs),
+}
+
+#[derive(Debug, Args)]
+struct RenameConversationArgs {
+    #[arg(value_name = "CONVERSATION_ID")]
+    conversation_id: String,
+
+    /// The new title.
+    title: String,
+
+    /// Database file to use.
+    #[arg(long, value_name = "PATH")]
+    profile: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct DeleteConversationArgs {
+    #[arg(value_name = "CONVERSATION_ID")]
+    conversation_id: String,
+
+    /// Confirm the deletion. Without it, nothing is deleted.
+    #[arg(long)]
+    yes: bool,
+
+    /// Database file to use.
+    #[arg(long, value_name = "PATH")]
+    profile: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct SearchArgs {
+    /// What to look for, ignoring case.
+    query: String,
+
+    /// Database file to use.
+    #[arg(long, value_name = "PATH")]
+    profile: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -66,6 +111,63 @@ pub(crate) async fn execute(args: ConversationArgs) -> ExitCode {
         ConversationCommand::Create(args) => create(args).await,
         ConversationCommand::List(args) => list(args).await,
         ConversationCommand::Inspect(args) => inspect(args).await,
+        ConversationCommand::Rename(args) => rename(args).await,
+        ConversationCommand::Delete(args) => delete(args).await,
+        ConversationCommand::Search(args) => search(args).await,
+    }
+}
+
+async fn rename(args: RenameConversationArgs) -> ExitCode {
+    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
+        Ok(service) => service,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match service
+        .rename_conversation(&ConversationId::new(args.conversation_id), &args.title)
+        .await
+    {
+        Ok(conversation) => render::json(&conversation),
+        Err(error) => render::application_error(&error),
+    }
+}
+
+async fn delete(args: DeleteConversationArgs) -> ExitCode {
+    if !args.yes {
+        eprintln!(
+            "error: deleting a conversation removes every task, event and checkpoint recorded under it, and cannot be undone; pass --yes to confirm"
+        );
+        return ExitCode::FAILURE;
+    }
+    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
+        Ok(service) => service,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match service
+        .delete_conversation(&ConversationId::new(args.conversation_id))
+        .await
+    {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => render::application_error(&error),
+    }
+}
+
+async fn search(args: SearchArgs) -> ExitCode {
+    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
+        Ok(service) => service,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match service.search(&args.query).await {
+        Ok(results) => render::json(&results),
+        Err(error) => render::application_error(&error),
     }
 }
 

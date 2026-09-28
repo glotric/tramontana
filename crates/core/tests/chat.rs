@@ -15,12 +15,15 @@ use tramontana_core::{contracts::*, ports::*, services::*, testing::*};
 /// A model that numbers its answers and keeps every request it was given.
 struct Numbered {
     requests: Mutex<Vec<ModelRequest>>,
+    /// Stay in the call until cancelled, so a task stays under way.
+    hold: std::sync::atomic::AtomicBool,
 }
 
 impl Numbered {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             requests: Mutex::new(Vec::new()),
+            hold: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -55,8 +58,16 @@ impl ModelProvider for Numbered {
     async fn stream(
         &self,
         request: AuthorizedModelRequest,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<mpsc::Receiver<ModelEvent>, ErrorEnvelope> {
+        if self.hold.load(std::sync::atomic::Ordering::SeqCst) {
+            cancel.cancelled().await;
+            return Err(ErrorEnvelope::new(
+                ErrorCode::Cancelled,
+                "cancelled",
+                CorrelationId::new("test"),
+            ));
+        }
         let stream_id = request.request().request_id.clone();
         let answer = {
             let mut requests = self.requests.lock().unwrap();
@@ -383,5 +394,165 @@ async fn a_file_that_cannot_be_attached_leaves_no_task_behind() {
             .await
             .unwrap()
             .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_conversation_is_renamed_and_an_empty_title_refused() {
+    let model = Numbered::new();
+    let service = service(&model);
+    let chat = service.create_conversation(None, "Chat").await.unwrap();
+
+    let renamed = service
+        .rename_conversation(&chat.conversation_id, "  Winds of the Adriatic ")
+        .await
+        .unwrap();
+    assert_eq!(renamed.title, "Winds of the Adriatic");
+    assert_eq!(
+        service
+            .get_conversation(&chat.conversation_id)
+            .await
+            .unwrap()
+            .title,
+        "Winds of the Adriatic"
+    );
+    let empty = service
+        .rename_conversation(&chat.conversation_id, "   ")
+        .await
+        .unwrap_err();
+    assert_eq!(empty.code, ErrorCode::InvalidRequest);
+}
+
+#[tokio::test]
+async fn deleting_a_conversation_removes_its_tasks_and_their_events_and_nothing_else() {
+    let model = Numbered::new();
+    let service = service(&model);
+    let gone = service.create_conversation(None, "Gone").await.unwrap();
+    let kept = service.create_conversation(None, "Kept").await.unwrap();
+    let events = ask(&service, &gone.conversation_id, "First?").await;
+    let removed_task = events[0].task_id.clone();
+    ask(&service, &kept.conversation_id, "Second?").await;
+
+    service
+        .delete_conversation(&gone.conversation_id)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        service
+            .get_conversation(&gone.conversation_id)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+    assert!(
+        service
+            .replay_task_events(&removed_task, 0)
+            .await
+            .map_or(true, |events| events.is_empty())
+    );
+    let left = service.list_tasks(None).await.unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(
+        left[0].conversation_id.as_ref(),
+        Some(&kept.conversation_id)
+    );
+}
+
+#[tokio::test]
+async fn a_conversation_with_a_task_under_way_is_not_deleted() {
+    let model = Numbered::new();
+    model.hold.store(true, std::sync::atomic::Ordering::SeqCst);
+    let service = service(&model);
+    let chat = service.create_conversation(None, "Busy").await.unwrap();
+    let task = service
+        .start_task(StartTaskRequest {
+            conversation_id: Some(chat.conversation_id.clone()),
+            goal: "Think hard.".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let refused = service
+        .delete_conversation(&chat.conversation_id)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict);
+    assert!(
+        service
+            .get_conversation(&chat.conversation_id)
+            .await
+            .is_ok()
+    );
+    service.cancel_task(&task).await.unwrap();
+}
+
+#[tokio::test]
+async fn search_finds_titles_questions_and_projects_ignoring_case() {
+    let model = Numbered::new();
+    let service = service(&model);
+    let project = service
+        .create_project("Harbour cranes", vec!["/work/cranes".into()])
+        .await
+        .unwrap();
+    let in_project = service
+        .create_conversation(Some(project.project_id.clone()), "Maintenance plan")
+        .await
+        .unwrap();
+    let titled = service
+        .create_conversation(None, "Bora warnings")
+        .await
+        .unwrap();
+    let asked = service.create_conversation(None, "Misc").await.unwrap();
+    ask(
+        &service,
+        &asked.conversation_id,
+        "When does the BORA blow hardest?",
+    )
+    .await;
+
+    let found = service.search("bora").await.unwrap();
+    let ids: Vec<_> = found
+        .conversations
+        .iter()
+        .map(|hit| (hit.conversation.conversation_id.clone(), hit.matched_in))
+        .collect();
+    assert!(ids.contains(&(titled.conversation_id.clone(), SearchField::Title)));
+    assert!(ids.contains(&(asked.conversation_id.clone(), SearchField::Goal)));
+    let question = found
+        .conversations
+        .iter()
+        .find(|hit| hit.matched_in == SearchField::Goal)
+        .unwrap();
+    assert_eq!(
+        question.excerpt.as_deref(),
+        Some("When does the BORA blow hardest?")
+    );
+
+    let by_project = service.search("CRANES").await.unwrap();
+    assert_eq!(by_project.projects.len(), 1);
+    assert_eq!(by_project.conversations.len(), 1);
+    assert_eq!(
+        by_project.conversations[0].conversation.conversation_id,
+        in_project.conversation_id
+    );
+    assert_eq!(
+        by_project.conversations[0].project_name.as_deref(),
+        Some("Harbour cranes")
+    );
+
+    assert!(
+        service
+            .search("nothing like it")
+            .await
+            .unwrap()
+            .conversations
+            .is_empty()
+    );
+    assert_eq!(
+        service.search("  ").await.unwrap_err().code,
+        ErrorCode::InvalidRequest
     );
 }

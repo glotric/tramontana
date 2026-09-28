@@ -953,7 +953,8 @@ describe("M2 durable desktop surface", () => {
     expect(screen.getByText(/Choose a local directory/)).toBeInTheDocument();
     // Nothing was read for a project that is not there.
     expect(inspectProject).not.toHaveBeenCalled();
-    expect(listConversations).not.toHaveBeenCalled();
+    // The chats, which belong to no project, may be listed; no project's are.
+    expect(listConversations).not.toHaveBeenCalledWith(expect.any(String));
     expect(screen.queryByRole("region", { name: "Task summary" })).not.toBeInTheDocument();
   });
 

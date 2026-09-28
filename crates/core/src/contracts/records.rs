@@ -203,3 +203,44 @@ mod tests {
         assert_eq!(json["roots"][0], "/projects/demo");
     }
 }
+
+/// Where a search found what it was asked for (ADR 0059).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchField {
+    /// The conversation's title.
+    Title,
+    /// What was asked in one of its messages.
+    Goal,
+    /// The name or folder of the project it belongs to.
+    Project,
+}
+
+/// A conversation a search found, and why (ADR 0059).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationHit {
+    /// The conversation.
+    pub conversation: ConversationRecord,
+    /// The name of its project, when it belongs to one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub project_name: Option<String>,
+    /// Where the match was.
+    pub matched_in: SearchField,
+    /// The message that matched, when it was a message.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub excerpt: Option<String>,
+}
+
+/// What a search of conversation titles and project metadata found
+/// (`PHASE_1_SPEC.md` §4.1, ADR 0059).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResults {
+    /// Contract schema version.
+    pub schema_version: u32,
+    /// Matching conversations, newest first.
+    pub conversations: Vec<ConversationHit>,
+    /// Matching projects, by name or folder.
+    pub projects: Vec<ProjectRecord>,
+}

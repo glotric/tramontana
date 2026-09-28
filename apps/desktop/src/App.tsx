@@ -17,6 +17,8 @@ import { BundlesPanel } from "./BundlesPanel.js";
 import { buildCards, describeHeader, MODE_LABEL } from "./cards.js";
 import { ChangesPanel } from "./ChangesPanel.js";
 import { ChatView } from "./ChatView.js";
+import { ConversationMenu } from "./ConversationMenu.js";
+import { SearchPanel } from "./SearchPanel.js";
 import { AttachButton, PendingFiles, useAttachments } from "./Attachments.js";
 import { Glyph } from "./Glyph.js";
 import { GrantsPanel } from "./GrantsPanel.js";
@@ -87,6 +89,10 @@ const SUGGESTION_DELAY_MS = 300;
 function attached(tokens: readonly string[]): { readonly attachments?: readonly string[] } {
   return tokens.length === 0 ? {} : { attachments: tokens };
 }
+
+/** The search shortcut as this platform writes it. */
+const SHORTCUT =
+  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘K" : "Ctrl K";
 
 /** Chat or Agent: which half of the window is showing (ADR 0057). */
 type Mode = "chat" | "agent";
@@ -212,6 +218,21 @@ export function App(): React.JSX.Element {
   const [mode, setMode] = useState<Mode>(rememberedMode);
   const [chats, setChats] = useState<readonly ConversationRecord[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<string | undefined>();
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  // ⌘K on macOS, Ctrl+K elsewhere, as the design's sidebar says.
+  useEffect(() => {
+    const onKey = (pressed: KeyboardEvent): void => {
+      if ((pressed.metaKey || pressed.ctrlKey) && pressed.key.toLowerCase() === "k") {
+        pressed.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
   const [failure, setFailure] = useState<string | undefined>();
   const [loadingProject, setLoadingProject] = useState(false);
   const [openingProject, setOpeningProject] = useState(false);
@@ -668,6 +689,32 @@ export function App(): React.JSX.Element {
       data-sidebar={sidebarOpen ? "open" : "closed"}
       data-details={detailsOpen && view === "work" && mode === "agent" ? "open" : "closed"}
     >
+      {searchOpen && (
+        <SearchPanel
+          onClose={() => {
+            setSearchOpen(false);
+          }}
+          onOpenConversation={(hit) => {
+            setSearchOpen(false);
+            const projectId = hit.conversation.projectId;
+            if (projectId === undefined) {
+              chooseMode("chat");
+              refreshChats();
+              setSelectedChatId(hit.conversation.conversationId);
+            } else {
+              chooseMode("agent");
+              void selectProject(projectId).then(() =>
+                selectConversation(hit.conversation.conversationId),
+              );
+            }
+          }}
+          onOpenProject={(project) => {
+            setSearchOpen(false);
+            chooseMode("agent");
+            void selectProject(project.projectId);
+          }}
+        />
+      )}
       {sidebarOpen && (
         <aside className="rail" aria-label="Projects and conversations">
           <div className="brand-lockup">
@@ -709,6 +756,20 @@ export function App(): React.JSX.Element {
               <span>{openingProject ? "Opening…" : "Open project"}</span>
             </button>
           )}
+          <button
+            type="button"
+            className="rail-row rail-row--nav"
+            aria-haspopup="dialog"
+            onClick={() => {
+              setSearchOpen(true);
+            }}
+          >
+            <Glyph icon="search" hue="purple" size={28} />
+            <span className="rail-row-label">Search</span>
+            <kbd className="rail-shortcut" aria-hidden="true">
+              {SHORTCUT}
+            </kbd>
+          </button>
           <button
             type="button"
             className="rail-row rail-row--nav"
@@ -878,8 +939,27 @@ export function App(): React.JSX.Element {
                   <SidebarIcon />
                 </button>
               )}
-              <div className="workspace-title">
+              <div className="workspace-title workspace-title--row">
                 <h1>{selectedChat?.title ?? "New chat"}</h1>
+                {selectedChat !== undefined && (
+                  <ConversationMenu
+                    key={selectedChat.conversationId}
+                    conversation={selectedChat}
+                    onRenamed={(renamed) => {
+                      setChats((current) =>
+                        current.map((chat) =>
+                          chat.conversationId === renamed.conversationId ? renamed : chat,
+                        ),
+                      );
+                    }}
+                    onDeleted={(conversationId) => {
+                      setChats((current) =>
+                        current.filter((chat) => chat.conversationId !== conversationId),
+                      );
+                      setSelectedChatId(undefined);
+                    }}
+                  />
+                )}
               </div>
               <ModeSwitch mode={mode} onChange={chooseMode} />
               <div className="workspace-header-end">
@@ -934,6 +1014,24 @@ export function App(): React.JSX.Element {
                     "Choose a local directory to create a canonical, restart-safe project record."}
                 </p>
               </div>
+              {selectedConversation !== undefined && inspection !== undefined && (
+                <ConversationMenu
+                  key={selectedConversation.conversationId}
+                  conversation={selectedConversation}
+                  onRenamed={(renamed) => {
+                    setConversations((current) =>
+                      current.map((conversation) =>
+                        conversation.conversationId === renamed.conversationId
+                          ? renamed
+                          : conversation,
+                      ),
+                    );
+                  }}
+                  onDeleted={() => {
+                    void selectProject(inspection.project.projectId);
+                  }}
+                />
+              )}
               <ModeSwitch mode={mode} onChange={chooseMode} />
               <div className="workspace-header-end">
                 {/* The mode the next task will start under, said in words; the

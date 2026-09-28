@@ -41,6 +41,11 @@ fn lock(
 
 #[async_trait]
 impl EventStore for InMemoryEventStore {
+    async fn delete_stream(&self, task_id: &TaskId) -> Result<(), EventStoreError> {
+        lock(self)?.remove(task_id);
+        Ok(())
+    }
+
     async fn append(
         &self,
         task_id: &TaskId,

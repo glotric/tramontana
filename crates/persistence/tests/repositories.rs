@@ -184,6 +184,77 @@ async fn archiving_a_conversation_records_when_it_happened() {
 }
 
 #[tokio::test]
+async fn a_conversation_is_renamed_and_deleted_with_its_tasks_checkpoints_and_events() {
+    use tramontana_core::ports::CheckpointRepository;
+    use tramontana_core::testing::contract_suites::checkpoint_at;
+    use tramontana_persistence::SqliteCheckpointRepository;
+
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(&directory, "delete-conversation").await;
+    let conversations = SqliteConversationRepository::new(db.clone());
+    let tasks = SqliteTaskRepository::new(db.clone());
+    let events = SqliteEventStore::new(db.clone());
+    let checkpoints = SqliteCheckpointRepository::new(db.clone());
+
+    let mut kept_task = None;
+    for (conversation, task) in [("gone", "task-gone"), ("kept", "task-kept")] {
+        let conversation_id = ConversationId::new(conversation);
+        conversations
+            .create(&ConversationRecord::new(
+                conversation_id.clone(),
+                None,
+                conversation,
+                at(0),
+            ))
+            .await
+            .unwrap();
+        let task_id = TaskId::new(task);
+        tasks
+            .create(&TaskRecord::new(
+                task_id.clone(),
+                Some(conversation_id),
+                None,
+                "goal",
+                at(1),
+            ))
+            .await
+            .unwrap();
+        events
+            .append(&task_id, 0, vec![event_at(&task_id, 1)])
+            .await
+            .unwrap();
+        checkpoints.save(&checkpoint_at(&task_id, 1)).await.unwrap();
+        kept_task = Some(task_id);
+    }
+
+    let gone = ConversationId::new("gone");
+    conversations.rename(&gone, "Renamed").await.unwrap();
+    assert_eq!(conversations.get(&gone).await.unwrap().title, "Renamed");
+
+    let task = TaskId::new("task-gone");
+    tasks.delete(&task).await.unwrap();
+    events.delete_stream(&task).await.unwrap();
+    conversations.delete(&gone).await.unwrap();
+
+    assert!(matches!(
+        conversations.get(&gone).await.unwrap_err(),
+        RepositoryError::NotFound { .. }
+    ));
+    assert!(tasks.get(&task).await.is_err());
+    assert!(events.replay(&task, 0).await.unwrap().is_empty());
+    assert!(checkpoints.latest(&task).await.unwrap().is_none());
+    // The other conversation is untouched.
+    let kept = kept_task.unwrap();
+    assert!(tasks.get(&kept).await.is_ok());
+    assert_eq!(events.replay(&kept, 0).await.unwrap().len(), 1);
+    assert!(checkpoints.latest(&kept).await.unwrap().is_some());
+    assert!(matches!(
+        conversations.delete(&gone).await.unwrap_err(),
+        RepositoryError::NotFound { .. }
+    ));
+}
+
+#[tokio::test]
 async fn deleting_a_project_cascades_to_its_conversations() {
     // Foreign keys are only enforced if SQLite is told to; this is the test
     // that proves the pragma is actually on rather than merely declared.

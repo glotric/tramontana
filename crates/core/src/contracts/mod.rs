@@ -88,7 +88,9 @@ pub use primitives::{
     Visibility,
 };
 pub use provider::{ProviderConfig, ProviderEndpoint, RuntimeProvenance, is_loopback_url};
-pub use records::{ConversationRecord, ProjectRecord, TaskRecord};
+pub use records::{
+    ConversationHit, ConversationRecord, ProjectRecord, SearchField, SearchResults, TaskRecord,
+};
 pub use release::{
     ContextReleasePlan, ReleaseAuthorization, ReleaseExclusion, ReleasedCategory,
     reason as release_reason,

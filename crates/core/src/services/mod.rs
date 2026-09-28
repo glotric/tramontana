@@ -91,8 +91,8 @@ pub use runtime::{beyond_the_model, stopped_on};
 pub use suggestion::suggested_skills;
 pub use task_export::ImportSummary;
 pub use task_service::{
-    HandoffOffer, PinnedWorkerChoice, Providers, Repositories, StartTaskRequest, TaskService,
-    WorkerChoice, WorkerOption,
+    HandoffOffer, MAX_CONVERSATION_TITLE_BYTES, MAX_SEARCH_QUERY_BYTES, PinnedWorkerChoice,
+    Providers, Repositories, StartTaskRequest, TaskService, WorkerChoice, WorkerOption,
 };
 pub use tool_registry::{
     APP_NAMESPACE, BROWSER_PROVIDER, RegisteredTool, RegistryError, ToolRegistry, is_app_tool,

@@ -22,6 +22,26 @@ use crate::services::projection::TaskProjectionWriter;
 use crate::services::runtime::TaskDriver;
 use crate::services::{PermissionManager, ToolRegistry};
 
+/// The longest conversation title kept, in bytes (ADR 0059).
+pub const MAX_CONVERSATION_TITLE_BYTES: usize = 200;
+
+/// The longest search asked for, in bytes (ADR 0059).
+pub const MAX_SEARCH_QUERY_BYTES: usize = 200;
+
+/// At most this many conversations, and this many projects, are returned by
+/// one search.
+const SEARCH_RESULTS: usize = 50;
+
+/// A matching message, shortened for a result list.
+fn excerpt(text: &str) -> String {
+    const CHARS: usize = 120;
+    if text.chars().count() <= CHARS {
+        return text.to_owned();
+    }
+    let short: String = text.chars().take(CHARS - 1).collect();
+    format!("{}…", short.trim_end())
+}
+
 /// How many updates a subscriber may fall behind before it must replay.
 ///
 /// Lagging past this loses live updates, which is safe rather than fatal: the
@@ -526,6 +546,192 @@ impl TaskService {
             .archive(conversation_id, &self.clock.now())
             .await
             .map_err(|error| self.repository_error(&error))
+    }
+
+    /// Give a conversation a new title (ADR 0059).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidRequest`] for an empty title or one over
+    /// [`MAX_CONVERSATION_TITLE_BYTES`], or [`ErrorCode::NotFound`].
+    pub async fn rename_conversation(
+        &self,
+        conversation_id: &ConversationId,
+        title: &str,
+    ) -> Result<ConversationRecord, ErrorEnvelope> {
+        let title = title.trim();
+        if title.is_empty() || title.len() > MAX_CONVERSATION_TITLE_BYTES {
+            return Err(self.error(
+                ErrorCode::InvalidRequest,
+                format!("A conversation's title must be 1 to {MAX_CONVERSATION_TITLE_BYTES} bytes"),
+            ));
+        }
+        self.repositories
+            .conversations
+            .rename(conversation_id, title)
+            .await
+            .map_err(|error| self.repository_error(&error))?;
+        self.get_conversation(conversation_id).await
+    }
+
+    /// Delete a conversation and everything recorded under it: its tasks,
+    /// their events and checkpoints (ADR 0059).
+    ///
+    /// Refused while any of its tasks is still under way, so a person stops
+    /// work before throwing its record away. A task that was interrupted is
+    /// not under way, and goes with the rest.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::NotFound`] when it does not exist, [`ErrorCode::Conflict`]
+    /// while one of its tasks runs, or a persistence error.
+    pub async fn delete_conversation(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<(), ErrorEnvelope> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.get_conversation(conversation_id).await?;
+        let tasks = self.list_tasks(Some(conversation_id)).await?;
+        if tasks.iter().any(|task| {
+            !(task.state.is_terminal() || task.state == crate::contracts::TaskState::Interrupted)
+        }) {
+            return Err(self.error(
+                ErrorCode::Conflict,
+                "Stop the conversation's running task before deleting it",
+            ));
+        }
+        // A task whose record has ended may still have its driver finishing
+        // up for a moment. Wait for it rather than delete under it, and
+        // refuse if it does not finish.
+        let finishing: Vec<_> = {
+            let live = self.lock_live()?;
+            tasks
+                .iter()
+                .filter_map(|task| live.get(&task.task_id).map(|live| live.finished.clone()))
+                .collect()
+        };
+        for mut finished in finishing {
+            let done = matches!(
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    finished.wait_for(|done| *done),
+                )
+                .await,
+                Ok(Ok(_))
+            );
+            if !done && !*finished.borrow() {
+                return Err(self.error(
+                    ErrorCode::Conflict,
+                    "Stop the conversation's running task before deleting it",
+                ));
+            }
+        }
+        for task in &tasks {
+            // The row first: events without a row are unreachable, while a
+            // row without its events would be an invalid record.
+            self.repositories
+                .tasks
+                .delete(&task.task_id)
+                .await
+                .map_err(|error| self.repository_error(&error))?;
+            self.repositories
+                .events
+                .delete_stream(&task.task_id)
+                .await
+                .map_err(|error| self.error(ErrorCode::PersistenceError, error.to_string()))?;
+        }
+        self.repositories
+            .conversations
+            .delete(conversation_id)
+            .await
+            .map_err(|error| self.repository_error(&error))
+    }
+
+    /// Search conversation titles, what was asked in them, and project names
+    /// and folders (`PHASE_1_SPEC.md` §4.1, ADR 0059).
+    ///
+    /// Plain text, ignoring case: no index and no semantic search. Answers
+    /// are not searched, because they live only in each task's events.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidRequest`] for an empty query or one over
+    /// [`MAX_SEARCH_QUERY_BYTES`], or a persistence error.
+    pub async fn search(
+        &self,
+        query: &str,
+    ) -> Result<crate::contracts::SearchResults, ErrorEnvelope> {
+        use crate::contracts::{ConversationHit, SearchField, SearchResults};
+        let query = query.trim();
+        if query.is_empty() || query.len() > MAX_SEARCH_QUERY_BYTES {
+            return Err(self.error(
+                ErrorCode::InvalidRequest,
+                format!("A search must be 1 to {MAX_SEARCH_QUERY_BYTES} bytes"),
+            ));
+        }
+        let needle = query.to_lowercase();
+        let found = |text: &str| text.to_lowercase().contains(&needle);
+
+        let projects = self.list_projects().await?;
+        let mut conversations = self.list_conversations(None).await?;
+        for project in &projects {
+            conversations.extend(self.list_conversations(Some(&project.project_id)).await?);
+        }
+        let tasks = self.list_tasks(None).await?;
+
+        let mut hits = Vec::new();
+        for conversation in conversations {
+            let project = conversation
+                .project_id
+                .as_ref()
+                .and_then(|id| projects.iter().find(|project| &project.project_id == id));
+            let asked = || {
+                tasks
+                    .iter()
+                    .filter(|task| {
+                        task.conversation_id.as_ref() == Some(&conversation.conversation_id)
+                    })
+                    .find(|task| found(&task.goal_summary))
+            };
+            let (matched_in, excerpt) = if found(&conversation.title) {
+                (SearchField::Title, None)
+            } else if let Some(task) = asked() {
+                (SearchField::Goal, Some(excerpt(&task.goal_summary)))
+            } else if project.is_some_and(|project| {
+                found(&project.name) || project.roots.iter().any(|root| found(root))
+            }) {
+                (SearchField::Project, None)
+            } else {
+                continue;
+            };
+            hits.push(ConversationHit {
+                project_name: project.map(|project| project.name.clone()),
+                conversation,
+                matched_in,
+                excerpt,
+            });
+        }
+        hits.sort_by(|a, b| {
+            (
+                b.conversation.created_at.as_str(),
+                b.conversation.conversation_id.as_str(),
+            )
+                .cmp(&(
+                    a.conversation.created_at.as_str(),
+                    a.conversation.conversation_id.as_str(),
+                ))
+        });
+        hits.truncate(SEARCH_RESULTS);
+        let mut matching: Vec<_> = projects
+            .into_iter()
+            .filter(|project| found(&project.name) || project.roots.iter().any(|root| found(root)))
+            .collect();
+        matching.truncate(SEARCH_RESULTS);
+        Ok(SearchResults {
+            schema_version: crate::contracts::SCHEMA_VERSION,
+            conversations: hits,
+            projects: matching,
+        })
     }
 
     /// Tasks in a conversation, or every task when absent.
