@@ -300,6 +300,21 @@ pub(crate) async fn save_transcript(
     Ok(Some(path.display().to_string()))
 }
 
+/// Remove a project from Tramontana, keeping its files (ADR 0064). The
+/// window asks the person first; this does not.
+///
+/// # Errors
+///
+/// Whatever the service reports, including a conflict while one of its
+/// tasks runs.
+#[tauri::command]
+pub(crate) async fn delete_project(
+    project_id: ProjectId,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    state.service.delete_project(&project_id).await
+}
+
 /// Every schedule, with when it runs next (ADR 0063).
 ///
 /// # Errors

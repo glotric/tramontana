@@ -42,21 +42,37 @@ describe("ProjectsView", () => {
   it("shows each project with what the record knows, and opens the one picked", async () => {
     const user = userEvent.setup();
     const onOpen = vi.fn();
-    render(<ProjectsView projects={projects} onOpen={onOpen} onNew={vi.fn()} opening={false} />);
+    render(
+      <ProjectsView
+        projects={projects}
+        onOpen={onOpen}
+        onNew={vi.fn()}
+        onDelete={vi.fn()}
+        opening={false}
+      />,
+    );
 
     const cards = screen.getByRole("list", { name: "Projects" });
     expect(await within(cards).findByText(/3 conversations ·/)).toBeInTheDocument();
     expect(await within(cards).findByText(/1 conversation ·/)).toBeInTheDocument();
     expect(within(cards).getByText("/work/cranes")).toBeInTheDocument();
 
-    await user.click(within(cards).getByRole("button", { name: /Harbour cranes/ }));
+    await user.click(within(cards).getByRole("button", { name: /^Harbour cranes/ }));
     expect(onOpen).toHaveBeenCalledWith(projects[0]);
   });
 
   it("filters by name or folder, and offers to open a new folder", async () => {
     const user = userEvent.setup();
     const onNew = vi.fn();
-    render(<ProjectsView projects={projects} onOpen={vi.fn()} onNew={onNew} opening={false} />);
+    render(
+      <ProjectsView
+        projects={projects}
+        onOpen={vi.fn()}
+        onNew={onNew}
+        onDelete={vi.fn()}
+        opening={false}
+      />,
+    );
 
     await user.type(screen.getByLabelText("Filter projects"), "contracts");
     const cards = screen.getByRole("list", { name: "Projects" });
@@ -69,5 +85,54 @@ describe("ProjectsView", () => {
 
     await user.click(screen.getByRole("button", { name: "Open a folder" }));
     expect(onNew).toHaveBeenCalled();
+  });
+
+  it("removes a project only after saying its files are not touched", async () => {
+    const user = userEvent.setup();
+    const onDelete = vi.fn(() => Promise.resolve());
+    render(
+      <ProjectsView
+        projects={projects}
+        onOpen={vi.fn()}
+        onNew={vi.fn()}
+        onDelete={onDelete}
+        opening={false}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Remove Harbour cranes from Tramontana" }));
+    const confirm = screen.getByRole("alertdialog", { name: "Remove Harbour cranes?" });
+    expect(confirm).toHaveTextContent("The folder and its files are not touched.");
+    await user.click(within(confirm).getByRole("button", { name: "Keep" }));
+    expect(onDelete).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Remove Harbour cranes from Tramontana" }));
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    expect(onDelete).toHaveBeenCalledWith(projects[0]);
+  });
+
+  it("says why a project could not be removed", async () => {
+    const user = userEvent.setup();
+    const onDelete = vi.fn().mockRejectedValue({
+      schemaVersion: 1,
+      code: "conflict",
+      message: "Stop the project's running task before removing it",
+      retryable: true,
+      correlationId: "c",
+    });
+    render(
+      <ProjectsView
+        projects={projects}
+        onOpen={vi.fn()}
+        onNew={vi.fn()}
+        onDelete={onDelete}
+        opening={false}
+      />,
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Remove Supplier contracts from Tramontana" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Stop the project's running task");
   });
 });

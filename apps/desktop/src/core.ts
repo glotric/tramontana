@@ -818,3 +818,11 @@ export async function deleteSchedule(scheduleId: string): Promise<void> {
 export async function runScheduleNow(scheduleId: string): Promise<string> {
   return invoke<string>("run_schedule_now", { scheduleId });
 }
+
+/**
+ * Remove a project from Tramontana: its conversations, tasks, records and
+ * schedules (ADR 0064). Its folder and files are not touched. Ask first.
+ */
+export async function deleteProject(projectId: string): Promise<void> {
+  return invoke("delete_project", { projectId });
+}

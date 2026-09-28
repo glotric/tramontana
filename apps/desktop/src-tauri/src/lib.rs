@@ -93,6 +93,7 @@ pub fn run() {
             commands::rename_conversation,
             commands::delete_conversation,
             commands::search,
+            commands::delete_project,
             commands::list_schedules,
             commands::create_schedule,
             commands::set_schedule_enabled,

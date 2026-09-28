@@ -34,6 +34,19 @@ impl InMemoryProjectRepository {
 
 #[async_trait]
 impl ProjectRepository for InMemoryProjectRepository {
+    async fn delete(&self, project_id: &ProjectId) -> Result<(), RepositoryError> {
+        let mut projects = lock(&self.projects)?;
+        let before = projects.len();
+        projects.retain(|record| record.project_id != *project_id);
+        if projects.len() == before {
+            return Err(RepositoryError::NotFound {
+                kind: "project",
+                id: project_id.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     async fn create(&self, record: &ProjectRecord) -> Result<(), RepositoryError> {
         lock(&self.projects)?.push(record.clone());
         Ok(())
