@@ -2118,6 +2118,128 @@ h3 {
   justify-self: start;
 }
 
+/* ---- Projects gallery ------------------------------------------------------- */
+
+.projects-view {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 28px;
+  overflow-y: auto;
+  padding: 64px max(24px, calc((100% - 980px) / 2)) 40px;
+}
+
+.projects-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.projects-title {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.projects-title h1 {
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+.projects-title p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.projects-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.projects-filter input {
+  width: 220px;
+  height: 42px;
+  padding: 0 16px;
+  border-radius: 21px;
+  background: var(--card);
+  font-size: 14px;
+}
+
+.projects-actions .button {
+  height: 42px;
+  border-radius: 21px;
+}
+
+.project-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.project-cards > li {
+  display: flex;
+}
+
+.project-card {
+  display: flex;
+  width: 100%;
+  min-height: 190px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--card);
+  text-align: left;
+}
+
+.project-card:hover:not(:disabled) {
+  background: var(--seg-on);
+  box-shadow: var(--seg-shadow);
+}
+
+.project-card strong {
+  margin-top: 6px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.project-card-root {
+  flex: 1;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-card-meta {
+  color: var(--faint);
+  font-size: 13px;
+}
+
+.project-card--new {
+  align-items: center;
+  justify-content: center;
+  border: 1.5px dashed var(--line2);
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 500;
+}
+
 /* ---- Narrow windows ------------------------------------------------------- */
 
 @media (max-width: 1180px) {

@@ -24,6 +24,7 @@ import { Glyph } from "./Glyph.js";
 import { GrantsPanel } from "./GrantsPanel.js";
 import { AppsView } from "./AppsView.js";
 import { ModelsView } from "./ModelsView.js";
+import { ProjectsView } from "./ProjectsView.js";
 import type { SkillView, WorkerView } from "./core.js";
 import { foldFrame } from "./stream.js";
 import type { LiveStream } from "./stream.js";
@@ -208,7 +209,7 @@ export function App(): React.JSX.Element {
   // Moves on whenever a task ends, so the Changes panel reads the tree again.
   const [revision, setRevision] = useState(0);
   // The work area, or the models and credentials the tasks run against.
-  const [view, setView] = useState<"work" | "models" | "apps">("work");
+  const [view, setView] = useState<"work" | "models" | "apps" | "projects">("work");
   // Both side panels can be put away, leaving the work column on its own.
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(true);
@@ -746,15 +747,28 @@ export function App(): React.JSX.Element {
               <span>New chat</span>
             </button>
           ) : (
-            <button
-              type="button"
-              className="rail-row rail-row--nav"
-              onClick={onOpenProject}
-              disabled={status.kind !== "ready" || openingProject}
-            >
-              <Glyph icon="folder" hue="yellow" size={28} />
-              <span>{openingProject ? "Opening…" : "Open project"}</span>
-            </button>
+            <>
+              <button
+                type="button"
+                className="rail-row rail-row--nav"
+                onClick={onOpenProject}
+                disabled={status.kind !== "ready" || openingProject}
+              >
+                <Glyph icon="plus" hue="teal" size={28} />
+                <span>{openingProject ? "Opening…" : "Open project"}</span>
+              </button>
+              <button
+                type="button"
+                className="rail-row rail-row--nav"
+                aria-pressed={view === "projects"}
+                onClick={() => {
+                  setView((current) => (current === "projects" ? "work" : "projects"));
+                }}
+              >
+                <Glyph icon="folder" hue="yellow" size={28} />
+                <span>Projects</span>
+              </button>
+            </>
           )}
           <button
             type="button"
@@ -912,7 +926,21 @@ export function App(): React.JSX.Element {
       )}
 
       <main className="workspace">
-        {view === "models" ? (
+        {view === "projects" ? (
+          <ProjectsView
+            projects={projects}
+            opening={openingProject}
+            onNew={() => {
+              setView("work");
+              onOpenProject();
+            }}
+            onOpen={(project) => {
+              setView("work");
+              chooseMode("agent");
+              void selectProject(project.projectId);
+            }}
+          />
+        ) : view === "models" ? (
           <ModelsView
             onClose={() => {
               setView("work");
