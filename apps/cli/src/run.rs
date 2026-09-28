@@ -101,9 +101,9 @@ pub(crate) struct TaskArgs {
     #[arg(long, value_name = "WORKER")]
     worker: Option<String>,
 
-    /// Attach a text file to this message: its contents are given to the
-    /// model, before the goal, as data (ADR 0058). Repeat for more files, up
-    /// to five. Only the file's text is kept, in the task's record; the task
+    /// Attach a file to this message: a text file's contents, or the text of
+    /// a PDF or Word (.docx) document, are given to the model before the
+    /// goal, as data (ADRs 0058 and 0062). Repeat for more files, up to five. Only the file's text is kept, in the task's record; the task
     /// is given no access to its folder.
     #[arg(long = "attach", value_name = "PATH")]
     attach: Vec<std::path::PathBuf>,
@@ -747,7 +747,10 @@ fn read_attachment(
         .and_then(|name| name.to_str())
         .ok_or_else(|| format!("{} has no file name", path.display()))?
         .to_owned();
-    let limit = u64::try_from(tramontana_core::services::ATTACHMENT_BYTES).unwrap_or(u64::MAX);
+    let limit = u64::try_from(
+        tramontana_core::services::ATTACHMENT_BYTES.max(tramontana_core::services::DOCUMENT_BYTES),
+    )
+    .unwrap_or(u64::MAX);
     let mut bytes = Vec::new();
     std::fs::File::open(path)
         .and_then(|file| file.take(limit.saturating_add(1)).read_to_end(&mut bytes))

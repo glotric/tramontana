@@ -40,8 +40,9 @@ mod tool_schema;
 mod transcript;
 
 pub use attachments::{
-    ATTACHMENT_BYTES, ATTACHMENT_TOTAL_BYTES, ATTACHMENTS, AttachmentInput, accept_attachments,
-    attachment_message, attachment_source_id, attachment_sources, text_media_type,
+    ATTACHMENT_BYTES, ATTACHMENT_TOTAL_BYTES, ATTACHMENTS, AttachmentInput, DOCUMENT_BYTES,
+    accept_attachments, attachment_message, attachment_source_id, attachment_sources, is_document,
+    text_media_type,
 };
 pub use checkpoint::{
     DerivedState, ResumePlan, derive_checkpoint, derive_state, reason as checkpoint_reason,
@@ -93,8 +94,9 @@ pub use runtime::{beyond_the_model, stopped_on};
 pub use suggestion::suggested_skills;
 pub use task_export::ImportSummary;
 pub use task_service::{
-    HandoffOffer, MAX_CONVERSATION_TITLE_BYTES, MAX_SEARCH_QUERY_BYTES, PinnedWorkerChoice,
-    Providers, Repositories, StartTaskRequest, TaskService, WorkerChoice, WorkerOption,
+    DOCUMENT_READ_DEADLINE, HandoffOffer, MAX_CONVERSATION_TITLE_BYTES, MAX_SEARCH_QUERY_BYTES,
+    PinnedWorkerChoice, Providers, Repositories, StartTaskRequest, TaskService, WorkerChoice,
+    WorkerOption,
 };
 pub use tool_registry::{
     APP_NAMESPACE, BROWSER_PROVIDER, RegisteredTool, RegistryError, ToolRegistry, is_app_tool,

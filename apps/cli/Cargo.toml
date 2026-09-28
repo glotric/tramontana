@@ -18,6 +18,7 @@ tramontana-composition = { workspace = true }
 tramontana-adapters-tools = { workspace = true }
 tramontana-persistence = { workspace = true }
 tramontana-platform = { workspace = true }
+tramontana-adapters-documents = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }

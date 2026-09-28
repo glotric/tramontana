@@ -723,7 +723,14 @@ pub(crate) async fn choose_attachments(
         let path = picked
             .into_path()
             .map_err(|_| invalid("a selected file is not a local file"))?;
-        read.push(crate::attachments::read_picked(&path)?);
+        let input = crate::attachments::read_picked(&path)?;
+        // Asked now, so a file that cannot be attached is refused when it is
+        // picked rather than when the message is sent (ADRs 0058 and 0062).
+        state
+            .service
+            .accept_attachments(vec![input.clone()])
+            .await?;
+        read.push(input);
     }
     let ids = UuidIdSource::new();
     Ok(read

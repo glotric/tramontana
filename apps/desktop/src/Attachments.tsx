@@ -5,6 +5,14 @@ import { asErrorEnvelope, chooseAttachments, discardAttachment } from "./core.js
 import type { StagedAttachment } from "./core.js";
 import { Glyph } from "./Glyph.js";
 
+/** The glyph colour for a file, by what it is: the design's red for PDF. */
+function hueOf(name: string): "red" | "blue" | "teal" {
+  const extension = name.toLowerCase().split(".").pop() ?? "";
+  if (extension === "pdf") return "red";
+  if (extension === "docx") return "blue";
+  return "teal";
+}
+
 /** A size the way a person reads one. */
 export function describeSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -67,7 +75,7 @@ export function AttachButton({
       type="button"
       className="attach-button"
       aria-label="Attach files"
-      title="Attach text files"
+      title="Attach text, PDF or Word files"
       onClick={onClick}
       disabled={disabled}
     >
@@ -100,7 +108,7 @@ export function PendingFiles({
     <ul className="file-chips" aria-label="Attached files">
       {files.map((file) => (
         <li key={file.token} className="file-chip">
-          <Glyph icon="doc" hue="blue" size={26} />
+          <Glyph icon="doc" hue={hueOf(file.name)} size={26} />
           <span>
             <strong>{file.name}</strong>
             <small>{describeSize(file.byteCount)}</small>
@@ -132,7 +140,7 @@ export function SentFiles({
     <ul className="file-chips file-chips--sent" aria-label="Files sent with this message">
       {files.map((file, index) => (
         <li key={`${file.contentHash}:${index}`} className="file-chip">
-          <Glyph icon="doc" hue="red" size={34} />
+          <Glyph icon="doc" hue={hueOf(file.name)} size={34} />
           <span>
             <strong>{file.name}</strong>
             <small>{describeSize(file.byteCount)}</small>

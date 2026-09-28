@@ -219,10 +219,14 @@ impl BrokeredHost {
             ));
         }
         // Explicit capability facts, never provider or model name heuristics.
+        // A turn offered no tools is a chat, which any model can answer
+        // (ADR 0057); only a turn offering tools needs one that calls them.
+        let offers_tools = !input.request.tools.is_empty();
         if !snapshot.models.iter().any(|model| {
-            model
-                .capabilities
-                .contains(&crate::contracts::ModelCapability::ToolCalls)
+            (!offers_tools
+                || model
+                    .capabilities
+                    .contains(&crate::contracts::ModelCapability::ToolCalls))
                 && (self.routing_mode != RoutingMode::LocalOnly
                     || model.location == crate::contracts::ModelLocation::Local)
         }) {

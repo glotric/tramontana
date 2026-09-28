@@ -22,6 +22,9 @@ use crate::services::projection::TaskProjectionWriter;
 use crate::services::runtime::TaskDriver;
 use crate::services::{PermissionManager, ToolRegistry};
 
+/// How long one message's documents may take to read (ADR 0062).
+pub const DOCUMENT_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The longest conversation title kept, in bytes (ADR 0059).
 pub const MAX_CONVERSATION_TITLE_BYTES: usize = 200;
 
@@ -222,6 +225,9 @@ pub struct TaskService {
     /// harness; a task then runs on the last inventory the project resolved,
     /// without its text (ADR 0052).
     pub(super) project_sources: Option<Arc<dyn ProjectSourceReader>>,
+    /// What reads PDF and Word attachments (ADR 0062). Without one, only
+    /// text files can be attached.
+    pub(super) documents: Option<Arc<dyn crate::ports::DocumentReader>>,
     pub(super) execution_allowed: bool,
     pub(super) execution_guard: Option<Arc<dyn Send + Sync>>,
 }
@@ -254,6 +260,7 @@ impl TaskService {
             workers: None,
             pinned: None,
             project_sources: None,
+            documents: None,
             execution_allowed: true,
             execution_guard: None,
         }
@@ -280,6 +287,53 @@ impl TaskService {
     pub fn with_project_sources(mut self, reader: Arc<dyn ProjectSourceReader>) -> Self {
         self.project_sources = Some(reader);
         self
+    }
+
+    /// Read PDF and Word attachments with `reader` (ADR 0062).
+    #[must_use]
+    pub fn with_document_reader(mut self, reader: Arc<dyn crate::ports::DocumentReader>) -> Self {
+        self.documents = Some(reader);
+        self
+    }
+
+    /// Check a message's attachments and read their text, as a task started
+    /// with them would (ADRs 0058 and 0062). The desktop asks this as soon as
+    /// a file is picked, so a refusal is shown then.
+    ///
+    /// A document is read off the async runtime, and given
+    /// [`DOCUMENT_READ_DEADLINE`] to finish.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::InvalidRequest`] naming a file that cannot be attached,
+    /// or [`ErrorCode::Timeout`] when a document takes too long to read.
+    pub async fn accept_attachments(
+        &self,
+        inputs: Vec<super::AttachmentInput>,
+    ) -> Result<Vec<crate::contracts::TaskAttachment>, ErrorEnvelope> {
+        let documents = self.documents.clone();
+        let reads_documents = documents.as_ref().is_some_and(|reader| {
+            inputs
+                .iter()
+                .any(|input| reader.media_type(&input.name).is_some())
+        });
+        if !reads_documents {
+            return super::accept_attachments(&inputs, None);
+        }
+        let reading = tokio::task::spawn_blocking(move || {
+            super::accept_attachments(&inputs, documents.as_deref())
+        });
+        match tokio::time::timeout(DOCUMENT_READ_DEADLINE, reading).await {
+            Ok(Ok(accepted)) => accepted,
+            Ok(Err(_)) => Err(self.error(
+                ErrorCode::InvalidRequest,
+                "An attached document could not be read",
+            )),
+            Err(_) => Err(self.error(
+                ErrorCode::Timeout,
+                "An attached document took too long to read",
+            )),
+        }
     }
 
     /// Offer the built-in worker pinned to each of `models` as a worker a
@@ -829,14 +883,16 @@ impl TaskService {
     ///
     /// [`ErrorCode::NotFound`] for an unknown conversation, or a persistence
     /// error if the opening event cannot be journaled.
-    pub async fn start_task(&self, request: StartTaskRequest) -> Result<TaskId, ErrorEnvelope> {
+    pub async fn start_task(&self, mut request: StartTaskRequest) -> Result<TaskId, ErrorEnvelope> {
         let _lifecycle = self.lifecycle.lock().await;
         self.require_execution()?;
         // Both chosen before anything is written, so a refusal leaves no
         // task behind.
         let routing_mode = request.routing_mode.unwrap_or_else(|| self.routing_mode());
         // Before anything is written, so a refused file leaves no task.
-        let attachments = super::accept_attachments(&request.attachments)?;
+        let attachments = self
+            .accept_attachments(std::mem::take(&mut request.attachments))
+            .await?;
         let worker = match (request.admission, request.worker.as_deref(), &self.workers) {
             (None, None, _) => Arc::clone(&self.providers.worker),
             (Some(admission), None, Some(choose)) => choose(admission),

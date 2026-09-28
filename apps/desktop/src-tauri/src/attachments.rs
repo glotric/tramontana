@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use tramontana_core::contracts::{CorrelationId, ErrorCode, ErrorEnvelope};
-use tramontana_core::services::{ATTACHMENT_BYTES, AttachmentInput, accept_attachments};
+use tramontana_core::services::{ATTACHMENT_BYTES, AttachmentInput, DOCUMENT_BYTES};
 
 /// At most this many files are held waiting to be sent. Older ones are
 /// dropped first; a window that picked this many and sent none is not
@@ -51,10 +51,7 @@ impl StagedAttachments {
     pub(crate) fn stage(&self, token: String, input: AttachmentInput) -> StagedAttachmentView {
         let view = StagedAttachmentView {
             token: token.clone(),
-            name: accept_attachments(std::slice::from_ref(&input))
-                .ok()
-                .and_then(|accepted| accepted.into_iter().next())
-                .map_or_else(|| input.name.clone(), |accepted| accepted.name),
+            name: input.name.clone(),
             byte_count: input.bytes.len() as u64,
         };
         if let Ok(mut held) = self.held.lock() {
@@ -106,15 +103,17 @@ impl StagedAttachments {
     }
 }
 
-/// Read a picked file, refusing it as core would before holding it.
+/// Read a picked file. Whether it may be attached is core's to say, and the
+/// caller asks before holding it.
 ///
-/// Reads at most one byte more than a file may hold, so a large file is
-/// refused without being read whole.
+/// Reads at most one byte more than any file may hold (a PDF or Word
+/// document's limit, the larger), so a huge file is refused by core without
+/// being read whole.
 ///
 /// # Errors
 ///
-/// [`ErrorCode::InvalidRequest`] when it is not a regular file, cannot be
-/// read, or core would refuse it.
+/// [`ErrorCode::InvalidRequest`] when it is not a regular file or cannot be
+/// read.
 pub(crate) fn read_picked(path: &Path) -> Result<AttachmentInput, ErrorEnvelope> {
     let name = path
         .file_name()
@@ -126,14 +125,12 @@ pub(crate) fn read_picked(path: &Path) -> Result<AttachmentInput, ErrorEnvelope>
     if !metadata.is_file() {
         return Err(invalid(format!("{name} is not a file")));
     }
-    let limit = u64::try_from(ATTACHMENT_BYTES).unwrap_or(u64::MAX);
+    let limit = u64::try_from(ATTACHMENT_BYTES.max(DOCUMENT_BYTES)).unwrap_or(u64::MAX);
     let mut bytes = Vec::new();
     std::fs::File::open(path)
         .and_then(|file| file.take(limit.saturating_add(1)).read_to_end(&mut bytes))
         .map_err(|_| invalid(format!("{name} could not be read")))?;
-    let input = AttachmentInput { name, bytes };
-    accept_attachments(std::slice::from_ref(&input))?;
-    Ok(input)
+    Ok(AttachmentInput { name, bytes })
 }
 
 #[cfg(test)]
@@ -179,24 +176,17 @@ mod tests {
     }
 
     #[test]
-    fn a_picked_file_is_refused_as_core_would_refuse_it() {
+    fn a_picked_file_is_read_whole_up_to_the_document_limit_and_no_further() {
         let folder = tempfile::tempdir().unwrap();
         let text = folder.path().join("notes.md");
         std::fs::write(&text, "# Notes").unwrap();
-        assert_eq!(read_picked(&text).unwrap().bytes, b"# Notes");
+        let read = read_picked(&text).unwrap();
+        assert_eq!(read.name, "notes.md");
+        assert_eq!(read.bytes, b"# Notes");
 
-        let pdf = folder.path().join("contract.pdf");
-        std::fs::write(&pdf, "%PDF").unwrap();
-        assert!(
-            read_picked(&pdf)
-                .unwrap_err()
-                .message
-                .contains("contract.pdf")
-        );
-
-        let big = folder.path().join("big.txt");
-        std::fs::write(&big, "x".repeat(ATTACHMENT_BYTES + 10)).unwrap();
-        assert!(read_picked(&big).is_err());
+        let big = folder.path().join("big.pdf");
+        std::fs::write(&big, vec![0u8; DOCUMENT_BYTES + 100]).unwrap();
+        assert_eq!(read_picked(&big).unwrap().bytes.len(), DOCUMENT_BYTES + 1);
         assert!(read_picked(folder.path()).is_err());
     }
 }

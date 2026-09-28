@@ -236,6 +236,8 @@ impl AppState {
             .with_project_sources(Arc::new(tramontana_platform::ProjectFiles::new(Arc::new(
                 SqliteProjectRepository::new(database),
             ))))
+            // So PDF and Word files can be attached (ADR 0062).
+            .with_document_reader(Arc::new(tramontana_adapters_documents::Documents::new()))
             .with_execution_guard(lease);
         service
             .recover()

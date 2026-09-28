@@ -7,6 +7,7 @@ members = [
     "crates/adapters-local",
     "crates/adapters-mcp",
     "crates/adapters-browser",
+    "crates/adapters-documents",
     "crates/composition",
     "crates/persistence",
     "crates/platform",
@@ -33,11 +34,18 @@ tramontana-adapters-model = { path = "crates/adapters-model" }
 tramontana-adapters-local = { path = "crates/adapters-local" }
 tramontana-adapters-mcp = { path = "crates/adapters-mcp" }
 tramontana-adapters-browser = { path = "crates/adapters-browser" }
+tramontana-adapters-documents = { path = "crates/adapters-documents" }
 tramontana-composition = { path = "crates/composition" }
 tramontana-persistence = { path = "crates/persistence" }
 tramontana-platform = { path = "crates/platform" }
 
 anyhow = "1.0.104"
+# Text from attached documents (ADR 0062). Exact versions; only what reading
+# needs: zip reads Word's container with the Rust deflate backend, quick-xml is
+# the version the tree already carries, and pdf-extract reads PDF text.
+pdf-extract = { version = "=0.12.1", default-features = false }
+quick-xml = { version = "=0.42.0", default-features = false }
+zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2"] }
 async-trait = "0.1.92"
 clap = { version = "4.6.6", features = ["derive"] }
 # Owning a command's whole process tree — a process group on Unix, a job object
