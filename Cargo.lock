@@ -5284,6 +5284,7 @@ dependencies = [
 name = "tramontana-adapters-local"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "reqwest",
  "rustix",
  "serde_json",
@@ -5361,6 +5362,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tramontana-adapters-documents",
+ "tramontana-adapters-local",
  "tramontana-adapters-tools",
  "tramontana-composition",
  "tramontana-core",
@@ -5415,6 +5417,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tramontana-adapters-documents",
+ "tramontana-adapters-local",
  "tramontana-adapters-mcp",
  "tramontana-adapters-tools",
  "tramontana-composition",

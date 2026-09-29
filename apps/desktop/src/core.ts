@@ -11,6 +11,7 @@ import type {
   TranscriptOptions,
   ApprovalRequest,
   ConversationRecord,
+  DictationStatus,
   CoreInfo,
   EffectiveConfiguration,
   ErrorEnvelope,
@@ -825,4 +826,31 @@ export async function runScheduleNow(scheduleId: string): Promise<string> {
  */
 export async function deleteProject(projectId: string): Promise<void> {
   return invoke("delete_project", { projectId });
+}
+
+/** Whether dictation is set up (ADR 0065). */
+export async function dictationStatus(): Promise<DictationStatus> {
+  return invoke<DictationStatus>("dictation_status");
+}
+
+/**
+ * Choose the whisper.cpp program and model in the native picker. Resolves
+ * with the new status, or `undefined` when the person cancels.
+ */
+export async function chooseDictation(language?: string): Promise<DictationStatus | undefined> {
+  return (
+    (await invoke<DictationStatus | null>("choose_dictation", { language: language ?? null })) ??
+    undefined
+  );
+}
+
+/** Forget the dictation setup; the files are not touched. */
+export async function clearDictation(): Promise<DictationStatus> {
+  return invoke<DictationStatus>("clear_dictation");
+}
+
+/** The text spoken in a WAV recording, transcribed on this device. */
+export async function transcribe(wav: Uint8Array): Promise<string> {
+  // Raw bytes in the request body, not a JSON array of numbers.
+  return invoke<string>("transcribe", wav);
 }

@@ -23,6 +23,7 @@ import { ScheduledView } from "./ScheduledView.js";
 import { SettingsView } from "./SettingsView.js";
 import { ShareDialog } from "./ShareDialog.js";
 import { AttachButton, PendingFiles, useAttachments } from "./Attachments.js";
+import { DictateButton, appendDictated, useDictation } from "./Dictation.js";
 import { Glyph } from "./Glyph.js";
 import { GrantsPanel } from "./GrantsPanel.js";
 import { AppsView } from "./AppsView.js";
@@ -551,6 +552,9 @@ export function App(): React.JSX.Element {
   const header = useMemo(() => describeHeader(events), [events]);
   const goalInput = useRef<HTMLTextAreaElement>(null);
   const agentFiles = useAttachments();
+  const agentDictation = useDictation((text) => {
+    setGoal((current) => appendDictated(current, text));
+  });
 
   // Retry puts the goal back where the person chooses again; it starts nothing.
   const onRetry = useCallback((retried: string) => {
@@ -1209,6 +1213,11 @@ export function App(): React.JSX.Element {
                     {agentFiles.error}
                   </div>
                 )}
+                {agentDictation.error !== undefined && (
+                  <div className="notice notice--error" role="alert">
+                    {agentDictation.error}
+                  </div>
+                )}
 
                 {approvals[0] !== undefined && (
                   <ApprovalCard
@@ -1474,6 +1483,11 @@ export function App(): React.JSX.Element {
                         ? "No configuration manifest"
                         : `${configuration.sources.filter((source) => source.active).length} active sources · ${configuration.manifestHash.slice(0, 12)}`}
                     </span>
+                    <DictateButton
+                      state={agentDictation.state}
+                      seconds={agentDictation.seconds}
+                      onToggle={agentDictation.toggle}
+                    />
                     <button
                       type="button"
                       className="button button--stop"

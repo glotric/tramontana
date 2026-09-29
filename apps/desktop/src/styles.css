@@ -2637,3 +2637,89 @@ h3 {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---- Dictation (ADR 0065) ---------------------------------------------------- */
+
+.dictate-button {
+  display: inline-flex;
+  min-width: 36px;
+  height: 36px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid var(--line2);
+  border-radius: 18px;
+  background: transparent;
+  color: var(--text);
+}
+
+.dictate-button:hover:not(:disabled) {
+  background: var(--seg-on);
+}
+
+.dictate-button[data-state="recording"] {
+  border-color: transparent;
+  background: var(--ask-bg);
+  color: var(--accent-text);
+}
+
+.dictate-clock {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.dictate-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--line2);
+  border-top-color: var(--text);
+  border-radius: 50%;
+  animation: dictate-spin 0.9s linear infinite;
+}
+
+@keyframes dictate-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dictate-spinner {
+    animation: none;
+  }
+}
+
+.dictation-setup {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px;
+  margin: 0;
+  font-size: 14px;
+}
+
+.dictation-setup dt {
+  color: var(--muted);
+}
+
+.dictation-setup dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.dictation-language {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 320px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

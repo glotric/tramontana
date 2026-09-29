@@ -22,6 +22,12 @@ use crate::services::projection::TaskProjectionWriter;
 use crate::services::runtime::TaskDriver;
 use crate::services::{PermissionManager, ToolRegistry};
 
+/// Where the dictation setup is kept, and what transcribes (ADR 0065).
+pub(super) type DictationPorts = (
+    Arc<dyn crate::ports::DictationRepository>,
+    Arc<dyn crate::ports::Transcriber>,
+);
+
 /// Where schedules are kept, and the local clock they run by (ADR 0063).
 pub(super) type SchedulePorts = (
     Arc<dyn crate::ports::ScheduleRepository>,
@@ -240,6 +246,8 @@ pub struct TaskService {
     /// Where schedules are kept, and the local clock they run by
     /// (ADR 0063). Without them, nothing is scheduled.
     pub(super) schedules: Option<SchedulePorts>,
+    /// Where the dictation setup is kept, and what transcribes (ADR 0065).
+    pub(super) dictation: Option<DictationPorts>,
     pub(super) execution_allowed: bool,
     pub(super) execution_guard: Option<Arc<dyn Send + Sync>>,
 }
@@ -275,6 +283,7 @@ impl TaskService {
             documents: None,
             personal: None,
             schedules: None,
+            dictation: None,
             execution_allowed: true,
             execution_guard: None,
         }
@@ -300,6 +309,18 @@ impl TaskService {
     #[must_use]
     pub fn with_project_sources(mut self, reader: Arc<dyn ProjectSourceReader>) -> Self {
         self.project_sources = Some(reader);
+        self
+    }
+
+    /// Keep the dictation setup in `store`, and transcribe with
+    /// `transcriber` (ADR 0065).
+    #[must_use]
+    pub fn with_dictation(
+        mut self,
+        store: Arc<dyn crate::ports::DictationRepository>,
+        transcriber: Arc<dyn crate::ports::Transcriber>,
+    ) -> Self {
+        self.dictation = Some((store, transcriber));
         self
     }
 

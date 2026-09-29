@@ -982,3 +982,38 @@ async fn removing_a_project_cascades_through_its_records_and_spares_the_rest() {
         RepositoryError::NotFound { .. }
     ));
 }
+
+#[tokio::test]
+async fn the_dictation_setup_round_trips_and_clears() {
+    use tramontana_core::contracts::{DictationSetup, RuntimeProvenance};
+    use tramontana_core::ports::DictationRepository;
+    use tramontana_persistence::SqliteDictationRepository;
+
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(&directory, "dictation").await;
+    let store = SqliteDictationRepository::new(db.clone());
+    assert_eq!(store.load().await.unwrap(), None);
+
+    let setup = DictationSetup {
+        binary_path: "/opt/whisper/whisper-cli".into(),
+        model_path: "/models/ggml-base.bin".into(),
+        language: Some("sl".into()),
+        provenance: RuntimeProvenance {
+            executable_sha256: "a".repeat(64),
+            executable_bytes: 10,
+            model_sha256: "b".repeat(64),
+            model_bytes: 20,
+            recorded_at: at(1),
+        },
+    };
+    store.save(&setup).await.unwrap();
+    assert_eq!(
+        SqliteDictationRepository::new(db.clone())
+            .load()
+            .await
+            .unwrap(),
+        Some(setup)
+    );
+    store.clear().await.unwrap();
+    assert_eq!(store.load().await.unwrap(), None);
+}

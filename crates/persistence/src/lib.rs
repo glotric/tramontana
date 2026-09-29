@@ -12,6 +12,7 @@
 
 mod apps;
 mod database;
+mod dictation;
 mod event_store;
 mod personal;
 mod repositories;
@@ -20,6 +21,7 @@ mod schedules;
 pub use apps::SqliteAppSettingsRepository;
 
 pub use database::{Database, DatabaseError};
+pub use dictation::SqliteDictationRepository;
 pub use event_store::SqliteEventStore;
 pub use personal::SqlitePersonalRepository;
 pub use repositories::{

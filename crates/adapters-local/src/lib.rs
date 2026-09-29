@@ -14,8 +14,10 @@
 pub mod fingerprint;
 mod llama;
 pub mod runtime_records;
+mod whisper;
 
 pub use llama::{
     LlamaServerSpec, MINIMUM_BUILD, ProbedVersion, RuntimeKind, StartError, SupervisedLlamaServer,
     mlx_supported, parse_devices, probe_devices, probe_version,
 };
+pub use whisper::{TRANSCRIBE_DEADLINE, WhisperCli};

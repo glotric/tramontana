@@ -1063,3 +1063,78 @@ async fn a_project_with_a_task_under_way_is_not_removed() {
     assert!(service.get_project(&project.project_id).await.is_ok());
     service.cancel_task(&task).await.unwrap();
 }
+
+fn wav(seconds: usize) -> Vec<u8> {
+    let data = seconds * 16_000 * 2;
+    let mut bytes = b"RIFF".to_vec();
+    bytes.extend_from_slice(&u32::try_from(36 + data).unwrap().to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&16_000u32.to_le_bytes());
+    bytes.extend_from_slice(&32_000u32.to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&u32::try_from(data).unwrap().to_le_bytes());
+    bytes.resize(44 + data, 0);
+    bytes
+}
+
+#[tokio::test]
+async fn dictation_is_set_up_transcribes_to_text_and_records_nothing() {
+    let model = Numbered::new();
+    let transcriber = Arc::new(FakeTranscriber::hearing("  Plan my week.\n"));
+    let service = service(&model).with_dictation(
+        Arc::new(InMemoryDictationRepository::new()),
+        Arc::clone(&transcriber) as Arc<dyn Transcriber>,
+    );
+
+    // Not set up: it says what to do rather than failing quietly.
+    let unset = service.transcribe(wav(1)).await.unwrap_err();
+    assert_eq!(unset.code, ErrorCode::CapabilityUnsupported);
+    assert!(unset.message.contains("Settings"));
+    assert!(!service.dictation_status().await.unwrap().configured);
+
+    let status = service
+        .set_dictation(
+            "/opt/whisper/whisper-cli",
+            "/models/ggml-base.bin",
+            Some("en"),
+        )
+        .await
+        .unwrap();
+    assert!(status.configured);
+    assert_eq!(status.language.as_deref(), Some("en"));
+
+    assert_eq!(service.transcribe(wav(2)).await.unwrap(), "Plan my week.");
+    assert_eq!(transcriber.heard(), [44 + 2 * 32_000]);
+    // Transcribing starts no task and writes no record.
+    assert!(service.list_tasks(None).await.unwrap().is_empty());
+
+    // Not a WAV, too long, or a bad language: refused before the transcriber.
+    assert_eq!(
+        service
+            .transcribe(b"OggS...".repeat(20))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        service.transcribe(wav(330)).await.unwrap_err().code,
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        service
+            .set_dictation("/a", "/b", Some("English"))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(transcriber.heard().len(), 1);
+
+    assert!(!service.clear_dictation().await.unwrap().configured);
+}

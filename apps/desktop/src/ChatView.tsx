@@ -11,6 +11,7 @@ import { MODE_LABEL } from "./cards.js";
 import type { ChatTurn } from "./chat.js";
 import { attachmentsOf, outcomeOf, titleFrom, withEvent } from "./chat.js";
 import { AttachButton, PendingFiles, SentFiles, useAttachments } from "./Attachments.js";
+import { DictateButton, appendDictated, useDictation } from "./Dictation.js";
 import {
   asErrorEnvelope,
   cancelTask,
@@ -77,6 +78,10 @@ export function ChatView({
   // would race the turn already streaming into it.
   const made = useRef<string | undefined>(undefined);
   const input = useRef<HTMLTextAreaElement>(null);
+  const dictation = useDictation((text) => {
+    setDraft((current) => appendDictated(current, text));
+    input.current?.focus();
+  });
   const bottom = useRef<HTMLDivElement>(null);
 
   const conversationId = conversation?.conversationId;
@@ -236,6 +241,11 @@ export function ChatView({
               {files.error}
             </div>
           )}
+          {dictation.error !== undefined && (
+            <div className="notice notice--error" role="alert">
+              {dictation.error}
+            </div>
+          )}
           {notice}
           {empty ? (
             <section className="chat-home" aria-labelledby="chat-home-heading">
@@ -336,6 +346,11 @@ export function ChatView({
               ))}
             </fieldset>
             <span />
+            <DictateButton
+              state={dictation.state}
+              seconds={dictation.seconds}
+              onToggle={dictation.toggle}
+            />
             {running && latest !== undefined && !sending ? (
               <button type="button" className="button button--stop" onClick={stop}>
                 <span className="stop-square" aria-hidden="true" />

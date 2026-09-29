@@ -1121,6 +1121,58 @@
         }
       ]
     },
+    "DictationSetup": {
+      "description": "The `whisper-cli` and model the person chose, as they were then.",
+      "properties": {
+        "binaryPath": {
+          "description": "The `whisper-cli` executable.",
+          "type": "string"
+        },
+        "language": {
+          "description": "A language code such as `en`, or absent for `auto`.",
+          "type": "string"
+        },
+        "modelPath": {
+          "description": "The model file.",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/RuntimeProvenance",
+          "description": "The files' fingerprints when chosen (ADR 0043)."
+        }
+      },
+      "required": [
+        "binaryPath",
+        "modelPath",
+        "provenance"
+      ],
+      "type": "object"
+    },
+    "DictationStatus": {
+      "description": "Whether dictation can be used, and with what.",
+      "properties": {
+        "binaryPath": {
+          "description": "The chosen executable.",
+          "type": "string"
+        },
+        "configured": {
+          "description": "Whether a transcriber has been chosen.",
+          "type": "boolean"
+        },
+        "language": {
+          "description": "The chosen language, absent for `auto`.",
+          "type": "string"
+        },
+        "modelPath": {
+          "description": "The chosen model.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "configured"
+      ],
+      "type": "object"
+    },
     "EffectiveConfiguration": {
       "description": "Everything loaded for a project, in precedence order.",
       "properties": {
@@ -3674,6 +3726,43 @@
           "type": "string"
         }
       ]
+    },
+    "RuntimeProvenance": {
+      "description": "What a supervised runtime's files were when the person chose or last\nconfirmed them (ADR 0043).\n\nTramontana did not download them and cannot vouch for where they came\nfrom. It records exactly what they were, so that a changed executable is\nheld until the person confirms it and a changed model is flagged.",
+      "properties": {
+        "executableBytes": {
+          "description": "Its size in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "executableSha256": {
+          "description": "The executable's SHA-256, lowercase hex.",
+          "type": "string"
+        },
+        "modelBytes": {
+          "description": "The model's size in bytes, summed over a folder.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "modelSha256": {
+          "description": "The model's SHA-256: of the file, or of an MLX model folder's files\nand their paths.",
+          "type": "string"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When they were recorded."
+        }
+      },
+      "required": [
+        "executableSha256",
+        "executableBytes",
+        "modelSha256",
+        "modelBytes",
+        "recordedAt"
+      ],
+      "type": "object"
     },
     "Schedule": {
       "description": "Regular work: a goal, where it runs, and when (ADR 0063).",

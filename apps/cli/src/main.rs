@@ -11,6 +11,7 @@ mod approval;
 mod bundle;
 mod configuration;
 mod conversation;
+mod dictation;
 mod profile;
 mod project;
 mod provider;
@@ -54,6 +55,8 @@ enum Command {
     Profile(profile::ProfileArgs),
     /// Regular work Tramontana does while the desktop application is open.
     Schedule(schedule::ScheduleArgs),
+    /// Speech to text with a whisper.cpp you supply.
+    Dictation(dictation::DictationArgs),
     /// Store, inspect, and remove credentials in the operating system store.
     Secret(secret::SecretArgs),
     /// Run one task against the fake providers and stream its activity.
@@ -99,6 +102,7 @@ async fn execute(command: Command) -> std::process::ExitCode {
         Command::Provider(args) => provider::execute(args).await,
         Command::Profile(args) => profile::execute(args).await,
         Command::Schedule(args) => schedule::execute(args).await,
+        Command::Dictation(args) => dictation::execute(args).await,
         Command::Secret(args) => secret::execute(args).await,
         Command::Task(args) => run::execute(args).await,
         Command::Info => std::process::ExitCode::SUCCESS,

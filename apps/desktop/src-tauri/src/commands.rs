@@ -315,6 +315,78 @@ pub(crate) async fn delete_project(
     state.service.delete_project(&project_id).await
 }
 
+/// Whether dictation is set up (ADR 0065).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn dictation_status(
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::DictationStatus, ErrorEnvelope> {
+    state.service.dictation_status().await
+}
+
+/// Choose the `whisper-cli` program and then the model, in the native file
+/// picker (ADR 0065). `None` when the person cancels either.
+///
+/// # Errors
+///
+/// Whatever the service reports, such as a file that cannot be read.
+#[tauri::command]
+pub(crate) async fn choose_dictation(
+    language: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<tramontana_core::contracts::DictationStatus>, ErrorEnvelope> {
+    let Some(binary) = pick_file(&app, "Choose the whisper.cpp program (whisper-cli)").await?
+    else {
+        return Ok(None);
+    };
+    let Some(model) = pick_file(&app, "Choose the whisper model (ggml-*.bin)").await? else {
+        return Ok(None);
+    };
+    state
+        .service
+        .set_dictation(
+            &binary.display().to_string(),
+            &model.display().to_string(),
+            language.as_deref(),
+        )
+        .await
+        .map(Some)
+}
+
+/// Forget the dictation setup; the files are not touched (ADR 0065).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn clear_dictation(
+    state: State<'_, AppState>,
+) -> Result<tramontana_core::contracts::DictationStatus, ErrorEnvelope> {
+    state.service.clear_dictation().await
+}
+
+/// Transcribe a recording the window sends as raw WAV bytes in the request
+/// body (ADR 0065). Nothing is kept.
+///
+/// # Errors
+///
+/// [`ErrorCode::InvalidRequest`] when the body is not raw bytes, or whatever
+/// the service reports.
+#[tauri::command]
+pub(crate) async fn transcribe(
+    request: tauri::ipc::Request<'_>,
+    state: State<'_, AppState>,
+) -> Result<String, ErrorEnvelope> {
+    let tauri::ipc::InvokeBody::Raw(audio) = request.body() else {
+        return Err(invalid("a recording is sent as raw bytes"));
+    };
+    state.service.transcribe(audio.clone()).await
+}
+
 /// Every schedule, with when it runs next (ADR 0063).
 ///
 /// # Errors
