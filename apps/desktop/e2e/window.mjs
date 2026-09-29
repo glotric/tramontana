@@ -142,7 +142,9 @@ async function main() {
     await click(button("repository"));
     step("the project the CLI opened is listed, and opens");
 
-    // 3. A conversation and a task, started in the window.
+    // 3. A conversation and a task, started in the window. The project
+    // loads after the click, so its form is waited for, not assumed.
+    await until("the project to open", () => find("//input[@id='conversation-title']"));
     await type("//input[@id='conversation-title']", "Window");
     await click(button("Add"));
     await until("the new conversation", () => find("//h1[normalize-space()='Window']"));

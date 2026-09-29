@@ -325,16 +325,17 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         let root = canonicalize_root(&directory.path().join("project")).unwrap();
+        // Searched for as JSON writes it: a Windows path's backslashes are
+        // escaped there, and the raw path would never be found, which would
+        // also let the second check pass without proving anything.
+        let quoted = serde_json::to_string(root.as_str()).unwrap();
+        let needle = quoted.trim_matches('"');
         assert!(
-            serde_json::to_string(&original)
-                .unwrap()
-                .contains(root.as_str()),
+            serde_json::to_string(&original).unwrap().contains(needle),
             "the original never named the device path, so this proves nothing"
         );
         assert!(
-            !serde_json::to_string(&imported)
-                .unwrap()
-                .contains(root.as_str()),
+            !serde_json::to_string(&imported).unwrap().contains(needle),
             "a device path travelled in the bundle"
         );
 
