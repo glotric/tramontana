@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { AnswerStyle, PersonalProfile } from "@tramontana/shared";
 
 import { asErrorEnvelope, forget, personalProfile, remember, updatePersonal } from "./core.js";
+import { DictationSettings } from "./Dictation.js";
 import { Glyph } from "./Glyph.js";
 import type { GlyphHue, GlyphIcon } from "./Glyph.js";
 
@@ -260,6 +261,8 @@ export function SettingsView(): React.JSX.Element {
             </button>
           </form>
         </section>
+
+        <DictationSettings />
       </div>
     </section>
   );

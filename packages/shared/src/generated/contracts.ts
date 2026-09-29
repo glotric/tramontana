@@ -789,6 +789,47 @@ export type DestinationClass = "local" | "cloud" | "worker";
 export type DiagnosticSeverity = "warning" | "error";
 
 /**
+ * The `whisper-cli` and model the person chose, as they were then.
+ */
+export interface DictationSetup {
+  /**
+   * The `whisper-cli` executable.
+   */
+  binaryPath: string;
+  /**
+   * A language code such as `en`, or absent for `auto`.
+   */
+  language?: string;
+  /**
+   * The model file.
+   */
+  modelPath: string;
+  provenance: RuntimeProvenance;
+}
+
+/**
+ * Whether dictation can be used, and with what.
+ */
+export interface DictationStatus {
+  /**
+   * The chosen executable.
+   */
+  binaryPath?: string;
+  /**
+   * Whether a transcriber has been chosen.
+   */
+  configured: boolean;
+  /**
+   * The chosen language, absent for `auto`.
+   */
+  language?: string;
+  /**
+   * The chosen model.
+   */
+  modelPath?: string;
+}
+
+/**
  * Everything loaded for a project, in precedence order.
  */
 export interface EffectiveConfiguration {
@@ -2699,6 +2740,38 @@ export interface RoutingFallback {
  * The user's standing policy for where inference may run.
  */
 export type RoutingMode = "localOnly" | "automatic" | "cloudPreferred";
+
+/**
+ * What a supervised runtime's files were when the person chose or last
+ * confirmed them (ADR 0043).
+ *
+ * Tramontana did not download them and cannot vouch for where they came
+ * from. It records exactly what they were, so that a changed executable is
+ * held until the person confirms it and a changed model is flagged.
+ */
+export interface RuntimeProvenance {
+  /**
+   * Its size in bytes.
+   */
+  executableBytes: number;
+  /**
+   * The executable's SHA-256, lowercase hex.
+   */
+  executableSha256: string;
+  /**
+   * The model's size in bytes, summed over a folder.
+   */
+  modelBytes: number;
+  /**
+   * The model's SHA-256: of the file, or of an MLX model folder's files
+   * and their paths.
+   */
+  modelSha256: string;
+  /**
+   * When they were recorded.
+   */
+  recordedAt: string;
+}
 
 /**
  * Regular work: a goal, where it runs, and when (ADR 0063).

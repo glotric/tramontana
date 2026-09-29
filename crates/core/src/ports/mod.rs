@@ -9,6 +9,7 @@
 //! `ContextProvider` arrive with the milestones that need them.
 
 mod clock;
+mod dictation;
 mod document;
 mod event_store;
 mod ids;
@@ -22,6 +23,7 @@ mod tool;
 mod worker;
 
 pub use clock::{Clock, LocalClock};
+pub use dictation::{DictationRepository, Transcriber};
 pub use document::{DocumentError, DocumentReader};
 pub use event_store::{EventStore, EventStoreError};
 pub use ids::IdSource;

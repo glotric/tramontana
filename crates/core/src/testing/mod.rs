@@ -32,9 +32,9 @@ pub use model::{FakeModelProvider, FakeModelScript};
 pub use permission::{InMemoryApprovalStore, ScriptedApprover};
 pub use receiving_worker::{HANDOFF_RECEIVED, RECEIVING_AGENT_ID, ReceivingWorker};
 pub use repositories::{
-    InMemoryCheckpointRepository, InMemoryConfigurationRepository, InMemoryConversationRepository,
-    InMemoryPersonalRepository, InMemoryProjectRepository, InMemoryScheduleRepository,
-    InMemoryTaskRepository,
+    FakeTranscriber, InMemoryCheckpointRepository, InMemoryConfigurationRepository,
+    InMemoryConversationRepository, InMemoryDictationRepository, InMemoryPersonalRepository,
+    InMemoryProjectRepository, InMemoryScheduleRepository, InMemoryTaskRepository,
 };
 pub use secret::InMemorySecretVault;
 pub use tool::{FAKE_TOOL_ID, FAKE_WRITE_TOOL_ID, FakeToolProvider, FakeWriteTool};

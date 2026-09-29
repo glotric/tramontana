@@ -11,6 +11,8 @@ const listen = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/event", () => ({ listen }));
 
 const {
+  chooseDictation,
+  transcribe,
   addAnthropicEndpoint,
   appPermissionHistory,
   listApps,
@@ -439,5 +441,16 @@ describe("apps", () => {
     invoke.mockResolvedValueOnce({ decisions: [], partial: false });
     await appPermissionHistory("fixture");
     expect(invoke).toHaveBeenLastCalledWith("app_permission_history", { appId: "fixture" });
+  });
+
+  it("sends a recording as raw bytes, and the language by name", async () => {
+    const wav = new Uint8Array([82, 73, 70, 70]);
+    invoke.mockResolvedValueOnce("Plan my week.");
+    await expect(transcribe(wav)).resolves.toBe("Plan my week.");
+    expect(invoke).toHaveBeenLastCalledWith("transcribe", wav);
+
+    invoke.mockResolvedValueOnce(null);
+    await expect(chooseDictation()).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenLastCalledWith("choose_dictation", { language: null });
   });
 });

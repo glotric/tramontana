@@ -726,7 +726,7 @@ impl Drop for SupervisedLlamaServer {
 /// API keys, and a model runtime has no business seeing them
 /// (`SECURITY_AND_PERMISSIONS.md` §7). Only what an operating system needs to
 /// load and run a binary at all is put back.
-fn base_command(binary: &Path) -> Command {
+pub(crate) fn base_command(binary: &Path) -> Command {
     let mut command = Command::new(binary);
     command.env_clear();
 

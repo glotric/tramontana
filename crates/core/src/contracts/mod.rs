@@ -20,6 +20,7 @@ mod checkpoint;
 mod configuration;
 mod context;
 mod descriptor;
+mod dictation;
 mod error;
 mod event;
 mod export;
@@ -61,6 +62,7 @@ pub use descriptor::{
     AgentDescriptor, CheckpointSupport, Health, IntegrationMode, ModelCapability, ModelControl,
     ModelDescriptor, ModelLocation, NetworkControl, ToolControl, ToolDescriptor,
 };
+pub use dictation::{DictationSetup, DictationStatus};
 pub use error::{ErrorCode, ErrorEnvelope};
 pub use event::{
     CancellationOrigin, EventDraft, EventEnvelope, EventPayload, PermissionOrigin, StreamFrame,

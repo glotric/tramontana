@@ -580,3 +580,91 @@ impl crate::ports::ScheduleRepository for InMemoryScheduleRepository {
         Ok(())
     }
 }
+
+/// The dictation setup, held in memory (ADR 0065).
+#[derive(Debug, Default)]
+pub struct InMemoryDictationRepository {
+    setup: Mutex<Option<crate::contracts::DictationSetup>>,
+}
+
+impl InMemoryDictationRepository {
+    /// Nothing set up.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl crate::ports::DictationRepository for InMemoryDictationRepository {
+    async fn load(&self) -> Result<Option<crate::contracts::DictationSetup>, RepositoryError> {
+        Ok(lock(&self.setup)?.clone())
+    }
+
+    async fn save(&self, setup: &crate::contracts::DictationSetup) -> Result<(), RepositoryError> {
+        *lock(&self.setup)? = Some(setup.clone());
+        Ok(())
+    }
+
+    async fn clear(&self) -> Result<(), RepositoryError> {
+        *lock(&self.setup)? = None;
+        Ok(())
+    }
+}
+
+/// A transcriber that answers with what it was built with, and counts the
+/// audio it was given (ADR 0065).
+#[derive(Debug)]
+pub struct FakeTranscriber {
+    text: String,
+    heard: Mutex<Vec<usize>>,
+}
+
+impl FakeTranscriber {
+    /// A transcriber that hears `text` in anything.
+    #[must_use]
+    pub fn hearing(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            heard: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The sizes of the audio it was given, in order.
+    #[must_use]
+    pub fn heard(&self) -> Vec<usize> {
+        self.heard
+            .lock()
+            .map(|heard| heard.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[async_trait]
+impl crate::ports::Transcriber for FakeTranscriber {
+    fn inspect(
+        &self,
+        _binary_path: &str,
+        _model_path: &str,
+        recorded_at: crate::contracts::Timestamp,
+    ) -> Result<crate::contracts::RuntimeProvenance, crate::contracts::ErrorEnvelope> {
+        Ok(crate::contracts::RuntimeProvenance {
+            executable_sha256: "0".repeat(64),
+            executable_bytes: 1,
+            model_sha256: "1".repeat(64),
+            model_bytes: 1,
+            recorded_at,
+        })
+    }
+
+    async fn transcribe(
+        &self,
+        _setup: &crate::contracts::DictationSetup,
+        wav: Vec<u8>,
+    ) -> Result<String, crate::contracts::ErrorEnvelope> {
+        if let Ok(mut heard) = self.heard.lock() {
+            heard.push(wav.len());
+        }
+        Ok(self.text.clone())
+    }
+}

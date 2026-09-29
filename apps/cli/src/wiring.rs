@@ -272,6 +272,13 @@ async fn open_with(
             )),
             Arc::new(tramontana_platform::SystemLocalClock::new()),
         )
+        // So speech can be transcribed on this device (ADR 0065).
+        .with_dictation(
+            Arc::new(tramontana_persistence::SqliteDictationRepository::new(
+                database.clone(),
+            )),
+            Arc::new(tramontana_adapters_local::WhisperCli::new()),
+        )
         // So PDF and Word files can be attached (ADR 0062).
         .with_document_reader(Arc::new(tramontana_adapters_documents::Documents::new()))
         .with_execution_guard(lease);

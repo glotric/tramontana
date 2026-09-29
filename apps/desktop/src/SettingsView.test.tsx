@@ -11,10 +11,11 @@ const personalProfile = vi.hoisted(() => vi.fn());
 const updatePersonal = vi.hoisted(() => vi.fn());
 const remember = vi.hoisted(() => vi.fn());
 const forget = vi.hoisted(() => vi.fn());
+const dictationStatus = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
-  return { ...actual, personalProfile, updatePersonal, remember, forget };
+  return { ...actual, personalProfile, updatePersonal, remember, forget, dictationStatus };
 });
 
 const { SettingsView } = await import("./SettingsView.js");
@@ -30,6 +31,7 @@ const stored: PersonalProfile = {
 beforeEach(() => {
   for (const mock of [personalProfile, updatePersonal, remember, forget]) mock.mockReset();
   personalProfile.mockResolvedValue(stored);
+  dictationStatus.mockResolvedValue({ configured: false });
 });
 
 describe("SettingsView", () => {
