@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ProjectRecord } from "@tramontana/shared";
 
-import { listConversations } from "./core.js";
+import { asErrorEnvelope, listConversations } from "./core.js";
 import { Glyph } from "./Glyph.js";
 import type { GlyphHue, GlyphIcon } from "./Glyph.js";
 
@@ -39,15 +39,20 @@ export function ProjectsView({
   projects,
   onOpen,
   onNew,
+  onDelete,
   opening,
 }: {
   readonly projects: readonly ProjectRecord[];
   readonly onOpen: (project: ProjectRecord) => void;
   readonly onNew: () => void;
+  /** Remove a project from Tramontana; its files are not touched. */
+  readonly onDelete: (project: ProjectRecord) => Promise<void>;
   readonly opening: boolean;
 }): React.JSX.Element {
   const [filter, setFilter] = useState("");
   const [counts, setCounts] = useState<Readonly<Record<string, number>>>({});
+  const [removing, setRemoving] = useState<string | undefined>();
+  const [failure, setFailure] = useState<string | undefined>();
 
   useEffect(() => {
     let active = true;
@@ -112,29 +117,91 @@ export function ProjectsView({
         </div>
       </header>
 
+      {failure !== undefined && (
+        <p className="notice notice--error" role="alert">
+          {failure}
+        </p>
+      )}
       <ul className="project-cards" aria-label="Projects">
         {shown.map((project) => {
           const [icon, hue] = lookOf(project.projectId);
           const count = counts[project.projectId];
           return (
-            <li key={project.projectId}>
-              <button
-                type="button"
-                className="project-card"
-                onClick={() => {
-                  onOpen(project);
-                }}
-              >
-                <Glyph icon={icon} hue={hue} size={60} />
-                <strong>{project.name}</strong>
-                <span className="project-card-root">{project.roots[0]}</span>
-                <span className="project-card-meta">
-                  {count === undefined
-                    ? ""
-                    : `${count} ${count === 1 ? "conversation" : "conversations"} · `}
-                  Opened {describeDay(project.createdAt)}
-                </span>
-              </button>
+            <li key={project.projectId} className="project-card-item">
+              {removing === project.projectId ? (
+                <div
+                  className="project-card project-card--confirm"
+                  role="alertdialog"
+                  aria-label={`Remove ${project.name}?`}
+                >
+                  <strong>Remove “{project.name}”?</strong>
+                  <span className="project-card-meta">
+                    Its conversations, tasks and records are deleted from Tramontana. The folder and
+                    its files are not touched. This can&apos;t be undone.
+                  </span>
+                  <span className="menu-actions">
+                    <button
+                      type="button"
+                      className="button button--secondary"
+                      onClick={() => {
+                        setRemoving(undefined);
+                      }}
+                    >
+                      Keep
+                    </button>
+                    <button
+                      type="button"
+                      className="button button--danger"
+                      onClick={() => {
+                        setFailure(undefined);
+                        void onDelete(project).then(
+                          () => {
+                            setRemoving(undefined);
+                          },
+                          (error: unknown) => {
+                            setRemoving(undefined);
+                            setFailure(
+                              asErrorEnvelope(error)?.message ?? "Could not remove the project.",
+                            );
+                          },
+                        );
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </span>
+                </div>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="project-card"
+                    onClick={() => {
+                      onOpen(project);
+                    }}
+                  >
+                    <Glyph icon={icon} hue={hue} size={60} />
+                    <strong>{project.name}</strong>
+                    <span className="project-card-root">{project.roots[0]}</span>
+                    <span className="project-card-meta">
+                      {count === undefined
+                        ? ""
+                        : `${count} ${count === 1 ? "conversation" : "conversations"} · `}
+                      Opened {describeDay(project.createdAt)}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button project-card-remove"
+                    aria-label={`Remove ${project.name} from Tramontana`}
+                    onClick={() => {
+                      setRemoving(project.projectId);
+                    }}
+                  >
+                    ×
+                  </button>
+                </>
+              )}
             </li>
           );
         })}

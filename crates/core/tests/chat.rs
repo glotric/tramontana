@@ -955,3 +955,111 @@ async fn a_schedule_whose_last_run_is_still_under_way_is_not_run_again() {
             .is_ok()
     );
 }
+
+#[tokio::test]
+async fn removing_a_project_forgets_its_record_and_nothing_else() {
+    let model = Numbered::new();
+    let clock = Arc::new(FakeLocalClock::at(local(2026, 9, 28, 7, 0)));
+    let service = service(&model).with_schedules(
+        Arc::new(InMemoryScheduleRepository::new()),
+        Arc::clone(&clock) as Arc<dyn LocalClock>,
+    );
+    let gone = service
+        .create_project("Gone", vec!["/work/gone".into()])
+        .await
+        .unwrap();
+    let kept = service
+        .create_project("Kept", vec!["/work/kept".into()])
+        .await
+        .unwrap();
+    let conversation = service
+        .create_conversation(Some(gone.project_id.clone()), "Work")
+        .await
+        .unwrap();
+    let events = ask(&service, &conversation.conversation_id, "List it.").await;
+    let task = events[0].task_id.clone();
+    service
+        .create_schedule(&NewSchedule {
+            title: "Weekly".into(),
+            goal: "Summarize.".into(),
+            project_id: Some(gone.project_id.clone()),
+            cadence: Cadence::Daily { hour: 8, minute: 0 },
+            routing_mode: RoutingMode::LocalOnly,
+        })
+        .await
+        .unwrap();
+    let chat = service.create_conversation(None, "Chat").await.unwrap();
+
+    service.delete_project(&gone.project_id).await.unwrap();
+
+    assert_eq!(
+        service
+            .get_project(&gone.project_id)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+    assert!(
+        service
+            .get_conversation(&conversation.conversation_id)
+            .await
+            .is_err()
+    );
+    assert!(
+        service
+            .replay_task_events(&task, 0)
+            .await
+            .map_or(true, |events| events.is_empty())
+    );
+    // Its schedule went with it. Another project, and chats, are untouched.
+    assert!(service.list_schedules().await.unwrap().is_empty());
+    assert!(service.get_project(&kept.project_id).await.is_ok());
+    assert!(
+        service
+            .get_conversation(&chat.conversation_id)
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        service
+            .delete_project(&gone.project_id)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+}
+
+#[tokio::test]
+async fn a_project_with_a_task_under_way_is_not_removed() {
+    let model = Numbered::new();
+    model.hold.store(true, std::sync::atomic::Ordering::SeqCst);
+    let service = service(&model);
+    let project = service
+        .create_project("Busy", vec!["/work/busy".into()])
+        .await
+        .unwrap();
+    let conversation = service
+        .create_conversation(Some(project.project_id.clone()), "Work")
+        .await
+        .unwrap();
+    let task = service
+        .start_task(StartTaskRequest {
+            conversation_id: Some(conversation.conversation_id),
+            goal: "Think.".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .delete_project(&project.project_id)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert!(service.get_project(&project.project_id).await.is_ok());
+    service.cancel_task(&task).await.unwrap();
+}

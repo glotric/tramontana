@@ -59,6 +59,22 @@ pub trait ProjectRepository: Send + Sync {
     ///
     /// [`RepositoryError::Unavailable`] when storage failed.
     async fn list(&self) -> Result<Vec<ProjectRecord>, RepositoryError>;
+
+    /// Remove a project's record: its row and roots, and whatever the store
+    /// keeps under it (ADR 0064). Its conversations and tasks are removed
+    /// first by the caller. Never touches the project's files.
+    ///
+    /// The default refuses, for stores that cannot forget a project.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::NotFound`] when it does not exist.
+    async fn delete(&self, project_id: &ProjectId) -> Result<(), RepositoryError> {
+        let _ = project_id;
+        Err(RepositoryError::Unavailable(
+            "this store cannot remove a project".to_owned(),
+        ))
+    }
 }
 
 /// Conversations.

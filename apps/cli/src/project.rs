@@ -25,6 +25,23 @@ enum ProjectCommand {
     List(ProfileArgs),
     /// Inspect one project and its latest resolved configuration.
     Inspect(InspectProjectArgs),
+    /// Remove a project from Tramontana: its conversations, tasks, records
+    /// and schedules. The folder and its files are not touched.
+    Delete(DeleteProjectArgs),
+}
+
+#[derive(Debug, Args)]
+struct DeleteProjectArgs {
+    #[arg(value_name = "PROJECT_ID")]
+    project_id: String,
+
+    /// Confirm the removal. Without it, nothing is removed.
+    #[arg(long)]
+    yes: bool,
+
+    /// Database file to use.
+    #[arg(long, value_name = "PATH")]
+    profile: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -64,6 +81,7 @@ pub(crate) async fn execute(args: ProjectArgs) -> ExitCode {
         ProjectCommand::Open(args) => open(args).await,
         ProjectCommand::List(args) => list(args).await,
         ProjectCommand::Inspect(args) => inspect(args).await,
+        ProjectCommand::Delete(args) => delete(args).await,
     }
 }
 
@@ -152,4 +170,27 @@ async fn inspect(args: InspectProjectArgs) -> ExitCode {
         "project": project,
         "configuration": configuration,
     }))
+}
+
+async fn delete(args: DeleteProjectArgs) -> ExitCode {
+    if !args.yes {
+        eprintln!(
+            "error: removing a project deletes its conversations, tasks and records from this profile, and cannot be undone (its files are not touched); pass --yes to confirm"
+        );
+        return ExitCode::FAILURE;
+    }
+    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
+        Ok(service) => service,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match service
+        .delete_project(&tramontana_core::contracts::ProjectId::new(args.project_id))
+        .await
+    {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => render::application_error(&error),
+    }
 }

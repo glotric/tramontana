@@ -326,6 +326,22 @@ describe("M2 durable desktop surface", () => {
     expect(screen.getByRole("heading", { name: "New chat", level: 1 })).toBeInTheDocument();
   });
 
+  it("brings the sidebar back from a screen with no work header", async () => {
+    // Regression: collapsing the sidebar on Settings, Scheduled, Projects,
+    // Models or Apps left no button to show it again.
+    const user = userEvent.setup();
+    await renderLoaded();
+    await user.click(screen.getByRole("button", { name: "Models and credentials" }));
+    await user.click(screen.getByRole("button", { name: "Hide sidebar" }));
+    expect(
+      screen.queryByRole("complementary", { name: "Projects and conversations" }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show sidebar" }));
+    expect(
+      screen.getByRole("complementary", { name: "Projects and conversations" }),
+    ).toBeInTheDocument();
+  });
+
   it("puts the sidebar and the details away, and brings them back", async () => {
     const user = userEvent.setup();
     await renderLoaded();

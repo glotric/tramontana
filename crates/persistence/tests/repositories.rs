@@ -861,3 +861,124 @@ async fn a_schedule_round_trips_and_is_replaced_and_deleted() {
         RepositoryError::NotFound { .. }
     ));
 }
+
+#[tokio::test]
+async fn removing_a_project_cascades_through_its_records_and_spares_the_rest() {
+    use tramontana_core::contracts::{
+        Cadence, LocalDateTime, RoutingMode, SCHEMA_VERSION, Schedule,
+    };
+    use tramontana_core::ports::{CheckpointRepository, ScheduleRepository};
+    use tramontana_core::testing::contract_suites::checkpoint_at;
+    use tramontana_persistence::{SqliteCheckpointRepository, SqliteScheduleRepository};
+
+    let directory = tempfile::tempdir().unwrap();
+    let db = database(&directory, "delete-project").await;
+    let projects = SqliteProjectRepository::new(db.clone());
+    let conversations = SqliteConversationRepository::new(db.clone());
+    let tasks = SqliteTaskRepository::new(db.clone());
+    let events = SqliteEventStore::new(db.clone());
+    let checkpoints = SqliteCheckpointRepository::new(db.clone());
+    let schedules = SqliteScheduleRepository::new(db.clone());
+
+    for (project, conversation, task) in
+        [("gone", "c-gone", "t-gone"), ("kept", "c-kept", "t-kept")]
+    {
+        let project_id = ProjectId::new(project);
+        projects
+            .create(&ProjectRecord::new(
+                project_id.clone(),
+                project,
+                vec![format!("/{project}")],
+                at(0),
+            ))
+            .await
+            .unwrap();
+        let conversation_id = ConversationId::new(conversation);
+        conversations
+            .create(&ConversationRecord::new(
+                conversation_id.clone(),
+                Some(project_id.clone()),
+                "x",
+                at(1),
+            ))
+            .await
+            .unwrap();
+        let task_id = TaskId::new(task);
+        tasks
+            .create(&TaskRecord::new(
+                task_id.clone(),
+                Some(conversation_id.clone()),
+                Some(project_id.clone()),
+                "goal",
+                at(2),
+            ))
+            .await
+            .unwrap();
+        events
+            .append(&task_id, 0, vec![event_at(&task_id, 1)])
+            .await
+            .unwrap();
+        checkpoints.save(&checkpoint_at(&task_id, 1)).await.unwrap();
+        schedules
+            .save(&Schedule {
+                schema_version: SCHEMA_VERSION,
+                schedule_id: format!("s-{project}"),
+                title: "t".into(),
+                goal: "g".into(),
+                project_id: Some(project_id),
+                conversation_id,
+                cadence: Cadence::Daily { hour: 8, minute: 0 },
+                routing_mode: RoutingMode::LocalOnly,
+                enabled: true,
+                created_at: at(3),
+                created_local: LocalDateTime {
+                    year: 2026,
+                    month: 9,
+                    day: 28,
+                    hour: 0,
+                    minute: 0,
+                },
+                last_run: None,
+                last_task_id: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    // As the service does it: the tasks and their events, then the project.
+    let task = TaskId::new("t-gone");
+    tasks.delete(&task).await.unwrap();
+    events.delete_stream(&task).await.unwrap();
+    projects.delete(&ProjectId::new("gone")).await.unwrap();
+
+    assert!(projects.get(&ProjectId::new("gone")).await.is_err());
+    assert!(
+        conversations
+            .get(&ConversationId::new("c-gone"))
+            .await
+            .is_err()
+    );
+    assert!(checkpoints.latest(&task).await.unwrap().is_none());
+    let left: Vec<_> = schedules
+        .list()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|schedule| schedule.schedule_id)
+        .collect();
+    assert_eq!(left, ["s-kept"]);
+    assert!(projects.get(&ProjectId::new("kept")).await.is_ok());
+    assert!(tasks.get(&TaskId::new("t-kept")).await.is_ok());
+    assert_eq!(
+        events
+            .replay(&TaskId::new("t-kept"), 0)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(matches!(
+        projects.delete(&ProjectId::new("gone")).await.unwrap_err(),
+        RepositoryError::NotFound { .. }
+    ));
+}

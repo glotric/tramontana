@@ -72,6 +72,21 @@ impl SqliteProjectRepository {
 
 #[async_trait]
 impl ProjectRepository for SqliteProjectRepository {
+    async fn delete(&self, project_id: &ProjectId) -> Result<(), RepositoryError> {
+        // The schema cascades to its roots, conversations, task rows,
+        // checkpoints, configuration manifests and schedules. The caller has
+        // already removed its tasks' events, which have no foreign key.
+        let result = sqlx::query("DELETE FROM project WHERE project_id = ?")
+            .bind(project_id.as_str())
+            .execute(self.database.pool())
+            .await
+            .map_err(|error| unavailable(&error))?;
+        if result.rows_affected() == 0 {
+            return Err(not_found("project", project_id));
+        }
+        Ok(())
+    }
+
     async fn create(&self, record: &ProjectRecord) -> Result<(), RepositoryError> {
         // Project and roots land together: a project whose roots half-committed
         // would grant access nobody approved, or none at all.

@@ -47,6 +47,13 @@ jobs:
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      # Line tables keep file and line numbers in a panic's backtrace and drop
+      # the rest of the debug information, which is most of a test binary's
+      # size. With every test binary built, full debug information filled the
+      # Ubuntu runner's disk.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     strategy:
       fail-fast: false
       matrix:
@@ -58,6 +65,17 @@ jobs:
           - os: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+
+      # The Ubuntu image ships toolchains this build never uses (.NET, Android,
+      # Haskell, CodeQL), about 20 GB of a disk the workspace's test binaries
+      # need. Removed by explicit path, so nothing this build depends on goes.
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'

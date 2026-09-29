@@ -393,6 +393,7 @@ h3 {
 /* ---- Work area ------------------------------------------------------------ */
 
 .workspace {
+  position: relative;
   display: flex;
   min-width: 0;
   flex: 1;
@@ -410,6 +411,13 @@ h3 {
   gap: 12px;
   padding: 0 20px 0 28px;
   border-bottom: 1px solid var(--line);
+}
+
+.sidebar-restore {
+  position: absolute;
+  z-index: 5;
+  top: 14px;
+  left: 16px;
 }
 
 .workspace-header > .icon-button {
@@ -2278,6 +2286,26 @@ h3 {
 .project-card-meta {
   color: var(--faint);
   font-size: 13px;
+}
+
+.project-card-item {
+  position: relative;
+}
+
+.project-card-remove {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+
+.project-card--confirm {
+  justify-content: space-between;
+  border-color: var(--danger-line);
+  background: var(--danger-bg);
+}
+
+.project-card--confirm .menu-actions {
+  align-self: stretch;
 }
 
 .project-card--new {

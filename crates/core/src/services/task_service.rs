@@ -775,17 +775,85 @@ impl TaskService {
         let _lifecycle = self.lifecycle.lock().await;
         self.get_conversation(conversation_id).await?;
         let tasks = self.list_tasks(Some(conversation_id)).await?;
+        self.none_under_way(
+            &tasks,
+            "Stop the conversation's running task before deleting it",
+        )
+        .await?;
+        self.remove_tasks(&tasks).await?;
+        self.repositories
+            .conversations
+            .delete(conversation_id)
+            .await
+            .map_err(|error| self.repository_error(&error))
+    }
+
+    /// Remove Tramontana's record of a project: its conversations, their
+    /// tasks, events and checkpoints, its schedules and its configuration
+    /// record (ADR 0064). The folder and every file in it are untouched:
+    /// nothing here reads or writes the project's roots.
+    ///
+    /// Refused while any of its tasks is under way.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::NotFound`] when it does not exist, [`ErrorCode::Conflict`]
+    /// while one of its tasks runs, or a persistence error.
+    pub async fn delete_project(&self, project_id: &ProjectId) -> Result<(), ErrorEnvelope> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.get_project(project_id).await?;
+        let conversations = self.list_conversations(Some(project_id)).await?;
+        let mut tasks = Vec::new();
+        for conversation in &conversations {
+            tasks.extend(self.list_tasks(Some(&conversation.conversation_id)).await?);
+        }
+        // A task started without a conversation can still belong to it.
+        tasks.extend(self.list_tasks(None).await?.into_iter().filter(|task| {
+            task.conversation_id.is_none() && task.project_id.as_ref() == Some(project_id)
+        }));
+        self.none_under_way(&tasks, "Stop the project's running task before removing it")
+            .await?;
+        if let Some((schedules, _)) = &self.schedules {
+            for schedule in schedules
+                .list()
+                .await
+                .map_err(|error| self.repository_error(&error))?
+            {
+                if schedule.project_id.as_ref() == Some(project_id) {
+                    schedules
+                        .delete(&schedule.schedule_id)
+                        .await
+                        .map_err(|error| self.repository_error(&error))?;
+                }
+            }
+        }
+        self.remove_tasks(&tasks).await?;
+        for conversation in &conversations {
+            self.repositories
+                .conversations
+                .delete(&conversation.conversation_id)
+                .await
+                .map_err(|error| self.repository_error(&error))?;
+        }
+        self.repositories
+            .projects
+            .delete(project_id)
+            .await
+            .map_err(|error| self.repository_error(&error))
+    }
+
+    /// Refuse with `refusal` while any of `tasks` is under way, waiting a
+    /// moment for one whose record has ended but whose driver is finishing.
+    async fn none_under_way(
+        &self,
+        tasks: &[TaskRecord],
+        refusal: &str,
+    ) -> Result<(), ErrorEnvelope> {
         if tasks.iter().any(|task| {
             !(task.state.is_terminal() || task.state == crate::contracts::TaskState::Interrupted)
         }) {
-            return Err(self.error(
-                ErrorCode::Conflict,
-                "Stop the conversation's running task before deleting it",
-            ));
+            return Err(self.error(ErrorCode::Conflict, refusal));
         }
-        // A task whose record has ended may still have its driver finishing
-        // up for a moment. Wait for it rather than delete under it, and
-        // refuse if it does not finish.
         let finishing: Vec<_> = {
             let live = self.lock_live()?;
             tasks
@@ -803,15 +871,16 @@ impl TaskService {
                 Ok(Ok(_))
             );
             if !done && !*finished.borrow() {
-                return Err(self.error(
-                    ErrorCode::Conflict,
-                    "Stop the conversation's running task before deleting it",
-                ));
+                return Err(self.error(ErrorCode::Conflict, refusal));
             }
         }
-        for task in &tasks {
-            // The row first: events without a row are unreachable, while a
-            // row without its events would be an invalid record.
+        Ok(())
+    }
+
+    /// Remove tasks and their events, each row before its events: events
+    /// without a row are unreachable, a row without its events is invalid.
+    async fn remove_tasks(&self, tasks: &[TaskRecord]) -> Result<(), ErrorEnvelope> {
+        for task in tasks {
             self.repositories
                 .tasks
                 .delete(&task.task_id)
@@ -823,11 +892,7 @@ impl TaskService {
                 .await
                 .map_err(|error| self.error(ErrorCode::PersistenceError, error.to_string()))?;
         }
-        self.repositories
-            .conversations
-            .delete(conversation_id)
-            .await
-            .map_err(|error| self.repository_error(&error))
+        Ok(())
     }
 
     /// A readable transcript of one conversation, to share as a file

@@ -37,6 +37,7 @@ import {
   asErrorEnvelope,
   cancelTask,
   createConversation,
+  deleteProject,
   fetchCoreInfo,
   inspectProject,
   listConversations,
@@ -963,6 +964,20 @@ export function App(): React.JSX.Element {
       )}
 
       <main className="workspace">
+        {/* The views without a work header (Scheduled, Projects, Settings,
+            Models, Apps) still need a way back to the sidebar. */}
+        {!sidebarOpen && view !== "work" && (
+          <button
+            type="button"
+            className="icon-button sidebar-restore"
+            aria-label="Show sidebar"
+            onClick={() => {
+              setSidebarOpen(true);
+            }}
+          >
+            <SidebarIcon />
+          </button>
+        )}
         {view === "scheduled" ? (
           <ScheduledView
             projects={projects}
@@ -993,6 +1008,25 @@ export function App(): React.JSX.Element {
               setView("work");
               chooseMode("agent");
               void selectProject(project.projectId);
+            }}
+            onDelete={async (project) => {
+              await deleteProject(project.projectId);
+              const remaining = await listProjects();
+              setProjects(remaining);
+              // The open project was the one removed: nothing of it stays
+              // on screen.
+              if (inspection?.project.projectId === project.projectId) {
+                projectRequest.current += 1;
+                conversationRequest.current += 1;
+                taskRequest.current += 1;
+                setInspection(undefined);
+                setConversations([]);
+                setSelectedConversationId(undefined);
+                setTasks([]);
+                setSelectedTaskId(undefined);
+                setEvents([]);
+                setStream(undefined);
+              }
             }}
           />
         ) : view === "models" ? (

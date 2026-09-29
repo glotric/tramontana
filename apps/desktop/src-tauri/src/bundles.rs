@@ -339,7 +339,11 @@ mod tests {
         );
 
         let again = import_from(&second.service, &bundle).await.unwrap_err();
-        assert_eq!(again.code, ErrorCode::Conflict);
+        assert_eq!(
+            again.code,
+            ErrorCode::Conflict,
+            "a second import was refused, but not as a conflict: {again:?}"
+        );
     }
 
     #[test]
