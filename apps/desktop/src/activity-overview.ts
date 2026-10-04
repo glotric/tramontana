@@ -28,7 +28,6 @@ export interface ActivityDay {
   readonly count: number;
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const STOPPED = new Set(["failed", "cancelled", "interrupted"]);
 
 /** A local calendar day as `YYYY-MM-DD`. */
@@ -50,7 +49,9 @@ export function withinRange(
 ): readonly TaskRecord[] {
   if (range === "all") return tasks;
   const days = range === "7d" ? 7 : 30;
-  const from = startOfDay(now).getTime() - (days - 1) * DAY_MS;
+  // Counted in calendar days, not in milliseconds: across a clock change
+  // a day is 23 or 25 hours, and the cut-off would move by one.
+  const from = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (days - 1)).getTime();
   return tasks.filter((task) => {
     const created = Date.parse(task.createdAt);
     return !Number.isNaN(created) && created >= from;

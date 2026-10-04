@@ -36,6 +36,7 @@ export function AgentComposer({
   files,
   dictation,
   running,
+  starting = false,
   canStart,
   onStart,
   onCancel,
@@ -51,6 +52,8 @@ export function AgentComposer({
   readonly files: ReturnType<typeof useAttachments>;
   readonly dictation: ReturnType<typeof useDictation>;
   readonly running: boolean;
+  /** A start is under way; the button says so and starts nothing more. */
+  readonly starting?: boolean;
   readonly canStart: boolean;
   readonly onStart: () => void;
   readonly onCancel: () => void;
@@ -271,7 +274,8 @@ export function AgentComposer({
             <button
               type="submit"
               className="send-button"
-              aria-label="Start task"
+              aria-label={starting ? "Starting task" : "Start task"}
+              aria-busy={starting}
               disabled={!canStart}
             >
               <Icon name="send" size={18} strokeWidth={2.2} />
