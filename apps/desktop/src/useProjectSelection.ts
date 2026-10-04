@@ -49,6 +49,14 @@ export function useProjectSelection(
     [clearTask, onFailure, selectTask],
   );
 
+  /** Back to the project's home: no conversation open, the project kept. */
+  const leaveConversation = useCallback(() => {
+    conversationRequest.current += 1;
+    clearTask();
+    setSelectedConversationId(undefined);
+    setTasks([]);
+  }, [clearTask]);
+
   /** Show no project: nothing of the one before stays on screen. */
   const closeProject = useCallback(() => {
     projectRequest.current += 1;
@@ -74,8 +82,8 @@ export function useProjectSelection(
         if (request !== projectRequest.current) return;
         setInspection(detail);
         setConversations(records);
-        const latest = records[0];
-        if (latest !== undefined) await selectConversation(latest.conversationId);
+        // The project is ready for a new task; a conversation opens only
+        // when the person picks one.
       } catch (error: unknown) {
         if (request === projectRequest.current) {
           onFailure(failureText(error, "Could not load the selected project."));
@@ -84,7 +92,7 @@ export function useProjectSelection(
         if (request === projectRequest.current) setLoadingProject(false);
       }
     },
-    [closeProject, onFailure, selectConversation],
+    [closeProject, onFailure],
   );
 
   // The recent projects, opening the latest.
@@ -108,10 +116,25 @@ export function useProjectSelection(
     };
   }, [onFailure, selectProject]);
 
-  const refreshTasks = useCallback(() => {
-    if (selectedConversationId === undefined) return;
-    void listTasks(selectedConversationId).then(setTasks, () => undefined);
-  }, [selectedConversationId]);
+  /**
+   * Show a conversation created a moment ago, with no tasks to read yet:
+   * the task about to start in it is already on its way to the screen.
+   */
+  const addConversation = useCallback((created: ConversationRecord) => {
+    conversationRequest.current += 1;
+    setConversations((current) => [created, ...current]);
+    setSelectedConversationId(created.conversationId);
+    setTasks([]);
+  }, []);
+
+  const refreshTasks = useCallback(
+    (conversationId?: string) => {
+      const id = conversationId ?? selectedConversationId;
+      if (id === undefined) return;
+      void listTasks(id).then(setTasks, () => undefined);
+    },
+    [selectedConversationId],
+  );
 
   return {
     projects,
@@ -126,6 +149,8 @@ export function useProjectSelection(
     selectProject,
     selectConversation,
     closeProject,
+    leaveConversation,
+    addConversation,
     refreshTasks,
   };
 }

@@ -136,20 +136,20 @@ async function main() {
     step("the window reached the core over IPC, and the contract versions agree");
 
     // 2. The profile the CLI wrote is the one the window reads. Projects are
-    // Agent mode's; the window opens in Chat (ADR 0057).
+    // Agent mode's; the window opens in Chat (ADR 0057). Agent opens on its
+    // home, with the most recent project ready in the composer.
     await click(button("Agent"));
     await until("the seeded project", () => find(button("repository")));
-    await click(button("repository"));
-    step("the project the CLI opened is listed, and opens");
+    await until("the project in the composer", () =>
+      find("//button[@aria-label='Project: repository']"),
+    );
+    step("the project the CLI opened is listed, and ready for a task");
 
-    // 3. A conversation and a task, started in the window. The project
-    // loads after the click, so its form is waited for, not assumed.
-    await until("the project to open", () => find("//input[@id='conversation-title']"));
-    await type("//input[@id='conversation-title']", "Window");
-    await click(button("Add"));
-    await until("the new conversation", () => find("//h1[normalize-space()='Window']"));
+    // 3. A task started from the home screen, in a conversation of its own
+    // named after the goal.
     await type("//textarea[@id='goal']", "List the project");
-    await click(button("Start task"));
+    await click("//button[@aria-label='Start task']");
+    await until("the new conversation", () => find("//h1[normalize-space()='List the project']"));
     await shows("//*[@aria-label='Task summary']//dd[@data-state]", "completed");
     const cards = await command("POST", `${s}/elements`, {
       using: "xpath",
@@ -160,12 +160,14 @@ async function main() {
 
     // 4. A reload keeps the record: it comes back from the core, not memory.
     await command("POST", `${s}/refresh`, {});
-    await until("the conversation after a reload", () => find(button("Window")));
-    await click(button("Window"));
+    await until("the conversation after a reload", () => find(button("List the project")));
+    await click(button("List the project"));
     await shows("//*[@aria-label='Task summary']//dd[@data-state]", "completed");
     step("after a reload the task and its state came back from the record");
 
     // 5. The settings views open, and say what is and is not configured.
+    // They sit under More in the sidebar.
+    await click(button("More"));
     await click(button("Models and credentials"));
     await shows("//section[contains(@class,'models-view')]", "No model endpoints are configured");
     await click(button("Back to work"));
