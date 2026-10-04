@@ -4,10 +4,7 @@ import type {
   ApprovalRequest,
   ConversationRecord,
   EventEnvelope,
-  ProjectRecord,
   RoutingMode,
-  TaskRecord,
-  TaskUpdate,
 } from "@tramontana/shared";
 
 import { describeEvent, isTerminal, projectState } from "./activity.js";
@@ -29,32 +26,25 @@ import { GrantsPanel } from "./GrantsPanel.js";
 import { AppsView } from "./AppsView.js";
 import { ModelsView } from "./ModelsView.js";
 import { ProjectsView } from "./ProjectsView.js";
-import type { SkillView, WorkerView } from "./core.js";
-import { foldFrame } from "./stream.js";
-import type { LiveStream } from "./stream.js";
 import { TaskHeader } from "./TaskHeader.js";
 import { CheckpointPanel } from "./CheckpointPanel.js";
 import {
-  asErrorEnvelope,
   cancelTask,
   createConversation,
   deleteProject,
+  failureText,
   fetchCoreInfo,
-  inspectProject,
   listConversations,
   listPendingApprovals,
   listProjects,
-  listTasks,
-  listSkills,
-  listWorkers,
-  suggestSkills,
   onApprovalRequested,
   openProject,
-  replayTaskEvents,
   startTask,
-  watchTask,
 } from "./core.js";
-import type { ProjectInspection } from "./core.js";
+import { ADMISSIONS, useComposerOptions } from "./useComposerOptions.js";
+import type { Admission } from "./useComposerOptions.js";
+import { useProjectSelection } from "./useProjectSelection.js";
+import { useTaskStream } from "./useTaskStream.js";
 
 type CoreStatus =
   | { readonly kind: "connecting" }
@@ -75,11 +65,6 @@ function describeCoreStatus(status: CoreStatus): string {
   }
 }
 
-function failureText(error: unknown, fallback: string): string {
-  const envelope = asErrorEnvelope(error);
-  return envelope ? `${envelope.code}: ${envelope.message}` : fallback;
-}
-
 function shortId(value: string): string {
   const parts = value.split("-");
   return parts.length > 2 ? `${parts[0]}-${parts.at(-1)?.slice(0, 8)}` : value;
@@ -87,9 +72,6 @@ function shortId(value: string): string {
 
 /** Where a task's models may run, in the order the composer offers them. */
 const MODES: readonly RoutingMode[] = ["localOnly", "automatic", "cloudPreferred"];
-
-/** How long the typing settles before the skills are suggested again. */
-const SUGGESTION_DELAY_MS = 300;
 
 /** The attachments option, only when there are files to send. */
 function attached(tokens: readonly string[]): { readonly attachments?: readonly string[] } {
@@ -133,10 +115,7 @@ const MODE_TEXT: Record<RoutingMode, string> = {
  */
 function describeChoices(
   mode: RoutingMode,
-  writes: boolean,
-  recipes: boolean,
-  apps: boolean,
-  browse: boolean,
+  { writes, recipes, apps, browse }: Admission,
   skills: number,
 ): string {
   const asks = [
@@ -187,28 +166,7 @@ function stoppedBecause(events: readonly EventEnvelope[]): string | undefined {
 /** M2 desktop surface over the same durable service and profile as the CLI. */
 export function App(): React.JSX.Element {
   const [status, setStatus] = useState<CoreStatus>({ kind: "connecting" });
-  const [projects, setProjects] = useState<readonly ProjectRecord[]>([]);
-  const [inspection, setInspection] = useState<ProjectInspection | undefined>();
-  const [conversations, setConversations] = useState<readonly ConversationRecord[]>([]);
-  const [selectedConversationId, setSelectedConversationId] = useState<string | undefined>();
-  const [tasks, setTasks] = useState<readonly TaskRecord[]>([]);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>();
-  const [events, setEvents] = useState<readonly EventEnvelope[]>([]);
-  const [stream, setStream] = useState<LiveStream | undefined>();
   const [goal, setGoal] = useState("Say hello");
-  // Read-only and Automatic until the person says otherwise, for each task.
-  const [routingMode, setRoutingMode] = useState<RoutingMode>("automatic");
-  const [mayWrite, setMayWrite] = useState(false);
-  const [mayRunRecipes, setMayRunRecipes] = useState(false);
-  const [mayUseApps, setMayUseApps] = useState(false);
-  const [mayBrowse, setMayBrowse] = useState(false);
-  const [workers, setWorkers] = useState<readonly WorkerView[]>([]);
-  const [worker, setWorker] = useState<string>("");
-  const [skills, setSkills] = useState<
-    { readonly projectId: string; readonly skills: readonly SkillView[] } | undefined
-  >();
-  const [ticked, setTicked] = useState<readonly string[]>([]);
-  const [suggested, setSuggested] = useState<readonly string[]>([]);
   const [conversationTitle, setConversationTitle] = useState("");
   const [approvals, setApprovals] = useState<readonly ApprovalRequest[]>([]);
   // Moves on whenever a task ends, so the Changes panel reads the tree again.
@@ -244,206 +202,55 @@ export function App(): React.JSX.Element {
     };
   }, []);
   const [failure, setFailure] = useState<string | undefined>();
-  const [loadingProject, setLoadingProject] = useState(false);
   const [openingProject, setOpeningProject] = useState(false);
 
-  const projectRequest = useRef(0);
-  const conversationRequest = useRef(0);
-  const taskRequest = useRef(0);
-  const seen = useRef(new Set<number>());
-
-  // Kept in a ref so the update handler stays the same function for the life
-  // of the window; a new one per conversation would ripple through every
-  // selection callback and reload the project list.
-  const refreshTasksRef = useRef<() => void>(() => undefined);
-
-  // One handler for every stream of task updates, whether the task was just
-  // started here or is being followed again after a reload.
-  const handleUpdate = useCallback((update: TaskUpdate): void => {
-    switch (update.kind) {
-      case "event": {
-        const { event } = update;
-        if (seen.current.has(event.sequence)) return;
-        seen.current.add(event.sequence);
-        setEvents((previous) => [...previous, event]);
-        // The turn's whole answer is now in the record, and its card
-        // carries the text. Keeping the frames on screen as well would show
-        // the same words twice and leave them there while the next turn ran.
-        if (event.payload.kind === "messageCommitted") setStream(undefined);
-        if (event.payload.kind === "configurationResolved") {
-          const resolved = event.payload.configuration;
-          setInspection((current) =>
-            current === undefined ? current : { ...current, configuration: resolved },
-          );
-        }
-        if (
-          event.payload.kind === "taskCompleted" ||
-          event.payload.kind === "taskFailed" ||
-          event.payload.kind === "taskCancelled"
-        ) {
-          refreshTasksRef.current();
-          setRevision((current) => current + 1);
-        }
-        break;
-      }
-      case "frame":
-        setStream((current) => foldFrame(current, update.frame));
-        break;
-    }
-  }, []);
-
-  const selectTask = useCallback(
-    async (taskId: string): Promise<void> => {
-      const request = ++taskRequest.current;
-      setSelectedTaskId(taskId);
-      setStream(undefined);
-      setFailure(undefined);
-      try {
-        const replayed = await replayTaskEvents(taskId);
-        if (request !== taskRequest.current) return;
-        seen.current = new Set(replayed.map((event) => event.sequence));
-        setEvents(replayed);
-        // A task still under way goes on in the shell whether or not this
-        // window was watching, as it was not across a reload. Follow it from
-        // the last event the record holds, rather than show a record that
-        // stopped when the window did.
-        const state = projectState(replayed);
-        const last = replayed.at(-1)?.sequence;
-        if (
-          state !== undefined &&
-          !isTerminal(state) &&
-          state !== "interrupted" &&
-          last !== undefined
-        ) {
-          await watchTask(taskId, last, (update) => {
-            if (request === taskRequest.current) handleUpdate(update);
-          });
-        }
-      } catch (error: unknown) {
-        if (request === taskRequest.current) {
-          setFailure(failureText(error, "Could not replay the task history."));
-        }
-      }
-    },
-    [handleUpdate],
-  );
-
-  const selectConversation = useCallback(
-    async (conversationId: string): Promise<void> => {
-      const request = ++conversationRequest.current;
-      taskRequest.current += 1;
-      setSelectedConversationId(conversationId);
-      setSelectedTaskId(undefined);
-      setTasks([]);
-      setEvents([]);
-      setStream(undefined);
-      setFailure(undefined);
-      try {
-        const records = await listTasks(conversationId);
-        if (request !== conversationRequest.current) return;
-        setTasks(records);
-        const latest = records[0];
-        if (latest !== undefined) await selectTask(latest.taskId);
-      } catch (error: unknown) {
-        if (request === conversationRequest.current) {
-          setFailure(failureText(error, "Could not load conversation tasks."));
-        }
-      }
-    },
-    [selectTask],
-  );
-
-  const selectProject = useCallback(
-    async (projectId: string): Promise<void> => {
-      const request = ++projectRequest.current;
-      conversationRequest.current += 1;
-      taskRequest.current += 1;
-      setLoadingProject(true);
-      setInspection(undefined);
-      setConversations([]);
-      setSelectedConversationId(undefined);
-      setTasks([]);
-      setSelectedTaskId(undefined);
-      setEvents([]);
-      setStream(undefined);
-      setFailure(undefined);
-      try {
-        const [detail, records] = await Promise.all([
-          inspectProject(projectId),
-          listConversations(projectId),
-        ]);
-        if (request !== projectRequest.current) return;
-        setInspection(detail);
-        setConversations(records);
-        const latest = records[0];
-        if (latest !== undefined) await selectConversation(latest.conversationId);
-      } catch (error: unknown) {
-        if (request === projectRequest.current) {
-          setFailure(failureText(error, "Could not load the selected project."));
-        }
-      } finally {
-        if (request === projectRequest.current) setLoadingProject(false);
-      }
-    },
-    [selectConversation],
-  );
-
-  // The workers a task can run on (ADR 0048). Without any, the composer
-  // shows no choice and every task runs the built-in worker.
+  // What the window does with each new durable event of the task on screen.
+  // Set below, once the project state it touches exists.
+  const onTaskEvent = useRef<(event: EventEnvelope) => void>(() => undefined);
+  const {
+    selectedTaskId,
+    events,
+    stream,
+    select: selectTask,
+    begin: beginTask,
+    adopt: adoptTask,
+    clear: clearTask,
+  } = useTaskStream(onTaskEvent, setFailure);
+  const {
+    projects,
+    setProjects,
+    inspection,
+    setInspection,
+    conversations,
+    setConversations,
+    selectedConversationId,
+    tasks,
+    loadingProject,
+    selectProject,
+    selectConversation,
+    closeProject,
+    refreshTasks,
+  } = useProjectSelection({ select: selectTask, clear: clearTask }, setFailure);
+  const composer = useComposerOptions(goal, inspection?.project.projectId);
+  const { routingMode, setRoutingMode, admission, chosenWorker, chosenSkills } = composer;
   useEffect(() => {
-    let active = true;
-    void listWorkers().then(
-      (found) => {
-        if (active) setWorkers(found);
-      },
-      () => undefined,
-    );
-    return () => {
-      active = false;
+    onTaskEvent.current = (event) => {
+      if (event.payload.kind === "configurationResolved") {
+        const resolved = event.payload.configuration;
+        setInspection((current) =>
+          current === undefined ? current : { ...current, configuration: resolved },
+        );
+      }
+      if (
+        event.payload.kind === "taskCompleted" ||
+        event.payload.kind === "taskFailed" ||
+        event.payload.kind === "taskCancelled"
+      ) {
+        refreshTasks();
+        setRevision((current) => current + 1);
+      }
     };
-  }, []);
-
-  // The skills this project offers (ADR 0053). Held with the project they
-  // came from, so another project's list is never shown while the new one
-  // loads, and so changing project needs no reset.
-  const skillProjectId = inspection?.project.projectId;
-  useEffect(() => {
-    if (skillProjectId === undefined) return;
-    let active = true;
-    void listSkills(skillProjectId).then(
-      (found) => {
-        if (active) setSkills({ projectId: skillProjectId, skills: found });
-      },
-      () => {
-        if (active) setSkills({ projectId: skillProjectId, skills: [] });
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [skillProjectId]);
-
-  // Which of them look relevant to the goal as it stands (ADR 0054). The
-  // rule is the core's, asked again when the typing settles rather than on
-  // every keystroke. A suggestion marks and orders; it never ticks.
-  useEffect(() => {
-    if (skillProjectId === undefined) return;
-    let active = true;
-    const timer = setTimeout(() => {
-      void suggestSkills(skillProjectId, goal).then(
-        (found) => {
-          if (active) setSuggested(found);
-        },
-        () => {
-          if (active) setSuggested([]);
-        },
-      );
-    }, SUGGESTION_DELAY_MS);
-    return () => {
-      active = false;
-      clearTimeout(timer);
-    };
-  }, [skillProjectId, goal]);
+  }, [refreshTasks, setInspection]);
 
   useEffect(() => {
     let active = true;
@@ -464,27 +271,6 @@ export function App(): React.JSX.Element {
       active = false;
     };
   }, []);
-
-  useEffect(() => {
-    let active = true;
-    void listProjects().then(
-      (records) => {
-        if (!active) return;
-        setProjects(records);
-        const latest = records[0];
-        if (latest !== undefined) void selectProject(latest.projectId);
-      },
-      (error: unknown) => {
-        if (active) setFailure(failureText(error, "Could not load recent projects."));
-      },
-    );
-    return () => {
-      active = false;
-      projectRequest.current += 1;
-      conversationRequest.current += 1;
-      taskRequest.current += 1;
-    };
-  }, [selectProject]);
 
   // One queue of open questions, in the order they were asked. Questions
   // raised before this window existed are asked for on start, because the
@@ -561,37 +347,6 @@ export function App(): React.JSX.Element {
     setGoal(retried);
     goalInput.current?.focus();
   }, []);
-  // A task runs on the worker the person picked. Under Local Only a model
-  // off this device is not offered, because the core would refuse it
-  // (ADR 0048).
-  const offeredWorkers = useMemo(
-    () => workers.filter((choice) => !(routingMode === "localOnly" && choice.cloud === true)),
-    [routingMode, workers],
-  );
-  const chosenWorker =
-    offeredWorkers.find((choice) => choice.agentId === worker) ?? offeredWorkers[0];
-  // Offering is not selecting, and a tick belongs to the project it was made
-  // in: only skills this project offers can reach a task, so changing project
-  // drops the rest without anything having to clear them.
-  const offeredSkills = useMemo(
-    () => (skills !== undefined && skills.projectId === skillProjectId ? skills.skills : []),
-    [skills, skillProjectId],
-  );
-  const chosenSkills = useMemo(
-    () => ticked.filter((id) => offeredSkills.some((skill) => skill.id === id)),
-    [ticked, offeredSkills],
-  );
-  // Suggested skills first, each in the order the core gave, then the rest in
-  // the project's own order. Stable, so a list does not reshuffle under the
-  // pointer as the goal is typed.
-  const listedSkills = useMemo(
-    () => [
-      ...offeredSkills.filter((skill) => suggested.includes(skill.id)),
-      ...offeredSkills.filter((skill) => !suggested.includes(skill.id)),
-    ],
-    [offeredSkills, suggested],
-  );
-
   const running = selectedTaskId !== undefined && taskState !== undefined && !isTerminal(taskState);
   const configuration = inspection?.configuration ?? undefined;
 
@@ -611,7 +366,7 @@ export function App(): React.JSX.Element {
       .finally(() => {
         setOpeningProject(false);
       });
-  }, [selectProject]);
+  }, [selectProject, setProjects]);
 
   const onCreateConversation = useCallback(() => {
     const projectId = inspection?.project.projectId;
@@ -628,15 +383,7 @@ export function App(): React.JSX.Element {
         setFailure(failureText(error, "Could not create the conversation."));
       },
     );
-  }, [conversationTitle, inspection?.project.projectId, selectConversation]);
-
-  const refreshTasks = useCallback(() => {
-    if (selectedConversationId === undefined) return;
-    void listTasks(selectedConversationId).then(setTasks, () => undefined);
-  }, [selectedConversationId]);
-  useEffect(() => {
-    refreshTasksRef.current = refreshTasks;
-  }, [refreshTasks]);
+  }, [conversationTitle, inspection?.project.projectId, selectConversation, setConversations]);
 
   const onStart = useCallback(() => {
     if (selectedConversationId === undefined) {
@@ -645,29 +392,21 @@ export function App(): React.JSX.Element {
     }
     // A new task on screen: updates from any stream opened for the one before
     // it are no longer this window's to show.
-    const request = ++taskRequest.current;
-    seen.current = new Set();
-    setEvents([]);
-    setStream(undefined);
+    const onUpdate = beginTask();
     setFailure(undefined);
-    setSelectedTaskId(undefined);
-
-    const onUpdate = (update: TaskUpdate): void => {
-      if (request === taskRequest.current) handleUpdate(update);
-    };
+    const tokens = agentFiles.tokens();
 
     void startTask(goal, onUpdate, selectedConversationId, {
-      writes: mayWrite,
-      recipes: mayRunRecipes,
-      apps: mayUseApps,
-      browse: mayBrowse,
+      ...admission,
       routingMode,
       ...(chosenWorker === undefined ? {} : { worker: chosenWorker.agentId }),
       ...(chosenSkills.length === 0 ? {} : { skills: chosenSkills }),
-      ...attached(agentFiles.take()),
+      ...attached(tokens),
     }).then(
       (id) => {
-        setSelectedTaskId(id);
+        // Only now: a task that failed to start keeps its files.
+        agentFiles.sent(tokens);
+        adoptTask(id);
         refreshTasks();
       },
       (error: unknown) => {
@@ -675,15 +414,13 @@ export function App(): React.JSX.Element {
       },
     );
   }, [
-    goal,
+    adoptTask,
+    admission,
     agentFiles,
+    beginTask,
     chosenSkills,
     chosenWorker,
-    handleUpdate,
-    mayBrowse,
-    mayRunRecipes,
-    mayUseApps,
-    mayWrite,
+    goal,
     refreshTasks,
     routingMode,
     selectedConversationId,
@@ -1019,18 +756,7 @@ export function App(): React.JSX.Element {
               setProjects(remaining);
               // The open project was the one removed: nothing of it stays
               // on screen.
-              if (inspection?.project.projectId === project.projectId) {
-                projectRequest.current += 1;
-                conversationRequest.current += 1;
-                taskRequest.current += 1;
-                setInspection(undefined);
-                setConversations([]);
-                setSelectedConversationId(undefined);
-                setTasks([]);
-                setSelectedTaskId(undefined);
-                setEvents([]);
-                setStream(undefined);
-              }
+              if (inspection?.project.projectId === project.projectId) closeProject();
             }}
           />
         ) : view === "models" ? (
@@ -1390,16 +1116,16 @@ export function App(): React.JSX.Element {
                         </label>
                       ))}
                     </fieldset>
-                    {offeredWorkers.length > 1 && (
+                    {composer.offeredWorkers.length > 1 && (
                       <label className="composer-worker">
                         Worker
                         <select
                           value={chosenWorker?.agentId ?? ""}
                           onChange={(changed) => {
-                            setWorker(changed.target.value);
+                            composer.setWorker(changed.target.value);
                           }}
                         >
-                          {offeredWorkers.map((choice) => (
+                          {composer.offeredWorkers.map((choice) => (
                             <option key={choice.agentId} value={choice.agentId}>
                               {choice.displayName}
                               {choice.cloud === true ? " (off this device)" : ""}
@@ -1408,65 +1134,33 @@ export function App(): React.JSX.Element {
                         </select>
                       </label>
                     )}
-                    <label className="composer-toggle" data-checked={mayWrite}>
-                      <input
-                        type="checkbox"
-                        checked={mayWrite}
-                        onChange={(changed) => {
-                          setMayWrite(changed.target.checked);
-                        }}
-                      />
-                      May edit files
-                    </label>
-                    <label className="composer-toggle" data-checked={mayRunRecipes}>
-                      <input
-                        type="checkbox"
-                        checked={mayRunRecipes}
-                        onChange={(changed) => {
-                          setMayRunRecipes(changed.target.checked);
-                        }}
-                      />
-                      May run recipes
-                    </label>
-                    <label className="composer-toggle" data-checked={mayUseApps}>
-                      <input
-                        type="checkbox"
-                        checked={mayUseApps}
-                        onChange={(changed) => {
-                          setMayUseApps(changed.target.checked);
-                        }}
-                      />
-                      May use Apps
-                    </label>
-                    <label className="composer-toggle" data-checked={mayBrowse}>
-                      <input
-                        type="checkbox"
-                        checked={mayBrowse}
-                        onChange={(changed) => {
-                          setMayBrowse(changed.target.checked);
-                        }}
-                      />
-                      May browse the web
-                    </label>
-                    {offeredSkills.length > 0 && (
+                    {ADMISSIONS.map(({ key, label }) => (
+                      <label key={key} className="composer-toggle" data-checked={admission[key]}>
+                        <input
+                          type="checkbox"
+                          checked={admission[key]}
+                          onChange={(changed) => {
+                            composer.allow(key, changed.target.checked);
+                          }}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                    {composer.offeredSkills.length > 0 && (
                       <fieldset className="composer-skills">
                         <legend>Skills this project offers</legend>
-                        {listedSkills.map((skill) => (
+                        {composer.listedSkills.map((skill) => (
                           <label key={skill.id} className="composer-skill">
                             <input
                               type="checkbox"
                               checked={chosenSkills.includes(skill.id)}
                               onChange={(changed) => {
-                                setTicked((chosen) =>
-                                  changed.target.checked
-                                    ? [...chosen, skill.id]
-                                    : chosen.filter((id) => id !== skill.id),
-                                );
+                                composer.tick(skill.id, changed.target.checked);
                               }}
                             />
                             <span>
                               {skill.displayName}
-                              {suggested.includes(skill.id) && (
+                              {composer.suggested.includes(skill.id) && (
                                 <em className="composer-suggested"> suggested for this goal</em>
                               )}
                               {skill.description === undefined ? "" : ` — ${skill.description}`}
@@ -1509,14 +1203,7 @@ export function App(): React.JSX.Element {
                   </div>
                 </form>
                 <p className="composer-disclosure">
-                  {describeChoices(
-                    routingMode,
-                    mayWrite,
-                    mayRunRecipes,
-                    mayUseApps,
-                    mayBrowse,
-                    chosenSkills.length,
-                  )}
+                  {describeChoices(routingMode, admission, chosenSkills.length)}
                 </p>
               </div>
             )}

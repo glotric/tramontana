@@ -63,36 +63,35 @@ impl StagedAttachments {
         view
     }
 
-    /// Take the files held under `tokens`, in that order, each once.
+    /// The files held under `tokens`, in that order, still held.
+    ///
+    /// Read rather than taken: a message that fails to start keeps its files,
+    /// and the caller [`Self::discard`]s them once it has been sent.
     ///
     /// # Errors
     ///
     /// [`ErrorCode::NotFound`] when a token is not held, having been sent or
-    /// dropped already; nothing is taken then.
-    pub(crate) fn take(&self, tokens: &[String]) -> Result<Vec<AttachmentInput>, ErrorEnvelope> {
-        let mut held = self
+    /// dropped already.
+    pub(crate) fn read(&self, tokens: &[String]) -> Result<Vec<AttachmentInput>, ErrorEnvelope> {
+        let held = self
             .held
             .lock()
             .map_err(|_| invalid("the attached files could not be read back"))?;
-        if tokens
+        tokens
             .iter()
-            .any(|token| !held.iter().any(|(held, _)| held == token))
-        {
-            return Err(ErrorEnvelope::new(
-                ErrorCode::NotFound,
-                "an attached file is no longer held; attach it again",
-                CorrelationId::new("attachments"),
-            ));
-        }
-        let mut taken = Vec::with_capacity(tokens.len());
-        for token in tokens {
-            if let Some(at) = held.iter().position(|(held, _)| held == token)
-                && let Some((_, input)) = held.remove(at)
-            {
-                taken.push(input);
-            }
-        }
-        Ok(taken)
+            .map(|token| {
+                held.iter()
+                    .find(|(held, _)| held == token)
+                    .map(|(_, input)| input.clone())
+                    .ok_or_else(|| {
+                        ErrorEnvelope::new(
+                            ErrorCode::NotFound,
+                            "an attached file is no longer held; attach it again",
+                            CorrelationId::new("attachments"),
+                        )
+                    })
+            })
+            .collect()
     }
 
     /// Stop holding the file under `token`, if it is held.
@@ -149,18 +148,21 @@ mod tests {
     }
 
     #[test]
-    fn a_held_file_is_taken_once_and_an_unknown_token_takes_nothing() {
+    fn a_held_file_is_read_in_order_until_it_is_discarded() {
         let staged = StagedAttachments::default();
         let view = staged.stage("t1".into(), input("a.md"));
         assert_eq!(view.name, "a.md");
         assert_eq!(view.byte_count, 4);
         staged.stage("t2".into(), input("b.md"));
 
-        assert!(staged.take(&["t1".into(), "nope".into()]).is_err());
-        let taken = staged.take(&["t2".into(), "t1".into()]).unwrap();
-        assert_eq!(taken[0].name, "b.md");
-        assert_eq!(taken[1].name, "a.md");
-        assert!(staged.take(&["t1".into()]).is_err());
+        assert!(staged.read(&["t1".into(), "nope".into()]).is_err());
+        let read = staged.read(&["t2".into(), "t1".into()]).unwrap();
+        assert_eq!(read[0].name, "b.md");
+        assert_eq!(read[1].name, "a.md");
+        // Still held: a message that failed to start keeps its files.
+        assert!(staged.read(&["t1".into()]).is_ok());
+        staged.discard("t1");
+        assert!(staged.read(&["t1".into()]).is_err());
     }
 
     #[test]
@@ -169,10 +171,10 @@ mod tests {
         for index in 0..=HELD {
             staged.stage(format!("t{index}"), input("a.md"));
         }
-        assert!(staged.take(&["t0".into()]).is_err());
-        assert!(staged.take(&[format!("t{HELD}")]).is_ok());
+        assert!(staged.read(&["t0".into()]).is_err());
+        assert!(staged.read(&[format!("t{HELD}")]).is_ok());
         staged.discard("t1");
-        assert!(staged.take(&["t1".into()]).is_err());
+        assert!(staged.read(&["t1".into()]).is_err());
     }
 
     #[test]

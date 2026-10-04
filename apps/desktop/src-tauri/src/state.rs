@@ -54,6 +54,8 @@ pub(crate) struct AppState {
     pub(crate) staged_bundle: Arc<crate::bundles::StagedSlot>,
     /// Files picked for a message and not yet sent (ADR 0058).
     pub(crate) staged_attachments: Arc<crate::attachments::StagedAttachments>,
+    /// The task streams windows are watching, so one can be stopped.
+    pub(crate) watches: Arc<crate::commands::Watches>,
     /// The profile's configured endpoints, which the settings view changes.
     pub(crate) settings: Arc<SqliteProviderSettingsRepository>,
     /// The operating system's credential store.
@@ -272,6 +274,7 @@ impl AppState {
             app_settings,
             staged_bundle: Arc::new(std::sync::Mutex::new(None)),
             staged_attachments: Arc::default(),
+            watches: Arc::default(),
             settings,
             vault,
         })
@@ -433,6 +436,7 @@ mod tests {
             2,
             replayed,
             updates,
+            None,
             move |update| sender.send(update).is_ok(),
         );
 
@@ -463,6 +467,46 @@ mod tests {
             sequences, recorded,
             "a gap, a repeat, or an event out of order"
         );
+    }
+
+    #[tokio::test]
+    async fn a_closed_watch_stops_forwarding_while_the_task_runs_on() {
+        // A window that turned to another task used to leave its forwarding
+        // running, unseen, until the task ended.
+        let temp = tempfile::tempdir().unwrap();
+        let state = AppState::open_with_chunk_delay(
+            &temp.path().join("profile.sqlite3"),
+            0,
+            Arc::new(DesktopApprover::headless()),
+        )
+        .await
+        .unwrap();
+        let task_id = tramontana_core::contracts::TaskId::new("task-watched");
+        // A live stream that never ends on its own: only closing can stop it.
+        let (live, updates) =
+            tokio::sync::broadcast::channel::<tramontana_core::contracts::TaskUpdate>(4);
+        let (watch_id, stop) = state.watches.open();
+        let (sender, mut received) = tokio::sync::mpsc::unbounded_channel();
+        crate::commands::forward_updates(
+            Arc::clone(&state.service),
+            task_id,
+            0,
+            Vec::new(),
+            updates,
+            Some(stop),
+            move |update| sender.send(update).is_ok(),
+        );
+
+        state.watches.close(watch_id);
+        // The forwarder dropped its sender: the window's end is closed.
+        let ended = tokio::time::timeout(Duration::from_secs(5), received.recv())
+            .await
+            .expect("the forwarding did not stop");
+        assert!(
+            ended.is_none(),
+            "forwarded after the watch closed: {ended:?}"
+        );
+        drop(live);
     }
 
     #[tokio::test]

@@ -465,16 +465,22 @@ export async function startTask(
  * Follow a task that is already running, from the last event this window has.
  *
  * What a reloaded window does: the task went on without it, and this delivers
- * every event after `afterSequence`, then the live stream, to `onUpdate`.
+ * every event after `afterSequence`, then the live stream, to `onUpdate`,
+ * until the function it resolves to is called.
  */
 export async function watchTask(
   taskId: string,
   afterSequence: number,
   onUpdate: (update: TaskUpdate) => void,
-): Promise<void> {
+): Promise<() => void> {
   const channel = new Channel<TaskUpdate>();
   channel.onmessage = onUpdate;
-  return invoke("watch_task", { taskId, afterSequence, channel });
+  const watchId = await invoke<number>("watch_task", { taskId, afterSequence, channel });
+  // Stop following: nothing more is delivered, and the shell stops sending.
+  return () => {
+    channel.onmessage = () => undefined;
+    void invoke("unwatch_task", { watchId }).catch(() => undefined);
+  };
 }
 
 /** Request cancellation. The task converges to a terminal state on its own. */
@@ -712,6 +718,12 @@ export function asErrorEnvelope(error: unknown): ErrorEnvelope | undefined {
   return typeof candidate.code === "string" && typeof candidate.message === "string"
     ? (candidate as ErrorEnvelope)
     : undefined;
+}
+
+/** What to show for a failed call: the shell's own error, or `fallback`. */
+export function failureText(error: unknown, fallback: string): string {
+  const envelope = asErrorEnvelope(error);
+  return envelope ? `${envelope.code}: ${envelope.message}` : fallback;
 }
 
 /** A file picked for the next message, held by the desktop until it is sent. */

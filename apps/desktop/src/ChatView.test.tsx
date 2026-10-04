@@ -145,7 +145,7 @@ describe("ChatView", () => {
       mock.mockReset();
     }
     discardAttachment.mockResolvedValue(undefined);
-    watchTask.mockResolvedValue(undefined);
+    watchTask.mockResolvedValue(() => undefined);
   });
 
   it("makes a chat for the first message, runs it with no tools, and shows the answer", async () => {
@@ -239,6 +239,21 @@ describe("ChatView", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps the picked files when a message fails to start", async () => {
+    const user = userEvent.setup();
+    listTasks.mockResolvedValue([]);
+    chooseAttachments.mockResolvedValue([{ token: "tok-1", name: "plan.md", byteCount: 2048 }]);
+    startTask.mockRejectedValue({ code: "conflict", message: "not now", retryable: true });
+    view(chat);
+
+    await user.click(screen.getByRole("button", { name: "Attach files" }));
+    await screen.findByRole("list", { name: "Attached files" });
+    await user.type(screen.getByLabelText("Message"), "Summarize it.{Enter}");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("conflict: not now");
+    expect(screen.getByRole("list", { name: "Attached files" })).toHaveTextContent("plan.md");
+  });
+
   it("sends the files the person picked, and shows them on the message", async () => {
     const user = userEvent.setup();
     listTasks.mockResolvedValue([]);
@@ -268,7 +283,9 @@ describe("ChatView", () => {
     });
     const [, , , options] = startTask.mock.calls[0] as unknown[];
     expect(options).toMatchObject({ attachments: ["tok-1"] });
-    expect(screen.queryByRole("list", { name: "Attached files" })).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByRole("list", { name: "Attached files" })).not.toBeInTheDocument();
+    });
 
     act(() => {
       sink({

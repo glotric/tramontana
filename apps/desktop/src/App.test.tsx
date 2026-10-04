@@ -256,7 +256,7 @@ describe("M2 durable desktop surface", () => {
     ]) {
       mock.mockReset();
     }
-    watchTask.mockResolvedValue(undefined);
+    watchTask.mockResolvedValue(() => undefined);
     latestCheckpoint.mockResolvedValue(undefined);
     listApps.mockResolvedValue([]);
     listWorkers.mockResolvedValue([]);
@@ -817,6 +817,31 @@ describe("M2 durable desktop surface", () => {
     expect(summary.querySelector('[aria-live="polite"]')).toHaveTextContent("queued");
   });
 
+  it("stops following a running task when the window goes", async () => {
+    // The shell kept forwarding a task nobody was watching any more, until
+    // the task ended.
+    listTasks.mockResolvedValue([{ ...task, state: "running", lastSequence: 2 }]);
+    replayTaskEvents.mockResolvedValue([
+      event(1, { kind: "taskCreated", goalSummary: "Existing durable task" }),
+      event(2, {
+        kind: "taskStateChanged",
+        previous: "queued",
+        current: "running",
+        reasonCode: "worker.started",
+      }),
+    ]);
+    const stop = vi.fn();
+    watchTask.mockResolvedValue(stop);
+
+    const shown = render(<App />);
+    await waitFor(() => {
+      expect(watchTask).toHaveBeenCalledWith(task.taskId, 2, expect.any(Function));
+    });
+    expect(stop).not.toHaveBeenCalled();
+    shown.unmount();
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
   it("follows a task still running after a reload, from the last event it has", async () => {
     listTasks.mockResolvedValue([{ ...task, state: "running", lastSequence: 2 }]);
     replayTaskEvents.mockResolvedValue([
@@ -832,7 +857,7 @@ describe("M2 durable desktop surface", () => {
     watchTask.mockImplementation(
       (_taskId: string, _after: number, onUpdate: (update: TaskUpdate) => void) => {
         deliver = onUpdate;
-        return Promise.resolve();
+        return Promise.resolve(() => undefined);
       },
     );
     const user = userEvent.setup();
@@ -873,7 +898,7 @@ describe("M2 durable desktop surface", () => {
     watchTask.mockImplementation(
       (_taskId: string, _after: number, onUpdate: (update: TaskUpdate) => void) => {
         deliver = onUpdate;
-        return Promise.resolve();
+        return Promise.resolve(() => undefined);
       },
     );
 
