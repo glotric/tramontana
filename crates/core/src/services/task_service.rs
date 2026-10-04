@@ -114,6 +114,26 @@ pub(crate) struct LiveTask {
 /// Tasks running in this process.
 pub(crate) type LiveTasks = Arc<Mutex<HashMap<TaskId, LiveTask>>>;
 
+/// Forget a run once its driver has ended, unless the task has been started
+/// again since — a resume registers a new run under the same id.
+///
+/// Without this every task stayed registered, with its update buffer, for the
+/// life of the process. A forgotten run reads exactly as a finished one: its
+/// events are durable, and a late subscriber replays them.
+pub(crate) fn forget_run(
+    live: &LiveTasks,
+    task_id: &TaskId,
+    run: &tokio::sync::watch::Receiver<bool>,
+) {
+    if let Ok(mut live) = live.lock()
+        && live
+            .get(task_id)
+            .is_some_and(|entry| entry.finished.same_channel(run))
+    {
+        live.remove(task_id);
+    }
+}
+
 /// The repositories the service persists through.
 ///
 /// Grouped so the constructor stays readable and the composition root assembles
@@ -1289,6 +1309,7 @@ impl TaskService {
 
         let interrupt = CancellationToken::new();
         let (finished, finish_receiver) = tokio::sync::watch::channel(false);
+        let run = finish_receiver.clone();
         self.lock_live()?.insert(
             task_id.clone(),
             LiveTask {
@@ -1344,10 +1365,13 @@ impl TaskService {
         // the model payload all see the same thing the record does.
         let goal = goal.text;
         let execution_guard = self.execution_guard.clone();
+        let live = Arc::clone(&self.live);
+        let spawned_id = task_id.clone();
         tokio::spawn(async move {
             let _execution_guard = execution_guard;
             driver.run(goal, cancel).await;
             let _ = finished.send(true);
+            forget_run(&live, &spawned_id, &run);
         });
 
         Ok(task_id)

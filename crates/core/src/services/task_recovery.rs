@@ -592,6 +592,7 @@ impl TaskService {
             .await?;
         let record = self.canonical_record(&task_id).await?;
         let journal = self.journal_for(&record, updates.clone());
+        let run = receiver.clone();
         self.lock_live()?.insert(
             task_id.clone(),
             LiveTask {
@@ -639,10 +640,12 @@ impl TaskService {
         };
 
         let guard = self.execution_guard.clone();
+        let live = Arc::clone(&self.live);
         tokio::spawn(async move {
             let _guard = guard;
             driver.run(record.goal_summary, cancel).await;
             let _ = finished.send(true);
+            super::task_service::forget_run(&live, &task_id, &run);
         });
         Ok(())
     }
