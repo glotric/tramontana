@@ -1119,15 +1119,18 @@ impl TaskService {
     /// [`ErrorCode::NotFound`] for an unknown conversation, or a persistence
     /// error if the opening event cannot be journaled.
     pub async fn start_task(&self, mut request: StartTaskRequest) -> Result<TaskId, ErrorEnvelope> {
-        let _lifecycle = self.lifecycle.lock().await;
         self.require_execution()?;
-        // Both chosen before anything is written, so a refusal leaves no
-        // task behind.
-        let routing_mode = request.routing_mode.unwrap_or_else(|| self.routing_mode());
-        // Before anything is written, so a refused file leaves no task.
+        // Before anything is written, so a refused file leaves no task — and
+        // before the lifecycle lock, because reading a document can take
+        // seconds and touches no task state: a person's Cancel must not wait
+        // behind it.
         let attachments = self
             .accept_attachments(std::mem::take(&mut request.attachments))
             .await?;
+        let _lifecycle = self.lifecycle.lock().await;
+        // Chosen before anything is written, so a refusal leaves no task
+        // behind.
+        let routing_mode = request.routing_mode.unwrap_or_else(|| self.routing_mode());
         let worker = match (request.admission, request.worker.as_deref(), &self.workers) {
             (None, None, _) => Arc::clone(&self.providers.worker),
             (Some(admission), None, Some(choose)) => choose(admission),
@@ -1419,17 +1422,25 @@ impl TaskService {
     ///
     /// [`ErrorCode::NotFound`] when the task is unknown to storage.
     pub async fn cancel_task(&self, task_id: &TaskId) -> Result<(), ErrorEnvelope> {
-        let _lifecycle = self.lifecycle.lock().await;
+        use crate::contracts::TaskState;
         self.require_execution()?;
-        self.repositories
-            .tasks
-            .get(task_id)
-            .await
-            .map_err(|error| self.repository_error(&error))?;
-
-        if self.get_task_record(task_id).await?.state == crate::contracts::TaskState::Interrupted {
+        // A running task is signalled at once, without the lifecycle lock: a
+        // stop the person asked for must not wait behind another task's start.
+        if self.get_task_record(task_id).await?.state != TaskState::Interrupted {
+            return self.signal_cancel(task_id);
+        }
+        // Discarding interrupted work changes the record, and must not race
+        // a resume of the same task. Read again under the lock: a resume may
+        // have started it in between, and then it is cancelled instead.
+        let _lifecycle = self.lifecycle.lock().await;
+        if self.get_task_record(task_id).await?.state == TaskState::Interrupted {
             return self.discard_interrupted(task_id).await;
         }
+        self.signal_cancel(task_id)
+    }
+
+    /// Cancel the run of `task_id` in this process, if there is one.
+    fn signal_cancel(&self, task_id: &TaskId) -> Result<(), ErrorEnvelope> {
         if let Some(live) = self.lock_live()?.get(task_id) {
             live.cancel.cancel();
         }
