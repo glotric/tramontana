@@ -270,25 +270,22 @@ pub(crate) async fn save_transcript(
     } else {
         stem
     };
-    let (send, receive) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .file()
-        .set_title("Save the conversation")
-        .set_file_name(format!("{stem}.{extension}"))
-        .add_filter(
-            if extension == "md" {
-                "Markdown"
-            } else {
-                "Web page"
-            },
-            &[extension],
-        )
-        .save_file(move |selection| {
-            let _ = send.send(selection);
-        });
-    let Some(selection) = receive
-        .await
-        .map_err(|_| internal("the save dialog closed unexpectedly"))?
+    let Some(selection) = dialog_answer(|answer| {
+        app.dialog()
+            .file()
+            .set_title("Save the conversation")
+            .set_file_name(format!("{stem}.{extension}"))
+            .add_filter(
+                if extension == "md" {
+                    "Markdown"
+                } else {
+                    "Web page"
+                },
+                &[extension],
+            )
+            .save_file(answer);
+    })
+    .await?
     else {
         return Ok(None);
     };
@@ -827,22 +824,28 @@ async fn forward<F>(
     }
 }
 
+/// Show a native dialog and wait for its answer, without holding a runtime
+/// thread: the dialog calls back, and the answer is passed on.
+async fn dialog_answer<T: Send + 'static>(
+    show: impl FnOnce(Box<dyn FnOnce(T) + Send>),
+) -> Result<T, ErrorEnvelope> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    show(Box::new(move |answer| {
+        let _ = send.send(answer);
+    }));
+    receive
+        .await
+        .map_err(|_| internal("the dialog closed unexpectedly"))
+}
+
 /// Ask the native picker for a folder; `None` when the person cancels.
 ///
 /// The only way a filesystem path enters from the window: the webview never
 /// supplies one.
 async fn pick_folder(app: &AppHandle, title: &str) -> Result<Option<PathBuf>, ErrorEnvelope> {
-    let (send, receive) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .file()
-        .set_title(title)
-        .pick_folder(move |selection| {
-            let _ = send.send(selection);
-        });
-    let selection = receive
-        .await
-        .map_err(|_| internal("the folder picker closed unexpectedly"))?;
-    let Some(selection) = selection else {
+    let Some(selection) =
+        dialog_answer(|answer| app.dialog().file().set_title(title).pick_folder(answer)).await?
+    else {
         return Ok(None);
     };
     selection
@@ -980,17 +983,14 @@ pub(crate) async fn choose_attachments(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::attachments::StagedAttachmentView>, ErrorEnvelope> {
-    let (send, receive) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .file()
-        .set_title("Attach files")
-        .pick_files(move |selection| {
-            let _ = send.send(selection);
-        });
-    let selection = receive
-        .await
-        .map_err(|_| internal("the file picker closed unexpectedly"))?
-        .unwrap_or_default();
+    let selection = dialog_answer(|answer| {
+        app.dialog()
+            .file()
+            .set_title("Attach files")
+            .pick_files(answer)
+    })
+    .await?
+    .unwrap_or_default();
     let mut read = Vec::with_capacity(selection.len());
     for picked in selection {
         let path = picked
@@ -1028,17 +1028,9 @@ pub(crate) async fn discard_attachment(
 
 /// Ask the native picker for a file; `None` when the person cancels.
 async fn pick_file(app: &AppHandle, title: &str) -> Result<Option<PathBuf>, ErrorEnvelope> {
-    let (send, receive) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .file()
-        .set_title(title)
-        .pick_file(move |selection| {
-            let _ = send.send(selection);
-        });
-    let selection = receive
-        .await
-        .map_err(|_| internal("the file picker closed unexpectedly"))?;
-    let Some(selection) = selection else {
+    let Some(selection) =
+        dialog_answer(|answer| app.dialog().file().set_title(title).pick_file(answer)).await?
+    else {
         return Ok(None);
     };
     selection

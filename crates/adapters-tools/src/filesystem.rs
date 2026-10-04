@@ -118,12 +118,21 @@ fn change(
     }
 }
 
-fn invalid(request: &AuthorizedToolRequest, message: impl Into<String>) -> ErrorEnvelope {
+/// An error for this call, correlated with its invocation.
+fn failure(
+    request: &AuthorizedToolRequest,
+    code: ErrorCode,
+    message: impl Into<String>,
+) -> ErrorEnvelope {
     ErrorEnvelope::new(
-        ErrorCode::InvalidRequest,
+        code,
         message,
         CorrelationId::new(request.invocation_id().as_str()),
     )
+}
+
+fn invalid(request: &AuthorizedToolRequest, message: impl Into<String>) -> ErrorEnvelope {
+    failure(request, ErrorCode::InvalidRequest, message)
 }
 
 fn argument<'a>(request: &'a AuthorizedToolRequest, name: &str) -> Result<&'a str, ErrorEnvelope> {
@@ -328,21 +337,13 @@ impl ToolProvider for FilesystemTools {
         tokio::select! {
             result = work => result,
             () = cancel.cancelled() => Err(cancelled(&request)),
-            () = tokio::time::sleep(self.limits.deadline) => Err(ErrorEnvelope::new(
-                ErrorCode::Timeout,
-                "the tool exceeded its deadline",
-                CorrelationId::new(request.invocation_id().as_str()),
-            )),
+            () = tokio::time::sleep(self.limits.deadline) => Err(failure(&request, ErrorCode::Timeout, "the tool exceeded its deadline")),
         }
     }
 }
 
 fn cancelled(request: &AuthorizedToolRequest) -> ErrorEnvelope {
-    ErrorEnvelope::new(
-        ErrorCode::Cancelled,
-        "the tool call was cancelled",
-        CorrelationId::new(request.invocation_id().as_str()),
-    )
+    failure(request, ErrorCode::Cancelled, "the tool call was cancelled")
 }
 
 impl FilesystemTools {
@@ -350,10 +351,10 @@ impl FilesystemTools {
         let path = resolve_within_grant(request, argument(request, "path")?)?;
 
         let entries = std::fs::read_dir(&path).map_err(|error| {
-            ErrorEnvelope::new(
+            failure(
+                request,
                 ErrorCode::NotFound,
                 format!("could not list directory: {}", error.kind()),
-                CorrelationId::new(request.invocation_id().as_str()),
             )
         })?;
 
@@ -388,20 +389,20 @@ impl FilesystemTools {
 
     fn read(&self, request: &AuthorizedToolRequest) -> Result<ToolOutcome, ErrorEnvelope> {
         let path = resolve_within_grant(request, argument(request, "path")?)?;
-        let correlation = CorrelationId::new(request.invocation_id().as_str());
 
         let metadata = std::fs::metadata(&path).map_err(|error| {
-            ErrorEnvelope::new(
+            failure(
+                request,
                 ErrorCode::NotFound,
                 format!("could not read file: {}", error.kind()),
-                correlation.clone(),
             )
         })?;
         if !metadata.is_file() {
             return Err(invalid(request, "path is not a file"));
         }
         if metadata.len() > self.limits.max_file_bytes {
-            return Err(ErrorEnvelope::new(
+            return Err(failure(
+                request,
                 ErrorCode::LimitExceeded,
                 format!(
                     "{} is {} bytes, more than the {} this tool opens",
@@ -409,11 +410,10 @@ impl FilesystemTools {
                     metadata.len(),
                     self.limits.max_file_bytes
                 ),
-                correlation,
             ));
         }
 
-        let bytes = read_verifying_identity(request, &path)?;
+        let (bytes, _) = read_verified(request, argument(request, "path")?, &path)?;
         let relative = relative_to_grant(request, &path);
 
         // Binary content is described, never returned. Handing it back as text
@@ -633,27 +633,19 @@ fn walk(
 ///
 /// [`ErrorCode::NotFound`] when the file cannot be opened, and
 /// [`ErrorCode::PermissionDenied`] when the checks disagree.
-fn read_verified_at(
+fn read_verified(
     request: &AuthorizedToolRequest,
     relative: &str,
     path: &std::path::Path,
 ) -> Result<(Vec<u8>, FileIdentity), ErrorEnvelope> {
     use std::io::Read as _;
-
-    let correlation = CorrelationId::new(request.invocation_id().as_str());
-    let denied = |message: &str| {
-        ErrorEnvelope::new(
-            ErrorCode::PermissionDenied,
-            message.to_owned(),
-            correlation.clone(),
-        )
-    };
+    let denied = |message: &str| failure(request, ErrorCode::PermissionDenied, message.to_owned());
 
     let opened = std::fs::File::open(path).map_err(|error| {
-        ErrorEnvelope::new(
+        failure(
+            request,
             ErrorCode::NotFound,
             format!("could not read file: {}", error.kind()),
-            correlation.clone(),
         )
     })?;
 
@@ -683,41 +675,20 @@ fn read_verified_at(
         .take(MAX_VERIFIED_READ + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| {
-            ErrorEnvelope::new(
+            failure(
+                request,
                 ErrorCode::ToolFailed,
                 format!("could not read file: {}", error.kind()),
-                correlation.clone(),
             )
         })?;
     if bytes.len() as u64 > MAX_VERIFIED_READ {
-        return Err(ErrorEnvelope::new(
+        return Err(failure(
+            request,
             ErrorCode::LimitExceeded,
             format!("the file grew past {MAX_VERIFIED_READ} bytes while it was being read"),
-            correlation,
         ));
     }
     Ok((bytes, held))
-}
-
-/// [`read_verified_at`], for the file the `path` argument names.
-fn read_verified(
-    request: &AuthorizedToolRequest,
-    path: &std::path::Path,
-) -> Result<(Vec<u8>, FileIdentity), ErrorEnvelope> {
-    read_verified_at(request, &request_path(request)?, path)
-}
-
-/// [`read_verified`], for callers that need only the bytes.
-fn read_verifying_identity(
-    request: &AuthorizedToolRequest,
-    path: &std::path::Path,
-) -> Result<Vec<u8>, ErrorEnvelope> {
-    read_verified(request, path).map(|(bytes, _)| bytes)
-}
-
-/// The `path` argument as the caller supplied it.
-fn request_path(request: &AuthorizedToolRequest) -> Result<String, ErrorEnvelope> {
-    argument(request, "path").map(str::to_owned)
 }
 
 impl FilesystemTools {
@@ -739,12 +710,9 @@ impl FilesystemTools {
         request: &AuthorizedToolRequest,
         cancel: &CancellationToken,
     ) -> Result<ToolOutcome, ErrorEnvelope> {
-        let correlation = CorrelationId::new(request.invocation_id().as_str());
-        let fail = |code: ErrorCode, message: String| {
-            ErrorEnvelope::new(code, message, correlation.clone())
-        };
+        let fail = |code: ErrorCode, message: String| failure(request, code, message);
 
-        let relative = request_path(request)?;
+        let relative = argument(request, "path")?;
         let content = argument(request, "content")?;
         if content.len() > MAX_CREATE_BYTES {
             return Err(fail(
@@ -753,7 +721,7 @@ impl FilesystemTools {
             ));
         }
 
-        let target = resolve_within_grant(request, &relative)?;
+        let target = resolve_within_grant(request, relative)?;
         let display = relative_to_grant(request, &target);
         let parent = target
             .parent()
@@ -832,7 +800,7 @@ impl FilesystemTools {
         // If a parent was swapped for a symlink in between, the link may have
         // landed outside the project — so the file is removed, but only when
         // its identity proves it is the one this call wrote.
-        let inside = resolve_within_grant(request, &relative).is_ok();
+        let inside = resolve_within_grant(request, relative).is_ok();
         let ours = FileIdentity::of_path(&target).is_some_and(|now| now == written);
         if !inside || !ours {
             if ours {
@@ -877,13 +845,7 @@ fn already_there(
     existing: &std::fs::Metadata,
     content: &str,
 ) -> Result<ToolOutcome, ErrorEnvelope> {
-    let conflict = |message: String| {
-        ErrorEnvelope::new(
-            ErrorCode::Conflict,
-            message,
-            CorrelationId::new(request.invocation_id().as_str()),
-        )
-    };
+    let conflict = |message: String| failure(request, ErrorCode::Conflict, message);
     if !existing.file_type().is_file() {
         return Err(conflict(format!(
             "{display} already exists and is not a regular file"
@@ -892,7 +854,7 @@ fn already_there(
     // Compared through a verified handle, and only when the length already
     // matches, so a large unrelated file is never read to be refused.
     if existing.len() != content.len() as u64
-        || read_verifying_identity(request, target)? != content.as_bytes()
+        || read_verified(request, argument(request, "path")?, target)?.0 != content.as_bytes()
     {
         return Err(conflict(format!(
             "{display} already exists with different content"
@@ -974,12 +936,9 @@ impl FilesystemTools {
         request: &AuthorizedToolRequest,
         cancel: &CancellationToken,
     ) -> Result<ToolOutcome, ErrorEnvelope> {
-        let correlation = CorrelationId::new(request.invocation_id().as_str());
-        let fail = |code: ErrorCode, message: String| {
-            ErrorEnvelope::new(code, message, correlation.clone())
-        };
+        let fail = |code: ErrorCode, message: String| failure(request, code, message);
 
-        let relative = request_path(request)?;
+        let relative = argument(request, "path")?;
         let expected = argument(request, "expectedHash")?;
         let old_text = argument(request, "oldText")?;
         let new_text = argument(request, "newText")?;
@@ -1005,7 +964,7 @@ impl FilesystemTools {
             ));
         }
 
-        let target = resolve_within_grant(request, &relative)?;
+        let target = resolve_within_grant(request, relative)?;
         let display = relative_to_grant(request, &target);
         let metadata = std::fs::symlink_metadata(&target).map_err(|error| {
             let code = if error.kind() == std::io::ErrorKind::NotFound {
@@ -1032,7 +991,7 @@ impl FilesystemTools {
             ));
         }
 
-        let (bytes, held) = read_verified(request, &target)?;
+        let (bytes, held) = read_verified(request, relative, &target)?;
         if looks_binary(&bytes) {
             return Err(invalid(request, format!("{display} is binary, not text")));
         }
@@ -1137,7 +1096,7 @@ impl FilesystemTools {
         // grant, to the very file that was read, still holding the bytes that
         // were hashed. An edit computed from an old reading must not land on
         // top of a file that moved or changed in the meantime.
-        let unchanged = resolve_within_grant(request, &relative).is_ok()
+        let unchanged = resolve_within_grant(request, relative).is_ok()
             && FileIdentity::of_path(&target).is_some_and(|now| now == held)
             && std::fs::read(&target).is_ok_and(|now| content_hash_bytes(&now) == expected);
         // Released before the rename: Windows will not replace a file that is
@@ -1161,7 +1120,7 @@ impl FilesystemTools {
 
         // After replacing: the path must resolve inside the grant, to the file
         // just written (`SECURITY_AND_PERMISSIONS.md` §5).
-        let inside = resolve_within_grant(request, &relative).is_ok();
+        let inside = resolve_within_grant(request, relative).is_ok();
         let ours = FileIdentity::of_path(&target).is_some_and(|now| now == written);
         if !inside || !ours {
             return Err(fail(
@@ -1261,10 +1220,7 @@ impl FilesystemTools {
         request: &AuthorizedToolRequest,
         cancel: &CancellationToken,
     ) -> Result<ToolOutcome, ErrorEnvelope> {
-        let correlation = CorrelationId::new(request.invocation_id().as_str());
-        let fail = |code: ErrorCode, message: String| {
-            ErrorEnvelope::new(code, message, correlation.clone())
-        };
+        let fail = |code: ErrorCode, message: String| failure(request, code, message);
 
         let from = argument(request, "from")?;
         let to = argument(request, "to")?;
@@ -1320,7 +1276,7 @@ impl FilesystemTools {
                 format!("{from_display} is larger than {MAX_MOVE_BYTES} bytes"),
             ));
         }
-        let (bytes, held) = read_verified_at(request, from, &source)?;
+        let (bytes, held) = read_verified(request, from, &source)?;
         if content_hash_bytes(&bytes) != expected {
             return Err(fail(
                 ErrorCode::Conflict,
@@ -1458,7 +1414,8 @@ fn occupied(
     to_display: &str,
 ) -> ErrorEnvelope {
     let same = FileIdentity::of_path(target).is_some_and(|now| now == *held);
-    ErrorEnvelope::new(
+    failure(
+        request,
         ErrorCode::Conflict,
         if same {
             format!(
@@ -1470,7 +1427,6 @@ fn occupied(
         } else {
             format!("{to_display} already exists; a move never replaces a file")
         },
-        CorrelationId::new(request.invocation_id().as_str()),
     )
 }
 
@@ -1487,27 +1443,26 @@ fn moved_already(
     to_display: &str,
     expected: &str,
 ) -> Result<ToolOutcome, ErrorEnvelope> {
-    let correlation = CorrelationId::new(request.invocation_id().as_str());
     let Ok(metadata) = std::fs::symlink_metadata(target) else {
-        return Err(ErrorEnvelope::new(
+        return Err(failure(
+            request,
             ErrorCode::NotFound,
             format!("{from_display} does not exist"),
-            correlation,
         ));
     };
     let conflict = || {
-        ErrorEnvelope::new(
+        failure(
+            request,
             ErrorCode::Conflict,
             format!(
                 "{from_display} does not exist, and {to_display} is not the file that was read"
             ),
-            correlation.clone(),
         )
     };
     if !metadata.file_type().is_file() || metadata.len() > MAX_MOVE_BYTES {
         return Err(conflict());
     }
-    let (bytes, _) = read_verified_at(request, to, target)?;
+    let (bytes, _) = read_verified(request, to, target)?;
     if content_hash_bytes(&bytes) != expected {
         return Err(conflict());
     }
@@ -1546,10 +1501,7 @@ impl FilesystemTools {
         request: &AuthorizedToolRequest,
         cancel: &CancellationToken,
     ) -> Result<ToolOutcome, ErrorEnvelope> {
-        let correlation = CorrelationId::new(request.invocation_id().as_str());
-        let fail = |code: ErrorCode, message: String| {
-            ErrorEnvelope::new(code, message, correlation.clone())
-        };
+        let fail = |code: ErrorCode, message: String| failure(request, code, message);
 
         let Some(store) = &self.recovery else {
             return Err(fail(
@@ -1557,7 +1509,7 @@ impl FilesystemTools {
                 "deleting needs a recovery store, and none is configured".to_owned(),
             ));
         };
-        let relative = request_path(request)?;
+        let relative = argument(request, "path")?;
         let expected = argument(request, "expectedHash")?;
         if !valid_hash(expected) {
             return Err(invalid(
@@ -1565,7 +1517,7 @@ impl FilesystemTools {
                 "`expectedHash` must be the 64-character lowercase `contentHash` a read returned",
             ));
         }
-        let target = resolve_within_grant(request, &relative)?;
+        let target = resolve_within_grant(request, relative)?;
         if target.file_name().is_none() {
             return Err(invalid(request, "the path must name a file"));
         }
@@ -1604,7 +1556,7 @@ impl FilesystemTools {
                 format!("{display} is larger than {MAX_DELETE_BYTES} bytes"),
             ));
         }
-        let (bytes, held) = read_verified(request, &target)?;
+        let (bytes, held) = read_verified(request, relative, &target)?;
         if content_hash_bytes(&bytes) != expected {
             return Err(fail(
                 ErrorCode::Conflict,
@@ -1626,7 +1578,7 @@ impl FilesystemTools {
         // Immediately before removing: the path must still resolve inside the
         // grant, to the file that was read, holding the bytes that were kept.
         // Otherwise the removal could take something that has no copy.
-        let unchanged = resolve_within_grant(request, &relative).is_ok()
+        let unchanged = resolve_within_grant(request, relative).is_ok()
             && FileIdentity::of_path(&target).is_some_and(|now| now == held)
             && std::fs::read(&target).is_ok_and(|now| content_hash_bytes(&now) == expected);
         // Released before the removal, which Windows may refuse while the
@@ -1690,13 +1642,7 @@ fn keep(
     bytes: &[u8],
     expected: &str,
 ) -> Result<(), ErrorEnvelope> {
-    let fail = |message: String| {
-        ErrorEnvelope::new(
-            ErrorCode::ToolFailed,
-            message,
-            CorrelationId::new(request.invocation_id().as_str()),
-        )
-    };
+    let fail = |message: String| failure(request, ErrorCode::ToolFailed, message);
     if std::fs::symlink_metadata(kept).is_ok() {
         return if copy_holds(kept, expected) {
             Ok(())

@@ -1,5 +1,6 @@
 //! Explicit recovery commands shared by every shell.
 
+use super::task_service::OrEnvelope as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -106,7 +107,7 @@ impl TaskService {
             .tasks
             .rebuild_from_events()
             .await
-            .map_err(|error| self.repository_error(&error))?;
+            .or_envelope(self)?;
         for record in self.list_tasks(None).await? {
             if record.state.is_terminal() {
                 continue;
@@ -174,7 +175,7 @@ impl TaskService {
             .checkpoints
             .latest(task_id)
             .await
-            .map_err(|error| self.repository_error(&error))
+            .or_envelope(self)
     }
 
     /// Everything both continuation paths need, validated against canonical
@@ -731,7 +732,7 @@ impl TaskService {
         } else {
             let checkpoint = derive_checkpoint(CheckpointId::new(self.ids.next("checkpoint")),
                 task_id.clone(), &events, record.configuration_manifest_hash.clone(), self.clock.now());
-            self.repositories.checkpoints.save(&checkpoint).await.map_err(|error| self.repository_error(&error))?;
+            self.repositories.checkpoints.save(&checkpoint).await.or_envelope(self)?;
             checkpoint
         };
         if !events.iter().any(|event| matches!(&event.payload,

@@ -3,6 +3,7 @@
 //! The rules are here; the transcriber is an adapter. Audio is checked,
 //! handed to the transcriber once, and never kept or recorded.
 
+use super::task_service::OrEnvelope as _;
 use super::task_service::TaskService;
 use crate::contracts::{DictationSetup, DictationStatus, ErrorCode, ErrorEnvelope};
 
@@ -42,10 +43,7 @@ impl TaskService {
     /// dictation, or a persistence error.
     pub async fn dictation_status(&self) -> Result<DictationStatus, ErrorEnvelope> {
         let (store, _) = self.dictation_ports()?;
-        let setup = store
-            .load()
-            .await
-            .map_err(|error| self.repository_error(&error))?;
+        let setup = store.load().await.or_envelope(self)?;
         Ok(DictationStatus {
             configured: setup.is_some(),
             binary_path: setup.as_ref().map(|setup| setup.binary_path.clone()),
@@ -86,7 +84,7 @@ impl TaskService {
                 provenance,
             })
             .await
-            .map_err(|error| self.repository_error(&error))?;
+            .or_envelope(self)?;
         self.dictation_status().await
     }
 
@@ -97,10 +95,7 @@ impl TaskService {
     /// As [`Self::dictation_status`].
     pub async fn clear_dictation(&self) -> Result<DictationStatus, ErrorEnvelope> {
         let (store, _) = self.dictation_ports()?;
-        store
-            .clear()
-            .await
-            .map_err(|error| self.repository_error(&error))?;
+        store.clear().await.or_envelope(self)?;
         self.dictation_status().await
     }
 
@@ -122,16 +117,12 @@ impl TaskService {
         if !is_wav(&wav) {
             return Err(self.error(ErrorCode::InvalidRequest, "Dictation needs WAV audio"));
         }
-        let setup = store
-            .load()
-            .await
-            .map_err(|error| self.repository_error(&error))?
-            .ok_or_else(|| {
-                self.error(
-                    ErrorCode::CapabilityUnsupported,
-                    "Set up dictation in Settings first: choose a whisper.cpp program and a model",
-                )
-            })?;
+        let setup = store.load().await.or_envelope(self)?.ok_or_else(|| {
+            self.error(
+                ErrorCode::CapabilityUnsupported,
+                "Set up dictation in Settings first: choose a whisper.cpp program and a model",
+            )
+        })?;
         let text = transcriber.transcribe(&setup, wav).await?;
         Ok(text.trim().to_owned())
     }

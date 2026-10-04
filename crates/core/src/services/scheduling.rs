@@ -1,5 +1,6 @@
 //! Running schedules while the application is open (ADR 0063).
 
+use super::task_service::OrEnvelope as _;
 use super::task_service::{SchedulePorts, StartTaskRequest, TaskService};
 use crate::contracts::{
     ErrorCode, ErrorEnvelope, NewSchedule, SCHEMA_VERSION, Schedule, ScheduleView, TaskId,
@@ -20,7 +21,7 @@ impl TaskService {
         store
             .list()
             .await
-            .map_err(|error| self.repository_error(&error))?
+            .or_envelope(self)?
             .into_iter()
             .find(|schedule| schedule.schedule_id == schedule_id)
             .ok_or_else(|| self.error(ErrorCode::NotFound, "No schedule has that id"))
@@ -28,10 +29,7 @@ impl TaskService {
 
     async fn save_schedule(&self, schedule: &Schedule) -> Result<(), ErrorEnvelope> {
         let (store, _) = self.schedule_ports()?;
-        store
-            .save(schedule)
-            .await
-            .map_err(|error| self.repository_error(&error))
+        store.save(schedule).await.or_envelope(self)
     }
 
     /// Every schedule, oldest first, with when each runs next.
@@ -46,7 +44,7 @@ impl TaskService {
         Ok(store
             .list()
             .await
-            .map_err(|error| self.repository_error(&error))?
+            .or_envelope(self)?
             .into_iter()
             .map(|schedule| ScheduleView {
                 next_run: schedule
@@ -67,10 +65,7 @@ impl TaskService {
     pub async fn create_schedule(&self, new: &NewSchedule) -> Result<ScheduleView, ErrorEnvelope> {
         let (store, clock) = self.schedule_ports()?;
         let (title, goal) = super::check_new_schedule(new)?;
-        let existing = store
-            .list()
-            .await
-            .map_err(|error| self.repository_error(&error))?;
+        let existing = store.list().await.or_envelope(self)?;
         if existing.len() >= super::SCHEDULES {
             return Err(self.error(
                 ErrorCode::InvalidRequest,
@@ -138,10 +133,7 @@ impl TaskService {
     /// [`ErrorCode::NotFound`], or as [`Self::list_schedules`].
     pub async fn delete_schedule(&self, schedule_id: &str) -> Result<(), ErrorEnvelope> {
         let (store, _) = self.schedule_ports()?;
-        store
-            .delete(schedule_id)
-            .await
-            .map_err(|error| self.repository_error(&error))
+        store.delete(schedule_id).await.or_envelope(self)
     }
 
     /// Run a schedule now, whatever its cadence says.
@@ -176,10 +168,7 @@ impl TaskService {
     pub async fn run_due_schedules(&self) -> Result<Vec<TaskId>, ErrorEnvelope> {
         let (store, clock) = self.schedule_ports()?;
         let now = clock.local_now();
-        let schedules = store
-            .list()
-            .await
-            .map_err(|error| self.repository_error(&error))?;
+        let schedules = store.list().await.or_envelope(self)?;
         let mut started = Vec::new();
         for mut schedule in schedules {
             let Some(occurrence) = super::due_occurrence(&schedule, &now) else {
