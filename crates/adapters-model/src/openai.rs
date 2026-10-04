@@ -114,6 +114,11 @@ impl OpenAiCompatibleProvider {
             // carried on each `ModelRequest`, which a caller can vary; a fixed
             // client timeout would silently override it.
             .connect_timeout(Duration::from_secs(10))
+            // Never followed: a redirect would replay the prompt, and any
+            // credential header the library does not know to strip, to a
+            // host the routing decision never named — over plain HTTP, if
+            // that is where it points (ADR 0066).
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|failure| {
                 error(

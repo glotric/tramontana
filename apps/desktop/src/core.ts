@@ -296,6 +296,23 @@ export async function forgetCredential(key: string): Promise<boolean> {
   return invoke<boolean>("forget_credential", { key });
 }
 
+/** What "Delete all my data" removed from the credential store. */
+export interface ErasureReport {
+  readonly schemaVersion: number;
+  readonly credentialsRemoved: number;
+  readonly credentialsAbsent: number;
+}
+
+/**
+ * Delete everything Tramontana keeps on this computer (ADR 0068): projects
+ * list, conversations, tasks, settings, Apps, notes, and the keys they name.
+ * Project folders are never touched. The application must be restarted
+ * after it succeeds.
+ */
+export async function eraseAllData(): Promise<ErasureReport> {
+  return invoke<ErasureReport>("erase_all_data");
+}
+
 /** Restart Tramontana, so endpoints configured since it opened are used. */
 export async function restartApplication(): Promise<void> {
   return invoke("restart_application");
@@ -465,16 +482,22 @@ export async function startTask(
  * Follow a task that is already running, from the last event this window has.
  *
  * What a reloaded window does: the task went on without it, and this delivers
- * every event after `afterSequence`, then the live stream, to `onUpdate`.
+ * every event after `afterSequence`, then the live stream, to `onUpdate`,
+ * until the function it resolves to is called.
  */
 export async function watchTask(
   taskId: string,
   afterSequence: number,
   onUpdate: (update: TaskUpdate) => void,
-): Promise<void> {
+): Promise<() => void> {
   const channel = new Channel<TaskUpdate>();
   channel.onmessage = onUpdate;
-  return invoke("watch_task", { taskId, afterSequence, channel });
+  const watchId = await invoke<number>("watch_task", { taskId, afterSequence, channel });
+  // Stop following: nothing more is delivered, and the shell stops sending.
+  return () => {
+    channel.onmessage = () => undefined;
+    void invoke("unwatch_task", { watchId }).catch(() => undefined);
+  };
 }
 
 /** Request cancellation. The task converges to a terminal state on its own. */
@@ -712,6 +735,12 @@ export function asErrorEnvelope(error: unknown): ErrorEnvelope | undefined {
   return typeof candidate.code === "string" && typeof candidate.message === "string"
     ? (candidate as ErrorEnvelope)
     : undefined;
+}
+
+/** What to show for a failed call: the shell's own error, or `fallback`. */
+export function failureText(error: unknown, fallback: string): string {
+  const envelope = asErrorEnvelope(error);
+  return envelope ? `${envelope.code}: ${envelope.message}` : fallback;
 }
 
 /** A file picked for the next message, held by the desktop until it is sent. */

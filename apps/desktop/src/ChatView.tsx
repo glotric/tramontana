@@ -13,9 +13,9 @@ import { attachmentsOf, outcomeOf, titleFrom, withEvent } from "./chat.js";
 import { AttachButton, PendingFiles, SentFiles, useAttachments } from "./Attachments.js";
 import { DictateButton, appendDictated, useDictation } from "./Dictation.js";
 import {
-  asErrorEnvelope,
   cancelTask,
   createConversation,
+  failureText,
   listTasks,
   replayTaskEvents,
   startTask,
@@ -36,11 +36,6 @@ const MODE_TEXT: Record<RoutingMode, string> = {
   cloudPreferred:
     "Prefer cloud: a cloud model is chosen when one is available, and each release to it is asked about first.",
 };
-
-function failureText(error: unknown, fallback: string): string {
-  const envelope = asErrorEnvelope(error);
-  return envelope ? `${envelope.code}: ${envelope.message}` : fallback;
-}
 
 /**
  * Chat: questions and writing, with no project and no files (ADR 0057).
@@ -121,6 +116,8 @@ export function ChatView({
     setStream(undefined);
     setTurns([]);
     if (conversationId === undefined) return;
+    // Stopped when the window turns to another chat, or goes.
+    let stop: (() => void) | undefined;
     void (async () => {
       try {
         const records = [...(await listTasks(conversationId))].sort((a, b) =>
@@ -148,15 +145,20 @@ export function ChatView({
           !isTerminal(state) &&
           last !== undefined
         ) {
-          await watchTask(latest.taskId, last, (update) => {
+          const unwatch = await watchTask(latest.taskId, last, (update) => {
             onUpdate(update, latest.taskId, current);
           });
+          if (current === request.current) stop = unwatch;
+          else unwatch();
         }
       } catch (error: unknown) {
         if (current === request.current)
           setFailure(failureText(error, "Could not load this chat."));
       }
     })();
+    return () => {
+      stop?.();
+    };
   }, [conversationId, onUpdate]);
 
   useEffect(() => {
@@ -171,7 +173,7 @@ export function ChatView({
     if (goal === "" || running) return;
     setSending(true);
     setFailure(undefined);
-    const tokens = files.take();
+    const tokens = files.tokens();
     void (async () => {
       try {
         let id = conversationId;
@@ -207,6 +209,7 @@ export function ChatView({
             : [...existing, { taskId, goal, events: [] as readonly EventEnvelope[] }],
         );
         setDraft("");
+        files.sent(tokens);
       } catch (error: unknown) {
         setFailure(failureText(error, "Could not send the message."));
       } finally {

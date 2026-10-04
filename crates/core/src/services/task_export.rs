@@ -5,6 +5,7 @@
 //! the CLI and the desktop shell cannot each invent their own idea of what an
 //! export contains.
 
+use super::task_service::OrEnvelope as _;
 use crate::contracts::{
     ErrorCode, ErrorEnvelope, ExportBundle, ExportOptions, HandoffBundle, ImportedRecords,
     ProjectId, TaskId,
@@ -161,7 +162,7 @@ impl TaskService {
                 .projects
                 .create(project)
                 .await
-                .map_err(|error| self.repository_error(&error))?;
+                .or_envelope(self)?;
             summary.projects += 1;
         }
         // Before the tasks: a task records which manifest it started with, and
@@ -172,7 +173,7 @@ impl TaskService {
                 .configuration
                 .save(&entry.project_id, &entry.configuration)
                 .await
-                .map_err(|error| self.repository_error(&error))?;
+                .or_envelope(self)?;
             summary.configurations += 1;
         }
         for conversation in &records.conversations {
@@ -180,7 +181,7 @@ impl TaskService {
                 .conversations
                 .create(conversation)
                 .await
-                .map_err(|error| self.repository_error(&error))?;
+                .or_envelope(self)?;
             summary.conversations += 1;
         }
 
@@ -189,7 +190,7 @@ impl TaskService {
                 .tasks
                 .create(task)
                 .await
-                .map_err(|error| self.repository_error(&error))?;
+                .or_envelope(self)?;
             summary.tasks += 1;
 
             if let Some(events) = records.events.get(task.task_id.as_str()) {
@@ -210,7 +211,7 @@ impl TaskService {
                 .checkpoints
                 .save(checkpoint)
                 .await
-                .map_err(|error| self.repository_error(&error))?;
+                .or_envelope(self)?;
             summary.checkpoints += 1;
         }
 
@@ -221,7 +222,7 @@ impl TaskService {
             .tasks
             .rebuild_from_events()
             .await
-            .map_err(|error| self.repository_error(&error))?;
+            .or_envelope(self)?;
 
         Ok(summary)
     }
@@ -299,6 +300,6 @@ impl TaskService {
             .checkpoints
             .list(task_id)
             .await
-            .map_err(|error| self.repository_error(&error))
+            .or_envelope(self)
     }
 }

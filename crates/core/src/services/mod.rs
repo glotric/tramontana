@@ -13,6 +13,7 @@ mod attachments;
 mod checkpoint;
 mod dictation;
 mod earlier_turns;
+mod erasure;
 mod export;
 mod handoff;
 mod instructions;
@@ -98,6 +99,7 @@ pub use transcript::render_transcript;
 /// budget is counted (ADR 0048).
 pub const HANDED_OVER: &str = "user.handedOver";
 
+pub use erasure::{ErasureReport, ProfileErasure};
 pub use reference_worker::{PinnedModel, REFERENCE_AGENT_ID, ReferenceWorker};
 pub use release::{RELEASE_CAPABILITY, ReleaseContext, ReleaseError, ReleaseManager};
 pub use routing::{

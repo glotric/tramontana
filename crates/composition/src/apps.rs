@@ -20,11 +20,17 @@ use tramontana_core::ports::{SecretResolver, ToolProvider};
 /// ```
 #[must_use]
 pub fn app_folder(profile: &Path, app_id: &str) -> PathBuf {
+    app_folders(profile).join(app_id)
+}
+
+/// The folder holding every App's own folder, `<profile>.apps`.
+#[must_use]
+pub fn app_folders(profile: &Path) -> PathBuf {
     let mut name = profile
         .file_name()
         .map_or_else(|| std::ffi::OsString::from("profile"), ToOwned::to_owned);
     name.push(".apps");
-    profile.with_file_name(name).join(app_id)
+    profile.with_file_name(name)
 }
 
 /// An App that could not be started, and why.

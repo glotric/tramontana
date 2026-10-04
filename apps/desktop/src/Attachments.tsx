@@ -29,8 +29,13 @@ export function useAttachments(): {
   readonly error: string | undefined;
   readonly choose: () => void;
   readonly remove: (token: string) => void;
-  /** The tokens to send, and forget them: a sent file is held no longer. */
-  readonly take: () => readonly string[];
+  /** The tokens of the files picked so far, to send with a message. */
+  readonly tokens: () => readonly string[];
+  /**
+   * Forget the files a message carried, once it has started. Not before: a
+   * message that fails to start keeps its files for the next try.
+   */
+  readonly sent: (tokens: readonly string[]) => void;
 } {
   const [files, setFiles] = useState<readonly StagedAttachment[]>([]);
   const [error, setError] = useState<string | undefined>();
@@ -52,14 +57,15 @@ export function useAttachments(): {
     void discardAttachment(token).catch(() => undefined);
   }, []);
 
-  const take = useCallback(() => {
-    const tokens = files.map((file) => file.token);
-    setFiles([]);
-    setError(undefined);
-    return tokens;
-  }, [files]);
+  const tokens = useCallback(() => files.map((file) => file.token), [files]);
 
-  return { files, error, choose, remove, take };
+  // Only those sent: a file picked while the message was starting stays.
+  const sent = useCallback((tokens: readonly string[]) => {
+    setFiles((current) => current.filter((file) => !tokens.includes(file.token)));
+    setError(undefined);
+  }, []);
+
+  return { files, error, choose, remove, tokens, sent };
 }
 
 /** The composer's attach button. */

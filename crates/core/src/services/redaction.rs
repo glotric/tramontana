@@ -77,11 +77,10 @@ impl Redacted {
 /// A prefix plus a run of key characters, which is what makes this narrow
 /// enough to be safe: `sk-` alone would match ordinary prose.
 const KEY_PREFIXES: &[&str] = &[
-    "sk-",     // OpenAI and compatible
-    "sk-ant-", // Anthropic
-    "ghp_",    // GitHub personal access token
-    "gho_",    // GitHub OAuth
-    "ghs_",    // GitHub server-to-server
+    "sk-",  // OpenAI and compatible, and Anthropic's `sk-ant-`
+    "ghp_", // GitHub personal access token
+    "gho_", // GitHub OAuth
+    "ghs_", // GitHub server-to-server
     "github_pat_",
     "xoxb-",  // Slack bot
     "xoxp-",  // Slack user
@@ -152,40 +151,43 @@ fn is_key_char(c: char) -> bool {
 }
 
 /// Replace `sk-…`, `ghp_…`, and their kin.
+///
+/// Every occurrence of every prefix is considered. The first version looked
+/// only at the first place each prefix appeared, so an innocent match such as
+/// the `sk-` in "task-runner" shielded every real key after it.
 fn remove_provider_keys(text: &str, codes: &mut Vec<String>) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
+    while let Some((start, end)) = next_provider_key(rest) {
+        out.push_str(&rest[..start]);
+        out.push_str(PLACEHOLDER);
+        codes.push(reason::PROVIDER_API_KEY.to_owned());
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
 
-    'outer: while !rest.is_empty() {
-        for prefix in KEY_PREFIXES {
-            if let Some(start) = rest.find(prefix) {
-                let after = &rest[start + prefix.len()..];
-                let run: String = after.chars().take_while(|c| is_key_char(*c)).collect();
-                // Long enough that prose cannot reach it by accident. The
-                // shortest real key of these shapes is well above this.
-                if run.len() < 16 {
-                    continue;
-                }
+/// The earliest provider key in `text`, as a byte range.
+fn next_provider_key(text: &str) -> Option<(usize, usize)> {
+    KEY_PREFIXES
+        .iter()
+        .filter_map(|prefix| {
+            text.match_indices(prefix).find_map(|(start, _)| {
+                let after = &text[start + prefix.len()..];
+                let run = after.find(|c| !is_key_char(c)).unwrap_or(after.len());
                 // A prefix that begins mid-identifier is part of something
                 // else, not the start of a key.
-                if rest[..start]
+                let mid_identifier = text[..start]
                     .chars()
                     .next_back()
-                    .is_some_and(|before| is_key_char(before) && before != '-')
-                {
-                    continue;
-                }
-                out.push_str(&rest[..start]);
-                out.push_str(PLACEHOLDER);
-                rest = &after[run.len()..];
-                codes.push(reason::PROVIDER_API_KEY.to_owned());
-                continue 'outer;
-            }
-        }
-        out.push_str(rest);
-        break;
-    }
-    out
+                    .is_some_and(|before| is_key_char(before) && before != '-');
+                // Long enough that prose cannot reach it by accident. The
+                // shortest real key of these shapes is well above this.
+                (run >= 16 && !mid_identifier).then_some((start, start + prefix.len() + run))
+            })
+        })
+        .min()
 }
 
 /// Replace the value of an `Authorization:` header.
@@ -213,6 +215,12 @@ fn remove_credential_assignments(text: &str, codes: &mut Vec<String>) -> String 
         // Both shapes, so `API_KEY=x` and `"apiKey": "x"` are both caught.
         let separator = line.find('=').or_else(|| line.find(':'))?;
         let raw_name = line[..separator].trim().trim_matches(['"', '\'', ',', '{']);
+        // A shell assignment keeps its keyword: `export DB_PASSWORD=x` names
+        // `DB_PASSWORD`, not a name with a space in it.
+        let raw_name = ["export ", "set "]
+            .iter()
+            .find_map(|keyword| raw_name.strip_prefix(keyword))
+            .map_or(raw_name, str::trim_start);
 
         // A name with a space in it is prose, not an assignment. Without this
         // the sentence "the token: parameter is documented above" is read as a
@@ -437,6 +445,47 @@ mod tests {
             let result = redact(line);
             assert_eq!(result.text, expected, "for {line}");
             assert_eq!(result.reason_codes, vec![reason::CREDENTIAL_ASSIGNMENT]);
+        }
+    }
+
+    #[test]
+    fn an_innocent_prefix_match_does_not_shield_a_later_key() {
+        // `sk-` inside "task-runner" was rejected as mid-identifier, and the
+        // scan never looked past it, so the real key went through untouched.
+        for text in [
+            format!("the task-runner key is {OPENAI_KEY}"),
+            format!("disk-0123456789abcdef0 then {OPENAI_KEY}"),
+            format!("sk-short then {OPENAI_KEY}"),
+            format!("Xghp_0123456789abcdefghij then {GITHUB_TOKEN}"),
+        ] {
+            let result = redact(&text);
+            assert!(!result.text.contains("A1b2C3d4"), "{}", result.text);
+            assert!(
+                !result.text.contains("ghp_0123456789abcdefghijklmn"),
+                "{}",
+                result.text
+            );
+            assert_eq!(result.reason_codes, vec![reason::PROVIDER_API_KEY]);
+        }
+        assert_eq!(
+            redact(&format!("the task-runner key is {OPENAI_KEY}")).text,
+            format!("the task-runner key is {PLACEHOLDER}")
+        );
+    }
+
+    #[test]
+    fn a_shell_assignment_loses_its_value() {
+        for (line, expected) in [
+            (
+                "export DB_PASSWORD=hunter2hunter2",
+                "export DB_PASSWORD=[redacted]",
+            ),
+            ("set API_TOKEN=abc123", "set API_TOKEN=[redacted]"),
+        ] {
+            let result = redact(line);
+            assert_eq!(result.text, expected, "for {line}");
+            assert_eq!(result.reason_codes, vec![reason::CREDENTIAL_ASSIGNMENT]);
+            assert!(!redact(&result.text).changed(), "{line}");
         }
     }
 

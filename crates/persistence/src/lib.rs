@@ -13,6 +13,7 @@
 mod apps;
 mod database;
 mod dictation;
+mod erasure;
 mod event_store;
 mod personal;
 mod repositories;
@@ -22,6 +23,7 @@ pub use apps::SqliteAppSettingsRepository;
 
 pub use database::{Database, DatabaseError};
 pub use dictation::SqliteDictationRepository;
+pub use erasure::SqliteProfileEraser;
 pub use event_store::SqliteEventStore;
 pub use personal::SqlitePersonalRepository;
 pub use repositories::{

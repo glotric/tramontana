@@ -1,5 +1,6 @@
 //! Explicit recovery commands shared by every shell.
 
+use super::task_service::OrEnvelope as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -106,7 +107,7 @@ impl TaskService {
             .tasks
             .rebuild_from_events()
             .await
-            .map_err(|error| self.repository_error(&error))?;
+            .or_envelope(self)?;
         for record in self.list_tasks(None).await? {
             if record.state.is_terminal() {
                 continue;
@@ -174,7 +175,7 @@ impl TaskService {
             .checkpoints
             .latest(task_id)
             .await
-            .map_err(|error| self.repository_error(&error))
+            .or_envelope(self)
     }
 
     /// Everything both continuation paths need, validated against canonical
@@ -592,6 +593,7 @@ impl TaskService {
             .await?;
         let record = self.canonical_record(&task_id).await?;
         let journal = self.journal_for(&record, updates.clone());
+        let run = receiver.clone();
         self.lock_live()?.insert(
             task_id.clone(),
             LiveTask {
@@ -639,10 +641,12 @@ impl TaskService {
         };
 
         let guard = self.execution_guard.clone();
+        let live = Arc::clone(&self.live);
         tokio::spawn(async move {
             let _guard = guard;
             driver.run(record.goal_summary, cancel).await;
             let _ = finished.send(true);
+            super::task_service::forget_run(&live, &task_id, &run);
         });
         Ok(())
     }
@@ -728,7 +732,7 @@ impl TaskService {
         } else {
             let checkpoint = derive_checkpoint(CheckpointId::new(self.ids.next("checkpoint")),
                 task_id.clone(), &events, record.configuration_manifest_hash.clone(), self.clock.now());
-            self.repositories.checkpoints.save(&checkpoint).await.map_err(|error| self.repository_error(&error))?;
+            self.repositories.checkpoints.save(&checkpoint).await.or_envelope(self)?;
             checkpoint
         };
         if !events.iter().any(|event| matches!(&event.payload,

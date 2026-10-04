@@ -297,6 +297,55 @@ async fn open_with(
     Ok((Arc::new(service), plane, apps))
 }
 
+/// Delete everything a profile holds (ADR 0068): its records, the
+/// credentials they name, and the folders beside its database. The same
+/// steps the desktop takes, through the same service.
+///
+/// # Errors
+///
+/// A message when the profile cannot be opened, a task is running or
+/// another process owns the profile, or a step fails.
+pub(crate) async fn erase(
+    path: &Path,
+) -> Result<tramontana_core::services::ErasureReport, tramontana_core::contracts::ErrorEnvelope> {
+    let internal = |message: String| {
+        tramontana_core::contracts::ErrorEnvelope::new(
+            tramontana_core::contracts::ErrorCode::Internal,
+            message,
+            tramontana_core::contracts::CorrelationId::new("erase"),
+        )
+    };
+    let (service, mut plane, apps) = open_with(
+        path,
+        0,
+        Supervision::Skip,
+        tramontana_core::ports::ToolAdmission::READ_ONLY,
+    )
+    .await
+    .map_err(internal)?;
+    let database = Database::open(path)
+        .await
+        .map_err(|error| internal(format!("could not open {}: {error}", path.display())))?;
+    let report = service
+        .erase_everything(&tramontana_core::services::ProfileErasure {
+            records: &tramontana_persistence::SqliteProfileEraser::new(database.clone()),
+            endpoints: &SqliteProviderSettingsRepository::new(database.clone()),
+            apps: &SqliteAppSettingsRepository::new(database.clone()),
+            vault: &PlatformSecretVault::new(),
+        })
+        .await?;
+    // They write in the folders about to go.
+    plane.shutdown().await;
+    apps.shutdown().await;
+    tramontana_composition::erase_profile_folders(path).map_err(|error| {
+        internal(format!(
+            "the records were deleted, but a folder beside them could not be: {}",
+            error.kind()
+        ))
+    })?;
+    Ok(report)
+}
+
 /// Workers a task can be handed to by name.
 ///
 /// Explicit built-in choices; external worker discovery belongs to M10.

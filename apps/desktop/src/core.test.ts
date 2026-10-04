@@ -113,6 +113,20 @@ describe("reattaching", () => {
     payload.channel.onmessage({ kind: "frame", frame: { streamId: "s", offset: 0, text: "hi" } });
     expect(onUpdate).toHaveBeenCalledOnce();
   });
+
+  it("stops following when asked: nothing more is delivered, and the shell is told", async () => {
+    invoke.mockResolvedValueOnce(42);
+    const onUpdate = vi.fn();
+    const stop = await watchTask("task-1", 7, onUpdate);
+    const payload = invoke.mock.calls.at(-1)?.[1] as {
+      channel: { onmessage: (update: unknown) => void };
+    };
+
+    stop();
+    expect(invoke).toHaveBeenLastCalledWith("unwatch_task", { watchId: 42 });
+    payload.channel.onmessage({ kind: "frame", frame: { streamId: "s", offset: 0, text: "hi" } });
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
 });
 
 describe("standing permissions", () => {

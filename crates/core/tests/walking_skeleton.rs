@@ -634,3 +634,36 @@ async fn unknown_projects_conversations_and_tasks_are_reported_not_invented() {
     let error = service.cancel_task(&TaskId::new("nope")).await.unwrap_err();
     assert_eq!(error.code, ErrorCode::NotFound);
 }
+
+#[tokio::test]
+async fn a_finished_task_is_no_longer_held_as_running() {
+    // Every task used to stay registered, with its update buffer, for the
+    // life of the process. Once forgotten, a subscriber gets a closed live
+    // stream and the whole record from replay.
+    let service = service();
+    let task_id = service
+        .start_task(StartTaskRequest {
+            conversation_id: Some(conversation_in_a_project(&service).await),
+            goal: "say hello".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        await_terminal(&service, &task_id).await,
+        TaskState::Completed
+    );
+
+    for _ in 0..1_000 {
+        let (replayed, mut updates) = service.subscribe_task_events(&task_id, 0).await.unwrap();
+        if matches!(
+            updates.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed)
+        ) {
+            assert!(replayed.last().unwrap().is_terminal_outcome());
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    panic!("the finished task was still registered as running");
+}

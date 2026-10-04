@@ -54,10 +54,16 @@ pub(crate) struct AppState {
     pub(crate) staged_bundle: Arc<crate::bundles::StagedSlot>,
     /// Files picked for a message and not yet sent (ADR 0058).
     pub(crate) staged_attachments: Arc<crate::attachments::StagedAttachments>,
+    /// The task streams windows are watching, so one can be stopped.
+    pub(crate) watches: Arc<crate::commands::Watches>,
     /// The profile's configured endpoints, which the settings view changes.
     pub(crate) settings: Arc<SqliteProviderSettingsRepository>,
     /// The operating system's credential store.
     pub(crate) vault: Arc<PlatformSecretVault>,
+    /// Empties the profile's records, for "Delete all my data" (ADR 0068).
+    pub(crate) eraser: Arc<tramontana_persistence::SqliteProfileEraser>,
+    /// Where the profile's database is; its folders sit beside it.
+    pub(crate) profile: std::path::PathBuf,
 }
 
 impl AppState {
@@ -272,9 +278,54 @@ impl AppState {
             app_settings,
             staged_bundle: Arc::new(std::sync::Mutex::new(None)),
             staged_attachments: Arc::default(),
+            watches: Arc::default(),
             settings,
             vault,
+            eraser: Arc::new(tramontana_persistence::SqliteProfileEraser::new(
+                database.clone(),
+            )),
+            profile: path.to_path_buf(),
         })
+    }
+
+    /// Delete everything this profile holds (ADR 0068): its records, the
+    /// credentials they name, and the folders beside its database. Project
+    /// folders are never touched.
+    ///
+    /// Refused, with nothing removed, while a task runs. Once it succeeds the
+    /// model runtimes, Apps and browser have been stopped, so the window must
+    /// restart the application before anything else is done.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the service reports, or [`ErrorCode::Internal`] naming a
+    /// folder that could not be removed.
+    pub(crate) async fn erase_everything(
+        &self,
+    ) -> Result<tramontana_core::services::ErasureReport, tramontana_core::contracts::ErrorEnvelope>
+    {
+        let report = self
+            .service
+            .erase_everything(&tramontana_core::services::ProfileErasure {
+                records: &*self.eraser,
+                endpoints: &*self.settings,
+                apps: &*self.app_settings,
+                vault: &*self.vault,
+            })
+            .await?;
+        // They write in the folders about to go.
+        self.shut_down().await;
+        tramontana_composition::erase_profile_folders(&self.profile).map_err(|error| {
+            tramontana_core::contracts::ErrorEnvelope::new(
+                tramontana_core::contracts::ErrorCode::Internal,
+                format!(
+                    "the records were deleted, but a folder beside them could not be: {}",
+                    error.kind()
+                ),
+                tramontana_core::contracts::CorrelationId::new("erase"),
+            )
+        })?;
+        Ok(report)
     }
 
     /// Stop the model runtimes this process started.
@@ -433,6 +484,7 @@ mod tests {
             2,
             replayed,
             updates,
+            None,
             move |update| sender.send(update).is_ok(),
         );
 
@@ -463,6 +515,142 @@ mod tests {
             sequences, recorded,
             "a gap, a repeat, or an event out of order"
         );
+    }
+
+    #[tokio::test]
+    async fn deleting_all_data_leaves_a_profile_that_opens_as_new() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile = directory.path().join("tramontana.sqlite");
+        let project_folder = directory.path().join("my-project");
+        std::fs::create_dir_all(&project_folder).unwrap();
+        std::fs::write(project_folder.join("notes.md"), "mine").unwrap();
+        let state =
+            AppState::open_with_chunk_delay(&profile, 0, Arc::new(DesktopApprover::headless()))
+                .await
+                .unwrap();
+        let root = canonicalize_root(&project_folder).unwrap();
+        let project = state
+            .service
+            .open_project("Mine", vec![root.as_str().to_owned()])
+            .await
+            .unwrap();
+        state
+            .service
+            .create_conversation(Some(project.project_id), "Plans")
+            .await
+            .unwrap();
+        for folder in [
+            tramontana_composition::recovery_store(&profile),
+            tramontana_composition::browser_profiles(&profile),
+            tramontana_composition::app_folder(&profile, "notes"),
+        ] {
+            std::fs::create_dir_all(&folder).unwrap();
+        }
+
+        state.erase_everything().await.unwrap();
+
+        assert!(state.service.list_projects().await.unwrap().is_empty());
+        assert!(
+            state
+                .service
+                .list_conversations(None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!tramontana_composition::recovery_store(&profile).exists());
+        assert!(!tramontana_composition::browser_profiles(&profile).exists());
+        assert!(!tramontana_composition::app_folders(&profile).exists());
+        // The project's own folder is the person's, and stays exactly as it was.
+        assert_eq!(
+            std::fs::read_to_string(project_folder.join("notes.md")).unwrap(),
+            "mine"
+        );
+        drop(state);
+
+        // What the restart opens: an empty, working profile.
+        let reopened =
+            AppState::open_with_chunk_delay(&profile, 0, Arc::new(DesktopApprover::headless()))
+                .await
+                .unwrap();
+        assert!(reopened.service.list_projects().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn nothing_is_deleted_while_a_task_runs() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile = directory.path().join("tramontana.sqlite");
+        // Paced, so the task is still running when the deletion is asked for.
+        let state =
+            AppState::open_with_chunk_delay(&profile, 200, Arc::new(DesktopApprover::headless()))
+                .await
+                .unwrap();
+        let conversation = state
+            .service
+            .create_conversation(None, "Running")
+            .await
+            .unwrap();
+        let task_id = state
+            .service
+            .start_task(StartTaskRequest {
+                conversation_id: Some(conversation.conversation_id),
+                goal: "Say hello".to_owned(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let refused = state.erase_everything().await.unwrap_err();
+
+        assert_eq!(
+            refused.code,
+            tramontana_core::contracts::ErrorCode::Conflict
+        );
+        assert_eq!(
+            state.service.list_conversations(None).await.unwrap().len(),
+            1
+        );
+        state.service.cancel_task(&task_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_closed_watch_stops_forwarding_while_the_task_runs_on() {
+        // A window that turned to another task used to leave its forwarding
+        // running, unseen, until the task ended.
+        let temp = tempfile::tempdir().unwrap();
+        let state = AppState::open_with_chunk_delay(
+            &temp.path().join("profile.sqlite3"),
+            0,
+            Arc::new(DesktopApprover::headless()),
+        )
+        .await
+        .unwrap();
+        let task_id = tramontana_core::contracts::TaskId::new("task-watched");
+        // A live stream that never ends on its own: only closing can stop it.
+        let (live, updates) =
+            tokio::sync::broadcast::channel::<tramontana_core::contracts::TaskUpdate>(4);
+        let (watch_id, stop) = state.watches.open();
+        let (sender, mut received) = tokio::sync::mpsc::unbounded_channel();
+        crate::commands::forward_updates(
+            Arc::clone(&state.service),
+            task_id,
+            0,
+            Vec::new(),
+            updates,
+            Some(stop),
+            move |update| sender.send(update).is_ok(),
+        );
+
+        state.watches.close(watch_id);
+        // The forwarder dropped its sender: the window's end is closed.
+        let ended = tokio::time::timeout(Duration::from_secs(5), received.recv())
+            .await
+            .expect("the forwarding did not stop");
+        assert!(
+            ended.is_none(),
+            "forwarded after the watch closed: {ended:?}"
+        );
+        drop(live);
     }
 
     #[tokio::test]

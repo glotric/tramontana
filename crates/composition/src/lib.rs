@@ -20,7 +20,7 @@ mod apps;
 
 use std::sync::Arc;
 
-pub use apps::{AppFailure, AppPlane, app_folder, offerable, start_app, start_apps};
+pub use apps::{AppFailure, AppPlane, app_folder, app_folders, offerable, start_app, start_apps};
 // Signing in to a remote App (ADR 0056). Re-exported rather than reimplemented:
 // this crate is the one place that knows the MCP adapter exists, and an
 // application composes the person's part of the flow around it.
@@ -231,6 +231,33 @@ pub fn browser(profile: &std::path::Path) -> Arc<BrowserProvider> {
 /// [`reap_runtimes`].
 pub fn reap_browser_profiles(profile: &std::path::Path) {
     tramontana_adapters_browser::remove_leftover_profiles(&browser_profiles(profile));
+}
+
+/// Remove the folders a profile keeps beside its database (ADR 0068): the
+/// files kept to undo deletes, the browser's throwaway profiles, and the
+/// Apps' own folders.
+///
+/// Call only after the Apps, the browser and the model runtimes have
+/// stopped, since they write in these folders. The record of running model
+/// runtimes is left alone: it is what lets a later start stop a runtime
+/// that outlived this process (ADR 0030). Project folders are never among
+/// these.
+///
+/// # Errors
+///
+/// The first folder that exists and could not be removed.
+pub fn erase_profile_folders(profile: &std::path::Path) -> std::io::Result<()> {
+    for folder in [
+        recovery_store(profile),
+        browser_profiles(profile),
+        app_folders(profile),
+    ] {
+        match std::fs::remove_dir_all(&folder) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Where a profile records the model runtimes running for it: beside the
@@ -736,6 +763,40 @@ fn descriptor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(
+        clippy::unwrap_used,
+        reason = "the test's own setup; a panic is the failure report"
+    )]
+    fn erasing_removes_the_profiles_folders_and_nothing_beside_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile = directory.path().join("tramontana.sqlite");
+        std::fs::write(&profile, b"db").unwrap();
+        for folder in [
+            recovery_store(&profile),
+            browser_profiles(&profile),
+            app_folder(&profile, "notes"),
+        ] {
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("kept.txt"), b"x").unwrap();
+        }
+        let neighbour = directory.path().join("my-project");
+        std::fs::create_dir_all(&neighbour).unwrap();
+        std::fs::write(neighbour.join("work.txt"), b"mine").unwrap();
+
+        erase_profile_folders(&profile).unwrap();
+        // Again, with nothing left to remove: not an error.
+        erase_profile_folders(&profile).unwrap();
+
+        assert!(!recovery_store(&profile).exists());
+        assert!(!browser_profiles(&profile).exists());
+        assert!(!app_folders(&profile).exists());
+        // The database is the store's to empty, and a neighbour is nobody's
+        // here to touch.
+        assert!(profile.exists());
+        assert_eq!(std::fs::read(neighbour.join("work.txt")).unwrap(), b"mine");
+    }
 
     fn app_tools(count: usize) -> Vec<String> {
         (0..count)

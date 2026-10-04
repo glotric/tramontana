@@ -114,6 +114,41 @@ pub(crate) struct LiveTask {
 /// Tasks running in this process.
 pub(crate) type LiveTasks = Arc<Mutex<HashMap<TaskId, LiveTask>>>;
 
+/// A repository result, as the service reports it.
+///
+/// `.or_envelope(self)` in place of
+/// `.or_envelope(self)` at every storage call.
+pub(super) trait OrEnvelope<T> {
+    /// Map a failure through [`TaskService::repository_error`].
+    fn or_envelope(self, service: &TaskService) -> Result<T, ErrorEnvelope>;
+}
+
+impl<T> OrEnvelope<T> for Result<T, RepositoryError> {
+    fn or_envelope(self, service: &TaskService) -> Result<T, ErrorEnvelope> {
+        self.map_err(|error| service.repository_error(&error))
+    }
+}
+
+/// Forget a run once its driver has ended, unless the task has been started
+/// again since — a resume registers a new run under the same id.
+///
+/// Without this every task stayed registered, with its update buffer, for the
+/// life of the process. A forgotten run reads exactly as a finished one: its
+/// events are durable, and a late subscriber replays them.
+pub(crate) fn forget_run(
+    live: &LiveTasks,
+    task_id: &TaskId,
+    run: &tokio::sync::watch::Receiver<bool>,
+) {
+    if let Ok(mut live) = live.lock()
+        && live
+            .get(task_id)
+            .is_some_and(|entry| entry.finished.same_channel(run))
+    {
+        live.remove(task_id);
+    }
+}
+
 /// The repositories the service persists through.
 ///
 /// Grouped so the constructor stays readable and the composition root assembles
@@ -361,10 +396,7 @@ impl TaskService {
     pub async fn personal_profile(
         &self,
     ) -> Result<crate::contracts::PersonalProfile, ErrorEnvelope> {
-        self.personal_store()?
-            .load()
-            .await
-            .map_err(|error| self.repository_error(&error))
+        self.personal_store()?.load().await.or_envelope(self)
     }
 
     /// Change what the person told Tramontana about themselves.
@@ -381,7 +413,7 @@ impl TaskService {
         self.personal_store()?
             .save(&profile)
             .await
-            .map_err(|error| self.repository_error(&error))?;
+            .or_envelope(self)?;
         Ok(profile)
     }
 
@@ -402,7 +434,7 @@ impl TaskService {
         self.personal_store()?
             .save(&profile)
             .await
-            .map_err(|error| self.repository_error(&error))?;
+            .or_envelope(self)?;
         Ok(profile)
     }
 
@@ -425,7 +457,7 @@ impl TaskService {
         self.personal_store()?
             .save(&profile)
             .await
-            .map_err(|error| self.repository_error(&error))?;
+            .or_envelope(self)?;
         Ok(profile)
     }
 
@@ -585,7 +617,7 @@ impl TaskService {
             .projects
             .create(&record)
             .await
-            .map_err(|error| self.repository_error(&error))?;
+            .or_envelope(self)?;
         Ok(record)
     }
 
@@ -627,7 +659,7 @@ impl TaskService {
             .projects
             .get(project_id)
             .await
-            .map_err(|error| self.repository_error(&error))
+            .or_envelope(self)
     }
 
     /// Every project, most recently created first.
@@ -636,11 +668,7 @@ impl TaskService {
     ///
     /// A persistence error when storage is unavailable.
     pub async fn list_projects(&self) -> Result<Vec<ProjectRecord>, ErrorEnvelope> {
-        self.repositories
-            .projects
-            .list()
-            .await
-            .map_err(|error| self.repository_error(&error))
+        self.repositories.projects.list().await.or_envelope(self)
     }
 
     /// Resolve and persist the project-authored configuration inventory.
@@ -660,7 +688,7 @@ impl TaskService {
             .configuration
             .save(project_id, &configuration)
             .await
-            .map_err(|error| self.repository_error(&error))?;
+            .or_envelope(self)?;
         Ok(configuration)
     }
 
@@ -674,7 +702,7 @@ impl TaskService {
             .configuration
             .latest(project_id)
             .await
-            .map_err(|error| self.repository_error(&error))
+            .or_envelope(self)
     }
 
     /// Create a conversation, optionally inside a project.
@@ -700,7 +728,7 @@ impl TaskService {
             .conversations
             .create(&record)
             .await
-            .map_err(|error| self.repository_error(&error))?;
+            .or_envelope(self)?;
         Ok(record)
     }
 
@@ -717,7 +745,7 @@ impl TaskService {
             .conversations
             .list(project_id)
             .await
-            .map_err(|error| self.repository_error(&error))
+            .or_envelope(self)
     }
 
     /// Read one conversation.
@@ -733,7 +761,7 @@ impl TaskService {
             .conversations
             .get(conversation_id)
             .await
-            .map_err(|error| self.repository_error(&error))
+            .or_envelope(self)
     }
 
     /// Mark a conversation archived.
@@ -749,7 +777,7 @@ impl TaskService {
             .conversations
             .archive(conversation_id, &self.clock.now())
             .await
-            .map_err(|error| self.repository_error(&error))
+            .or_envelope(self)
     }
 
     /// Give a conversation a new title (ADR 0059).
@@ -774,7 +802,7 @@ impl TaskService {
             .conversations
             .rename(conversation_id, title)
             .await
-            .map_err(|error| self.repository_error(&error))?;
+            .or_envelope(self)?;
         self.get_conversation(conversation_id).await
     }
 
@@ -806,7 +834,7 @@ impl TaskService {
             .conversations
             .delete(conversation_id)
             .await
-            .map_err(|error| self.repository_error(&error))
+            .or_envelope(self)
     }
 
     /// Remove Tramontana's record of a project: its conversations, their
@@ -835,16 +863,12 @@ impl TaskService {
         self.none_under_way(&tasks, "Stop the project's running task before removing it")
             .await?;
         if let Some((schedules, _)) = &self.schedules {
-            for schedule in schedules
-                .list()
-                .await
-                .map_err(|error| self.repository_error(&error))?
-            {
+            for schedule in schedules.list().await.or_envelope(self)? {
                 if schedule.project_id.as_ref() == Some(project_id) {
                     schedules
                         .delete(&schedule.schedule_id)
                         .await
-                        .map_err(|error| self.repository_error(&error))?;
+                        .or_envelope(self)?;
                 }
             }
         }
@@ -854,18 +878,18 @@ impl TaskService {
                 .conversations
                 .delete(&conversation.conversation_id)
                 .await
-                .map_err(|error| self.repository_error(&error))?;
+                .or_envelope(self)?;
         }
         self.repositories
             .projects
             .delete(project_id)
             .await
-            .map_err(|error| self.repository_error(&error))
+            .or_envelope(self)
     }
 
     /// Refuse with `refusal` while any of `tasks` is under way, waiting a
     /// moment for one whose record has ended but whose driver is finishing.
-    async fn none_under_way(
+    pub(super) async fn none_under_way(
         &self,
         tasks: &[TaskRecord],
         refusal: &str,
@@ -906,7 +930,7 @@ impl TaskService {
                 .tasks
                 .delete(&task.task_id)
                 .await
-                .map_err(|error| self.repository_error(&error))?;
+                .or_envelope(self)?;
             self.repositories
                 .events
                 .delete_stream(&task.task_id)
@@ -1051,7 +1075,7 @@ impl TaskService {
             .tasks
             .list(conversation_id)
             .await
-            .map_err(|error| self.repository_error(&error))
+            .or_envelope(self)
     }
 
     /// Read the complete durable task record.
@@ -1063,11 +1087,7 @@ impl TaskService {
     ///
     /// [`ErrorCode::NotFound`] when the task does not exist.
     pub async fn get_task_record(&self, task_id: &TaskId) -> Result<TaskRecord, ErrorEnvelope> {
-        self.repositories
-            .tasks
-            .get(task_id)
-            .await
-            .map_err(|error| self.repository_error(&error))
+        self.repositories.tasks.get(task_id).await.or_envelope(self)
     }
 
     /// Replay durable events after `after_sequence` without subscribing live.
@@ -1099,15 +1119,18 @@ impl TaskService {
     /// [`ErrorCode::NotFound`] for an unknown conversation, or a persistence
     /// error if the opening event cannot be journaled.
     pub async fn start_task(&self, mut request: StartTaskRequest) -> Result<TaskId, ErrorEnvelope> {
-        let _lifecycle = self.lifecycle.lock().await;
         self.require_execution()?;
-        // Both chosen before anything is written, so a refusal leaves no
-        // task behind.
-        let routing_mode = request.routing_mode.unwrap_or_else(|| self.routing_mode());
-        // Before anything is written, so a refused file leaves no task.
+        // Before anything is written, so a refused file leaves no task — and
+        // before the lifecycle lock, because reading a document can take
+        // seconds and touches no task state: a person's Cancel must not wait
+        // behind it.
         let attachments = self
             .accept_attachments(std::mem::take(&mut request.attachments))
             .await?;
+        let _lifecycle = self.lifecycle.lock().await;
+        // Chosen before anything is written, so a refusal leaves no task
+        // behind.
+        let routing_mode = request.routing_mode.unwrap_or_else(|| self.routing_mode());
         let worker = match (request.admission, request.worker.as_deref(), &self.workers) {
             (None, None, _) => Arc::clone(&self.providers.worker),
             (Some(admission), None, Some(choose)) => choose(admission),
@@ -1138,7 +1161,7 @@ impl TaskService {
                     .conversations
                     .get(id)
                     .await
-                    .map_err(|error| self.repository_error(&error))?;
+                    .or_envelope(self)?;
                 conversation.project_id
             }
             None => None,
@@ -1173,7 +1196,7 @@ impl TaskService {
                     .configuration
                     .latest(project_id)
                     .await
-                    .map_err(|error| self.repository_error(&error))?;
+                    .or_envelope(self)?;
                 if stored.as_ref().map(|stored| &stored.manifest_hash)
                     != Some(&configuration.manifest_hash)
                 {
@@ -1181,7 +1204,7 @@ impl TaskService {
                         .configuration
                         .save(project_id, &configuration)
                         .await
-                        .map_err(|error| self.repository_error(&error))?;
+                        .or_envelope(self)?;
                 }
                 (Some(configuration), instructions)
             }
@@ -1190,7 +1213,7 @@ impl TaskService {
                     .configuration
                     .latest(project_id)
                     .await
-                    .map_err(|error| self.repository_error(&error))?,
+                    .or_envelope(self)?,
                 ProjectInstructions::default(),
             ),
             (None, _) => (None, ProjectInstructions::default()),
@@ -1206,7 +1229,7 @@ impl TaskService {
                     .projects
                     .get(id)
                     .await
-                    .map_err(|error| self.repository_error(&error))?
+                    .or_envelope(self)?
                     .roots,
             ),
             None => CapabilityScope {
@@ -1285,10 +1308,11 @@ impl TaskService {
             .tasks
             .create_with_initial_events(&record, &initial_events)
             .await
-            .map_err(|error| self.repository_error(&error))?;
+            .or_envelope(self)?;
 
         let interrupt = CancellationToken::new();
         let (finished, finish_receiver) = tokio::sync::watch::channel(false);
+        let run = finish_receiver.clone();
         self.lock_live()?.insert(
             task_id.clone(),
             LiveTask {
@@ -1344,10 +1368,13 @@ impl TaskService {
         // the model payload all see the same thing the record does.
         let goal = goal.text;
         let execution_guard = self.execution_guard.clone();
+        let live = Arc::clone(&self.live);
+        let spawned_id = task_id.clone();
         tokio::spawn(async move {
             let _execution_guard = execution_guard;
             driver.run(goal, cancel).await;
             let _ = finished.send(true);
+            forget_run(&live, &spawned_id, &run);
         });
 
         Ok(task_id)
@@ -1395,17 +1422,25 @@ impl TaskService {
     ///
     /// [`ErrorCode::NotFound`] when the task is unknown to storage.
     pub async fn cancel_task(&self, task_id: &TaskId) -> Result<(), ErrorEnvelope> {
-        let _lifecycle = self.lifecycle.lock().await;
+        use crate::contracts::TaskState;
         self.require_execution()?;
-        self.repositories
-            .tasks
-            .get(task_id)
-            .await
-            .map_err(|error| self.repository_error(&error))?;
-
-        if self.get_task_record(task_id).await?.state == crate::contracts::TaskState::Interrupted {
+        // A running task is signalled at once, without the lifecycle lock: a
+        // stop the person asked for must not wait behind another task's start.
+        if self.get_task_record(task_id).await?.state != TaskState::Interrupted {
+            return self.signal_cancel(task_id);
+        }
+        // Discarding interrupted work changes the record, and must not race
+        // a resume of the same task. Read again under the lock: a resume may
+        // have started it in between, and then it is cancelled instead.
+        let _lifecycle = self.lifecycle.lock().await;
+        if self.get_task_record(task_id).await?.state == TaskState::Interrupted {
             return self.discard_interrupted(task_id).await;
         }
+        self.signal_cancel(task_id)
+    }
+
+    /// Cancel the run of `task_id` in this process, if there is one.
+    fn signal_cancel(&self, task_id: &TaskId) -> Result<(), ErrorEnvelope> {
         if let Some(live) = self.lock_live()?.get(task_id) {
             live.cancel.cancel();
         }
@@ -1423,7 +1458,7 @@ impl TaskService {
             .tasks
             .get(task_id)
             .await
-            .map_err(|error| self.repository_error(&error))?;
+            .or_envelope(self)?;
 
         Ok(TaskSnapshot {
             schema_version: SCHEMA_VERSION,
@@ -1455,7 +1490,7 @@ impl TaskService {
             .tasks
             .get(task_id)
             .await
-            .map_err(|error| self.repository_error(&error))?;
+            .or_envelope(self)?;
 
         let receiver = match self.lock_live()?.get(task_id) {
             Some(live) => live.updates.subscribe(),

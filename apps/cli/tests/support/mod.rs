@@ -402,18 +402,26 @@ pub async fn start(service: &TaskService, conversation: &ConversationId, goal: &
 }
 
 /// The task's events once it has ended, waiting at most `limit`.
+///
+/// Ended means the terminal event is durable *and* the task row's cache has
+/// caught up with it. The journal writes the event first and the cache a
+/// moment after, so a caller that saw only the event could read a task row
+/// one sequence behind — which a slow CI runner did.
 pub async fn finished(service: &TaskService, task: &TaskId, limit: Duration) -> Vec<EventEnvelope> {
     let deadline = Instant::now() + limit;
     loop {
         let events = service.replay_task_events(task, 0).await.unwrap();
-        if events.last().is_some_and(|event| {
+        let ended = events.last().filter(|event| {
             matches!(
                 event.kind,
                 TaskEventKind::TaskCompleted
                     | TaskEventKind::TaskFailed
                     | TaskEventKind::TaskCancelled
             )
-        }) {
+        });
+        if let Some(last) = ended
+            && service.get_task(task).await.unwrap().last_sequence == last.sequence
+        {
             return events;
         }
         assert!(

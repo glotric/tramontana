@@ -283,20 +283,36 @@ h3 {
 }
 
 .rail-row--nav {
-  height: 42px;
-  gap: 12px;
+  height: 36px;
+  gap: 11px;
   padding: 0 10px;
-  border-radius: 11px;
-  font-size: 15px;
-  font-weight: 500;
+  border-radius: 10px;
+  color: var(--soft);
+  font-size: 14px;
+}
+
+.rail-row--nav .icon {
+  color: var(--muted);
 }
 
 .rail-row--project {
-  height: 38px;
-  gap: 12px;
+  height: 34px;
+  gap: 6px;
   padding: 0 10px;
-  border-radius: 11px;
-  font-size: 15px;
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.rail-row--project > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-row--project[data-selected="true"] {
+  background: transparent;
+  color: var(--text);
 }
 
 .rail-scroll {
@@ -523,31 +539,6 @@ h3 {
   background: var(--danger-bg);
   box-shadow: inset 0 0 0 1px var(--danger-line);
   color: var(--danger);
-}
-
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  margin: 10vh auto 0;
-  max-width: 560px;
-  text-align: center;
-}
-
-.empty-state h2 {
-  margin-top: 12px;
-  font-size: 32px;
-  font-weight: 600;
-  letter-spacing: -0.028em;
-  line-height: 1.15;
-}
-
-.empty-state p {
-  margin: 0 0 12px;
-  color: var(--muted);
-  font-size: 16px;
-  line-height: 1.55;
 }
 
 .workspace-loading,
@@ -1120,76 +1111,6 @@ h3 {
 
 /* ---- Tasks ---------------------------------------------------------------- */
 
-.task-tabs {
-  display: flex;
-  min-width: 0;
-  margin: 0;
-  padding: 2px 2px 6px;
-  gap: 8px;
-  overflow-x: auto;
-  list-style: none;
-}
-
-.task-tabs > li {
-  display: flex;
-}
-
-.task-tabs > li > button {
-  display: grid;
-  min-width: 180px;
-  max-width: 240px;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 4px 8px;
-  padding: 10px 14px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--card);
-  text-align: left;
-}
-
-.task-tabs > li > button:hover {
-  background: var(--seg-on);
-}
-
-.task-tabs > li > button[data-selected="true"] {
-  border-color: var(--ask-line);
-  background: var(--ask-bg);
-}
-
-.task-tabs span {
-  align-self: center;
-  color: var(--faint);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.task-tabs span[data-task-state="completed"] {
-  color: var(--ok);
-}
-
-.task-tabs span[data-task-state="running"] {
-  color: var(--accent-text);
-}
-
-.task-tabs span[data-task-state="failed"],
-.task-tabs span[data-task-state="cancelled"] {
-  color: var(--danger);
-}
-
-.task-tabs strong {
-  overflow: hidden;
-  font-size: 13px;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-tabs code {
-  grid-column: 1 / -1;
-  color: var(--faint);
-  font-size: 11px;
-}
-
 /* An interrupted task, and a question put to the person. Both sit above the
    activity: while either is open the task is stopped, and it is the one thing
    worth reading. Each has a heading that says so, so none of the meaning is
@@ -1311,27 +1232,6 @@ h3 {
 
 .checkpoint-handoff .checkpoint-note {
   flex-basis: 100%;
-}
-
-.activity {
-  min-width: 0;
-}
-
-.activity-empty {
-  display: flex;
-  min-height: 200px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  border: 1px dashed var(--line2);
-  border-radius: var(--radius-lg);
-  color: var(--muted);
-  text-align: center;
-}
-
-.activity-empty p {
-  margin: 0;
 }
 
 /* The task header and its activity cards: one bordered list, like the plan
@@ -1558,20 +1458,6 @@ h3 {
   line-height: 1.5;
 }
 
-/* How a task may run, chosen before it starts. Native radios and checkboxes,
-   so keyboard use and screen-reader meaning come from the platform; the
-   selected mode keeps its radio dot, so it is not shown by color alone. */
-.composer-options {
-  display: flex;
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
 .composer-modes {
   display: inline-flex;
   margin: 0;
@@ -1601,70 +1487,8 @@ h3 {
   color: var(--text);
 }
 
-.composer-modes input,
-.composer-toggle input,
-.composer-skill input {
+.composer-modes input {
   margin: 0;
-}
-
-.composer-toggle,
-.composer-worker {
-  display: inline-flex;
-  height: 36px;
-  align-items: center;
-  gap: 7px;
-  padding: 0 14px 0 11px;
-  border: 1px solid var(--line2);
-  border-radius: 18px;
-  color: var(--soft);
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.composer-toggle[data-checked="true"] {
-  border-color: var(--ask-line);
-  background: var(--ask-bg);
-  color: var(--text);
-}
-
-.composer-worker select {
-  max-width: 220px;
-  height: 26px;
-  padding: 0 6px;
-  border-radius: 8px;
-  font-size: 13px;
-}
-
-/* The project's own skills, ticked for one task (ADR 0053). A whole row of
-   its own, because each line carries a description. */
-.composer-skills {
-  display: flex;
-  flex-basis: 100%;
-  flex-direction: column;
-  gap: 6px;
-  margin: 2px 0 0;
-  padding: 10px 14px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-
-.composer-skills legend {
-  padding: 0 4px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.composer-skill {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  color: var(--soft);
-  font-size: 13px;
-}
-
-.composer-skill input {
-  margin-top: 2px;
 }
 
 /* Said in words, not by position alone: a reordered list is not a label. */
@@ -2374,6 +2198,31 @@ h3 {
   border-bottom: 0;
 }
 
+/* Settings' "Delete all my data" (ADR 0068). */
+.erase-start {
+  justify-content: flex-start;
+}
+
+.erase-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--danger-bg);
+  box-shadow: inset 0 0 0 1px var(--danger-line);
+}
+
+.erase-confirm p,
+.erase-confirm ul {
+  margin: 0;
+}
+
+.erase-confirm ul {
+  padding-left: 20px;
+  line-height: 1.6;
+}
+
 .settings-section > label,
 .settings-section h2,
 .style-choices legend {
@@ -2722,4 +2571,658 @@ h3 {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+/* ---- Sidebar: search, More, projects, person ------------------------------ */
+
+.icon {
+  flex: none;
+}
+
+.rail-search {
+  display: flex;
+  width: 100%;
+  height: 36px;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--line2);
+  border-radius: 10px;
+  background: var(--field);
+  color: var(--faint);
+  font-size: 14px;
+  text-align: left;
+}
+
+.rail-search:hover {
+  border-color: var(--ask-line);
+}
+
+.rail-search:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.rail-search .rail-row-label {
+  flex: 1;
+}
+
+.rail-more-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 12px;
+}
+
+.rail-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 4px;
+}
+
+.rail-add {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.rail-heading-row .rail-add {
+  margin-top: 16px;
+}
+
+.rail-add:hover:not(:disabled) {
+  background: var(--side-active);
+  color: var(--text);
+}
+
+.rail-project-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* The project's own "+" shows on hover, and whenever the keyboard is on the
+   row, so it is never only reachable by mouse. */
+.rail-add--hover {
+  position: absolute;
+  right: 4px;
+  opacity: 0;
+}
+
+.rail-project-row:hover .rail-add--hover,
+.rail-project-row:focus-within .rail-add--hover {
+  opacity: 1;
+}
+
+.rail-list--nested {
+  margin: 0 0 6px;
+}
+
+.rail-row--conversation {
+  height: 32px;
+  padding-left: 22px;
+  color: var(--soft);
+  font-size: 13.5px;
+}
+
+.rail-empty--nested {
+  margin-left: 22px;
+}
+
+.rail-person {
+  height: 44px;
+  margin-top: 6px;
+  padding: 0 8px;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+}
+
+.rail-person:hover:not(:disabled),
+.rail-person[aria-pressed="true"] {
+  border-radius: 10px;
+}
+
+.rail-avatar {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent-gradient);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.rail-person-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-person-sub {
+  color: var(--faint);
+  font-weight: 400;
+}
+
+.rail-person > .icon {
+  color: var(--faint);
+}
+
+.rail-status {
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 0;
+  font-size: 11px;
+}
+
+/* ---- Agent home ----------------------------------------------------------- */
+
+.agent-home {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  margin: 3vh auto 0;
+  width: min(760px, 100%);
+}
+
+.agent-home-greeting {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+.agent-home-start {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.agent-home-start p {
+  margin: 0;
+  max-width: 560px;
+}
+
+/* ---- Activity card --------------------------------------------------------- */
+
+.overview {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+}
+
+.overview-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.overview-segments {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--seg);
+}
+
+.overview-segments button {
+  height: 28px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.overview-segments button[aria-pressed="true"] {
+  background: var(--seg-on);
+  box-shadow: var(--seg-shadow);
+  color: var(--text);
+}
+
+.overview-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.overview-tiles > div {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--seg);
+}
+
+.overview-tiles dt {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.overview-tiles dd {
+  margin: 2px 0 0;
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* Weeks stretch to the card's width, so the grid reads at a glance. */
+.overview-heatmap {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 4px;
+}
+
+.overview-week {
+  display: grid;
+  gap: 4px;
+}
+
+.overview-day {
+  aspect-ratio: 1;
+  border-radius: 4px;
+  background: var(--line);
+}
+
+.overview-day[data-level="future"] {
+  background: transparent;
+}
+
+.overview-day[data-level="1"] {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.overview-day[data-level="2"] {
+  background: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.overview-day[data-level="3"] {
+  background: color-mix(in srgb, var(--accent) 75%, transparent);
+}
+
+.overview-day[data-level="4"] {
+  background: var(--accent);
+}
+
+.overview-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.overview-projects li {
+  display: grid;
+  grid-template-columns: minmax(0, 180px) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.overview-projects li > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview-bar-fill {
+  height: 8px;
+  min-width: 4px;
+  border-radius: 4px;
+  background: var(--accent);
+}
+
+.overview-projects strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.overview-empty,
+.overview-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.overview-note {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+/* ---- Composer chips --------------------------------------------------------- */
+
+.composer-chips {
+  display: flex;
+  width: min(760px, 100%);
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip-menu {
+  position: relative;
+}
+
+.chip {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px 0 10px;
+  border: 1px solid var(--line2);
+  border-radius: 9px;
+  background: var(--field);
+  color: var(--soft);
+  font-size: 13px;
+}
+
+.chip:hover:not(:disabled),
+.chip[aria-expanded="true"] {
+  border-color: var(--ask-line);
+  color: var(--text);
+}
+
+.chip:disabled {
+  opacity: 0.6;
+}
+
+.chip > span:not(.chip-dot) {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* Opens upwards: the composer sits at the bottom of the window. */
+.chip-popover {
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 6px);
+  left: 0;
+  width: max-content;
+  min-width: 260px;
+  max-width: min(380px, 90vw);
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--field);
+  box-shadow: var(--shadow);
+}
+
+.chip-list {
+  display: flex;
+  max-height: 280px;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+
+.chip-list button {
+  display: flex;
+  height: 34px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+}
+
+.chip-list button:hover,
+.chip-list button[aria-pressed="true"] {
+  background: var(--active-row);
+}
+
+.chip-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.chip-choices--wide {
+  width: min(380px, 85vw);
+}
+
+.chip-choices legend {
+  margin-bottom: 4px;
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chip-legend {
+  font-weight: 400 !important;
+  line-height: 1.45;
+}
+
+.chip-choice {
+  padding: 7px 8px;
+  border-radius: 8px;
+}
+
+.chip-choice[data-selected="true"] {
+  background: var(--active-row);
+}
+
+.chip-choice label,
+.chip-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.chip-choice p {
+  margin: 2px 0 0 24px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.chip-toggle {
+  padding: 7px 8px;
+  border-radius: 8px;
+  font-weight: 400;
+}
+
+.chip-toggle:hover {
+  background: var(--active-row);
+}
+
+.chip-toggle--skill {
+  align-items: flex-start;
+  font-size: 13px;
+}
+
+.chip-toggle input,
+.chip-choice input {
+  margin: 0;
+}
+
+.chip-toggle--skill input {
+  margin-top: 2px;
+}
+
+.chip-select {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chip-select select {
+  height: 32px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+/* ---- Conversation thread ---------------------------------------------------- */
+
+.thread {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.thread-item {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.thread-goal {
+  display: flex;
+  max-width: 80%;
+  flex-direction: column;
+  align-items: flex-end;
+  align-self: flex-end;
+  gap: 4px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 16px 16px 4px;
+  background: var(--bubble);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.45;
+  text-align: right;
+}
+
+.thread-item[data-selected="false"] .thread-goal {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.thread-item[data-selected="false"] .thread-goal:hover {
+  background: var(--active-row);
+}
+
+.thread-goal-meta {
+  display: flex;
+  gap: 8px;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.thread-goal-meta [data-task-state="completed"] {
+  color: var(--ok);
+}
+
+.thread-goal-meta [data-task-state="failed"],
+.thread-goal-meta [data-task-state="cancelled"] {
+  color: var(--danger);
+}
+
+.thread-task {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.thread-steps > summary {
+  color: var(--muted);
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.thread-steps[open] > summary {
+  margin-bottom: 10px;
+}
+
+/* In the thread, the task's facts are a quiet line of small print rather
+   than a card: every fact is still there, said in words. */
+.thread-task .task-header {
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+}
+
+.thread-task .task-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+}
+
+.thread-task .task-facts > div {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.thread-task .task-facts dt {
+  color: var(--faint);
+}
+
+.thread-task .task-facts dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.thread-task .cards {
+  margin: 0;
+}
+
+.inspector-project {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 12px;
+}
+
+.inspector-project code {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
 }

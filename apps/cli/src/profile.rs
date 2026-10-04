@@ -36,6 +36,14 @@ enum ProfileCommand {
         /// The note's id.
         note_id: String,
     },
+    /// Delete everything Tramontana keeps for this profile: projects list,
+    /// conversations, tasks, settings, Apps, notes, and the keys they name
+    /// in the operating system's store. Project folders are not touched.
+    Erase {
+        /// Confirm the deletion. Without it, nothing is deleted.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -62,6 +70,9 @@ struct SetArgs {
 }
 
 pub(crate) async fn execute(args: ProfileArgs) -> ExitCode {
+    if let ProfileCommand::Erase { yes } = args.command {
+        return erase(args.profile, yes).await;
+    }
     let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
         Ok(service) => service,
         Err(message) => {
@@ -74,6 +85,7 @@ pub(crate) async fn execute(args: ProfileArgs) -> ExitCode {
         ProfileCommand::Set(set) => set_details(&service, set).await,
         ProfileCommand::Remember { text } => service.remember(&text).await,
         ProfileCommand::Forget { note_id } => service.forget(&note_id).await,
+        ProfileCommand::Erase { .. } => unreachable!("handled before the profile is opened"),
     };
     match result {
         Ok(profile) => render::json(&profile),
@@ -100,4 +112,22 @@ async fn set_details(
         memory_enabled: set.memory.unwrap_or(current.memory_enabled),
     };
     service.update_personal(&details).await
+}
+
+/// `tramontana profile erase` (ADR 0068).
+async fn erase(profile: Option<PathBuf>, yes: bool) -> ExitCode {
+    if !yes {
+        eprintln!(
+            "error: this deletes every project record, conversation, task, setting and note in this profile, and the keys they name, and cannot be undone (project folders are not touched); pass --yes to confirm"
+        );
+        return ExitCode::FAILURE;
+    }
+    match wiring::erase(&wiring::profile_path(profile)).await {
+        Ok(report) => render::json(&serde_json::json!({
+            "erased": true,
+            "credentialsRemoved": report.credentials_removed,
+            "credentialsAbsent": report.credentials_absent,
+        })),
+        Err(error) => render::application_error(&error),
+    }
 }

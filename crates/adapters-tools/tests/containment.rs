@@ -331,6 +331,88 @@ async fn a_large_file_is_truncated_and_says_so() {
 }
 
 #[tokio::test]
+async fn truncation_is_by_bytes_and_keeps_whole_characters() {
+    // The limit is in bytes. It used to count characters, so text that is
+    // not ASCII came back at up to four times the limit.
+    let (_temp, root) = project();
+    let limits = tramontana_adapters_tools::ReadLimits {
+        max_bytes: 64,
+        ..Default::default()
+    };
+    std::fs::write(root.join("wide.txt"), "é".repeat(1_000)).unwrap();
+
+    let request = authorize(
+        "builtin.fs.read",
+        &[&root],
+        serde_json::json!({ "path": "wide.txt" }),
+    )
+    .await;
+    let outcome = FilesystemTools::with_limits(limits)
+        .invoke(request, CancellationToken::new())
+        .await
+        .unwrap();
+
+    assert!(outcome.truncated);
+    assert_eq!(outcome.content["text"].as_str().unwrap(), "é".repeat(32));
+}
+
+#[tokio::test]
+async fn a_file_over_the_size_limit_is_refused_not_loaded() {
+    let (_temp, root) = project();
+    let limits = tramontana_adapters_tools::ReadLimits {
+        max_file_bytes: 1_024,
+        ..Default::default()
+    };
+    std::fs::write(root.join("huge.log"), "x".repeat(4_096)).unwrap();
+
+    let request = authorize(
+        "builtin.fs.read",
+        &[&root],
+        serde_json::json!({ "path": "huge.log" }),
+    )
+    .await;
+    let error = FilesystemTools::with_limits(limits)
+        .invoke(request, CancellationToken::new())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::LimitExceeded);
+    assert!(error.message.contains("huge.log"), "{}", error.message);
+}
+
+#[tokio::test]
+async fn a_search_skips_a_file_over_the_size_limit_and_says_so() {
+    let (_temp, root) = project();
+    let limits = tramontana_adapters_tools::ReadLimits {
+        max_file_bytes: 1_024,
+        ..Default::default()
+    };
+    std::fs::write(root.join("small.txt"), "NEEDLE small").unwrap();
+    std::fs::write(
+        root.join("huge.log"),
+        format!("NEEDLE {}", "x".repeat(4_096)),
+    )
+    .unwrap();
+
+    let request = authorize(
+        "builtin.fs.search",
+        &[&root],
+        serde_json::json!({ "query": "NEEDLE" }),
+    )
+    .await;
+    let outcome = FilesystemTools::with_limits(limits)
+        .invoke(request, CancellationToken::new())
+        .await
+        .unwrap();
+
+    let matches = outcome.content["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0]["path"], "small.txt");
+    assert_eq!(outcome.content["skippedFiles"], 1);
+    assert!(outcome.display_summary.contains("1 file not searched"));
+}
+
+#[tokio::test]
 async fn cancellation_stops_a_tool_before_it_reads() {
     let (_temp, root) = project();
     let request = authorize(

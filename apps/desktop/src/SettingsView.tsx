@@ -3,6 +3,7 @@ import type { AnswerStyle, PersonalProfile } from "@tramontana/shared";
 
 import { asErrorEnvelope, forget, personalProfile, remember, updatePersonal } from "./core.js";
 import { DictationSettings } from "./Dictation.js";
+import { EraseAllData } from "./EraseAllData.js";
 import { Glyph } from "./Glyph.js";
 import type { GlyphHue, GlyphIcon } from "./Glyph.js";
 
@@ -263,6 +264,8 @@ export function SettingsView(): React.JSX.Element {
         </section>
 
         <DictationSettings />
+
+        <EraseAllData />
       </div>
     </section>
   );

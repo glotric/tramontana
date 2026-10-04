@@ -112,29 +112,16 @@ fn is_reserved_device_name(name: &str) -> bool {
     ) {
         return true;
     }
-    let mut chars = stem.chars();
-    let prefix: String = chars
-        .by_ref()
-        .take(3)
-        .collect::<String>()
-        .to_ascii_uppercase();
-    let rest: String = chars.collect();
-    (prefix == "COM" || prefix == "LPT")
-        && matches!(
-            rest.as_str(),
-            "0" | "1"
-                | "2"
-                | "3"
-                | "4"
-                | "5"
-                | "6"
-                | "7"
-                | "8"
-                | "9"
-                | "\u{b9}"
-                | "\u{b2}"
-                | "\u{b3}"
-        )
+    // `COM` or `LPT` and exactly one digit, superscripts included.
+    let mut number = match upper
+        .strip_prefix("COM")
+        .or_else(|| upper.strip_prefix("LPT"))
+    {
+        Some(number) => number.chars(),
+        None => return false,
+    };
+    let digit = |c: char| c.is_ascii_digit() || matches!(c, '\u{b9}' | '\u{b2}' | '\u{b3}');
+    number.next().is_some_and(digit) && number.next().is_none()
 }
 
 /// Whether one granted root contains both paths.
