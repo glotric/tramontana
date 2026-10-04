@@ -66,99 +66,155 @@ impl Redirect {
     /// refused: a code arriving with someone else's state is not an answer to
     /// this request.
     ///
+    /// Connections that are not the redirect — a browser's speculative
+    /// connection that sends nothing, a request for `/favicon.ico`, a
+    /// callback carrying another sign-in's state — are answered and the wait
+    /// goes on. Only the deadline, the authorization server's own refusal, or
+    /// a callback for this sign-in ends it, so a stray connection cannot
+    /// fail a sign-in the person is in the middle of.
+    ///
     /// # Errors
     ///
     /// When nothing arrives before `within`, when the authorization server
-    /// reported an error instead of a code, when the state does not match, or
-    /// when the request is malformed or oversized.
+    /// reported an error instead of a code, or when the redirect for this
+    /// sign-in carried no code.
     pub async fn wait(self, state: &str, within: Duration) -> Result<String, RedirectError> {
-        let (mut stream, peer) = tokio::time::timeout(within, self.listener.accept())
-            .await
-            .map_err(|_| fail("nothing came back before the sign-in timed out"))?
-            .map_err(|error| fail(format!("the redirect could not be accepted: {error}")))?;
-        if !peer.ip().is_loopback() {
-            return Err(fail("the redirect did not come from this computer"));
-        }
-
-        let mut request = Vec::new();
-        let mut buffer = [0_u8; 1024];
-        // The request line is the whole point, and it arrives first; reading
-        // to the end of the headers is enough and bounds the wait.
+        let deadline = tokio::time::Instant::now() + within;
         loop {
-            let read = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buffer))
+            let (mut stream, peer) = tokio::time::timeout_at(deadline, self.listener.accept())
                 .await
-                .map_err(|_| fail("the browser's request did not finish"))?
-                .map_err(|error| {
-                    fail(format!("the browser's request could not be read: {error}"))
-                })?;
-            if read == 0 {
-                break;
+                .map_err(|_| fail("nothing came back before the sign-in timed out"))?
+                .map_err(|error| fail(format!("the redirect could not be accepted: {error}")))?;
+            if !peer.ip().is_loopback() {
+                continue;
             }
-            request.extend_from_slice(&buffer[..read]);
-            if request.len() > MAX_REQUEST {
-                return Err(fail("the browser's request was too large to be a redirect"));
+            let request = match read_head(&mut stream, deadline).await {
+                Ok(request) => request,
+                Err(error) => {
+                    respond(&mut stream, 400, &error.0).await;
+                    continue;
+                }
+            };
+            if !is_callback(&request) {
+                respond(&mut stream, 404, "Not found.").await;
+                continue;
             }
-            if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
+            let outcome = outcome_of(&request, state);
+            if outcome.is_err() && !answers_this_sign_in(&request, state) {
+                // Someone else's state, or none: not this sign-in's answer.
+                respond(
+                    &mut stream,
+                    400,
+                    "This is not the sign-in Tramontana is waiting for.",
+                )
+                .await;
+                continue;
             }
+            match &outcome {
+                Ok(_) => {
+                    respond(
+                        &mut stream,
+                        200,
+                        "Signed in. You can close this tab and go back to Tramontana.",
+                    )
+                    .await;
+                }
+                Err(error) => respond(&mut stream, 400, &error.0).await,
+            }
+            return outcome;
         }
-
-        let outcome = outcome_of(&request, state);
-        let page = match &outcome {
-            Ok(_) => "Signed in. You can close this tab and go back to Tramontana.",
-            Err(error) => &error.0,
-        };
-        let response = format!(
-            "HTTP/1.1 {} OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{page}",
-            if outcome.is_ok() { 200 } else { 400 },
-            page.len()
-        );
-        let _ = stream.write_all(response.as_bytes()).await;
-        let _ = stream.shutdown().await;
-        outcome
     }
+}
+
+/// Read a request's head: up to the blank line, bounded in size and time.
+async fn read_head(
+    stream: &mut tokio::net::TcpStream,
+    deadline: tokio::time::Instant,
+) -> Result<Vec<u8>, RedirectError> {
+    // One connection never holds the wait past its own few seconds.
+    let until = deadline.min(tokio::time::Instant::now() + Duration::from_secs(10));
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    loop {
+        let read = tokio::time::timeout_at(until, stream.read(&mut buffer))
+            .await
+            .map_err(|_| fail("the browser's request did not finish"))?
+            .map_err(|error| fail(format!("the browser's request could not be read: {error}")))?;
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+        if request.len() > MAX_REQUEST {
+            return Err(fail("the browser's request was too large to be a redirect"));
+        }
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+    Ok(request)
+}
+
+/// Answer the browser, and close.
+async fn respond(stream: &mut tokio::net::TcpStream, status: u16, page: &str) {
+    let reason = match status {
+        200 => "OK",
+        404 => "Not Found",
+        _ => "Bad Request",
+    };
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{page}",
+        page.len()
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.shutdown().await;
+}
+
+/// The request target's path and query, from the request line.
+fn target_of(request: &[u8]) -> Option<(&str, &str)> {
+    let line = std::str::from_utf8(request).ok()?.lines().next()?;
+    let target = line.split_whitespace().nth(1)?;
+    Some(target.split_once('?').unwrap_or((target, "")))
+}
+
+/// Whether the request is for the redirect address at all.
+fn is_callback(request: &[u8]) -> bool {
+    target_of(request).is_some_and(|(path, _)| path == "/callback")
+}
+
+/// The decoded values of `key` in the request's query.
+fn query_value(request: &[u8], key: &str) -> Option<String> {
+    let (_, query) = target_of(request)?;
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(name, _)| *name == key)
+        .map(|(_, value)| unescape(value))
+}
+
+/// Whether a callback is this sign-in's to answer: it carries this state, or
+/// the authorization server's refusal.
+fn answers_this_sign_in(request: &[u8], state: &str) -> bool {
+    query_value(request, "error").is_some()
+        || query_value(request, "state").as_deref() == Some(state)
 }
 
 /// The code in a redirect request, or why there is none.
 fn outcome_of(request: &[u8], state: &str) -> Result<String, RedirectError> {
-    let text = std::str::from_utf8(request)
-        .map_err(|_| fail("the browser's request was not text"))?
-        .lines()
-        .next()
-        .ok_or_else(|| fail("the browser sent an empty request"))?
-        .to_owned();
-    // `GET /callback?code=…&state=… HTTP/1.1`
-    let target = text
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| fail("the browser's request had no address"))?;
-    let query = target.split_once('?').map(|(_, query)| query).unwrap_or("");
-    let mut code = None;
-    let mut returned = None;
-    let mut error = None;
-    for pair in query.split('&') {
-        let Some((key, value)) = pair.split_once('=') else {
-            continue;
-        };
-        match key {
-            "code" => code = Some(unescape(value)),
-            "state" => returned = Some(unescape(value)),
-            "error" => error = Some(unescape(value)),
-            _ => {}
-        }
+    if target_of(request).is_none() {
+        return Err(fail("the browser's request had no address"));
     }
-
-    if let Some(error) = error {
+    if let Some(error) = query_value(request, "error") {
         return Err(fail(format!("the authorization server refused: {error}")));
     }
     // Compared before the code is read out of the request, and never reported
     // back to the browser.
-    if returned.as_deref() != Some(state) {
+    if query_value(request, "state").as_deref() != Some(state) {
         return Err(fail(
             "the redirect carried a different sign-in than the one that was started",
         ));
     }
-    code.filter(|code| !code.is_empty())
+    query_value(request, "code")
+        .filter(|code| !code.is_empty())
         .ok_or_else(|| fail("the redirect carried no authorization code"))
 }
 
@@ -270,6 +326,54 @@ mod tests {
             .await
             .unwrap_err();
         assert!(refused.0.contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn stray_connections_do_not_end_the_wait() {
+        // A browser's speculative connection that sends nothing, a favicon
+        // request, and a callback for another sign-in all arrived first. Any
+        // one of them used to fail the sign-in.
+        let redirect = Redirect::bind().await.unwrap();
+        let uri = redirect.uri().to_owned();
+        let authority = uri
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .unwrap()
+            .to_owned();
+        let waiting =
+            tokio::spawn(async move { redirect.wait("state-1", Duration::from_secs(5)).await });
+
+        drop(tokio::net::TcpStream::connect(&authority).await.unwrap());
+        let favicon = reqwest_like(&format!("http://{authority}/favicon.ico")).await;
+        assert!(favicon.starts_with("HTTP/1.1 404 Not Found"), "{favicon}");
+        let forged = reqwest_like(&format!("{uri}?code=forged&state=other")).await;
+        assert!(forged.starts_with("HTTP/1.1 400 Bad Request"), "{forged}");
+
+        let answered = reqwest_like(&format!("{uri}?code=the-code&state=state-1")).await;
+        assert!(answered.starts_with("HTTP/1.1 200 OK"), "{answered}");
+        assert_eq!(waiting.await.unwrap().unwrap(), "the-code");
+    }
+
+    #[tokio::test]
+    async fn the_server_s_refusal_ends_the_wait() {
+        let redirect = Redirect::bind().await.unwrap();
+        let uri = redirect.uri().to_owned();
+        let waiting =
+            tokio::spawn(async move { redirect.wait("state-1", Duration::from_secs(5)).await });
+        let answered = reqwest_like(&format!("{uri}?error=access_denied&state=state-1")).await;
+        assert!(
+            answered.starts_with("HTTP/1.1 400 Bad Request"),
+            "{answered}"
+        );
+        assert!(
+            waiting
+                .await
+                .unwrap()
+                .unwrap_err()
+                .0
+                .contains("access_denied")
+        );
     }
 
     /// One plain GET, without depending on an HTTP client in this crate.
