@@ -11,6 +11,9 @@ pub struct ReadLimits {
     pub max_lines: usize,
     /// Largest number of directory entries or search hits returned.
     pub max_entries: usize,
+    /// Largest file opened at all. A read is hashed whole, so its file is
+    /// held whole: a read refuses a larger file and a search skips it.
+    pub max_file_bytes: u64,
     /// How long a tool may run before it is abandoned.
     pub deadline: std::time::Duration,
 }
@@ -21,6 +24,7 @@ impl Default for ReadLimits {
             max_bytes: 256 * 1024,
             max_lines: 4_000,
             max_entries: 1_000,
+            max_file_bytes: 64 * 1024 * 1024,
             deadline: std::time::Duration::from_secs(15),
         }
     }

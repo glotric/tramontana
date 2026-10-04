@@ -89,6 +89,12 @@ const MAX_CREATE_BYTES: usize = 1024 * 1024;
 /// reading it; this bounds that read.
 const MAX_MOVE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// The most any verified read holds in memory, whatever its caller checked.
+///
+/// Every caller refuses a larger file before reading; this holds even when
+/// the file grows between that check and the read.
+const MAX_VERIFIED_READ: u64 = 64 * 1024 * 1024;
+
 /// The largest file the delete tool will delete.
 ///
 /// A deleted file is kept whole in the recovery store once its hash has been
@@ -394,6 +400,18 @@ impl FilesystemTools {
         if !metadata.is_file() {
             return Err(invalid(request, "path is not a file"));
         }
+        if metadata.len() > self.limits.max_file_bytes {
+            return Err(ErrorEnvelope::new(
+                ErrorCode::LimitExceeded,
+                format!(
+                    "{} is {} bytes, more than the {} this tool opens",
+                    relative_to_grant(request, &path),
+                    metadata.len(),
+                    self.limits.max_file_bytes
+                ),
+                correlation,
+            ));
+        }
 
         let bytes = read_verifying_identity(request, &path)?;
         let relative = relative_to_grant(request, &path);
@@ -418,10 +436,15 @@ impl FilesystemTools {
 
         let full_len = bytes.len();
         let mut text = String::from_utf8_lossy(&bytes).into_owned();
-        let mut truncated = full_len > self.limits.max_bytes;
+        let mut truncated = text.len() > self.limits.max_bytes;
         if truncated {
-            // Cut on a character boundary so the result stays valid text.
-            text = text.chars().take(self.limits.max_bytes).collect();
+            // A byte limit, cut back to a character boundary so the result
+            // stays valid text.
+            let mut end = self.limits.max_bytes;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
         }
 
         let lines: Vec<&str> = text.lines().collect();
@@ -469,12 +492,14 @@ impl FilesystemTools {
 
         let mut hits = Vec::new();
         let mut truncated = false;
+        let mut skipped = 0_u64;
         walk(&start, 0, &mut |file| {
             if hits.len() >= self.limits.max_entries {
                 truncated = true;
                 return false;
             }
-            let Ok(bytes) = std::fs::read(file) else {
+            let Some(bytes) = read_bounded(file, self.limits.max_file_bytes) else {
+                skipped += 1;
                 return true;
             };
             if looks_binary(&bytes) {
@@ -502,13 +527,41 @@ impl FilesystemTools {
 
         let found = hits.len();
         Ok(ToolOutcome {
-            content: serde_json::json!({ "matches": hits }),
-            display_summary: format!("Found {found} match{}", if found == 1 { "" } else { "es" }),
+            // Files too large or unreadable are counted, so "no match" is
+            // never claimed for a file that was not searched.
+            content: serde_json::json!({ "matches": hits, "skippedFiles": skipped }),
+            display_summary: format!(
+                "Found {found} match{}{}",
+                if found == 1 { "" } else { "es" },
+                if skipped == 0 {
+                    String::new()
+                } else {
+                    format!(
+                        " ({skipped} file{} not searched)",
+                        if skipped == 1 { "" } else { "s" }
+                    )
+                }
+            ),
             side_effect: SideEffect::None,
             truncated,
             changes: Vec::new(),
         })
     }
+}
+
+/// A file's bytes, unless it cannot be read or is larger than `max`.
+///
+/// Bounded while reading, so a file that grows after it was listed still
+/// cannot take more than `max` bytes of memory.
+fn read_bounded(path: &std::path::Path, max: u64) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let file = std::fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > max {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(max + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= max).then_some(bytes)
 }
 
 /// Directories never searched.
@@ -623,15 +676,26 @@ fn read_verified_at(
         ));
     }
 
-    // Read through the verified handle, not by reopening the path.
+    // Read through the verified handle, not by reopening the path, and never
+    // past the ceiling: a caller checked the size, but the file can grow.
     let mut bytes = Vec::new();
-    held.file_mut().read_to_end(&mut bytes).map_err(|error| {
-        ErrorEnvelope::new(
-            ErrorCode::ToolFailed,
-            format!("could not read file: {}", error.kind()),
+    held.file_mut()
+        .take(MAX_VERIFIED_READ + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            ErrorEnvelope::new(
+                ErrorCode::ToolFailed,
+                format!("could not read file: {}", error.kind()),
+                correlation.clone(),
+            )
+        })?;
+    if bytes.len() as u64 > MAX_VERIFIED_READ {
+        return Err(ErrorEnvelope::new(
+            ErrorCode::LimitExceeded,
+            format!("the file grew past {MAX_VERIFIED_READ} bytes while it was being read"),
             correlation,
-        )
-    })?;
+        ));
+    }
     Ok((bytes, held))
 }
 
