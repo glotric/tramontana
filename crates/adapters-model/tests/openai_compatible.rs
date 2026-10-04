@@ -467,3 +467,49 @@ async fn a_server_that_needs_another_name_for_the_model_is_sent_that_name() {
 fn provider_of(endpoint: &FakeEndpoint) -> OpenAiCompatibleProvider {
     provider(endpoint, ProviderAuth::None)
 }
+
+#[tokio::test]
+async fn a_redirect_is_not_followed() {
+    // The approved endpoint answers 307 to another host. Following it would
+    // send the credential and the prompt somewhere nobody approved (ADR 0066).
+    let elsewhere = FakeEndpoint::start(Behavior::Streams(vec!["leaked".into()])).await;
+    let endpoint = FakeEndpoint::start(Behavior::Redirect(format!(
+        "{}/v1/chat/completions",
+        elsewhere.base_url
+    )))
+    .await;
+    let provider = provider(&endpoint, ProviderAuth::None);
+
+    let events = match provider
+        .stream(
+            locally_authorized(model_request("request-1")),
+            CancellationToken::new(),
+        )
+        .await
+    {
+        Ok(mut stream) => {
+            let mut events = Vec::new();
+            while let Some(event) = stream.recv().await {
+                events.push(event);
+            }
+            events
+        }
+        Err(_) => Vec::new(),
+    };
+
+    assert_eq!(
+        endpoint.received().len(),
+        1,
+        "the approved endpoint was asked once"
+    );
+    assert!(
+        elsewhere.received().is_empty(),
+        "the request followed the redirect to another host"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, ModelEvent::Completed { .. })),
+        "a redirect was reported as an answer: {events:?}"
+    );
+}

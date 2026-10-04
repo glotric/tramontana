@@ -42,6 +42,10 @@ pub enum Behavior {
     /// more than field names: usage arrives split across two frames, and the
     /// stream ends with `message_stop` instead of a `[DONE]` sentinel.
     StreamsAnthropic(Vec<String>),
+    /// Answer with `307 Temporary Redirect` to this location. A client that
+    /// follows it would replay the request, credential and prompt included,
+    /// to a host nobody approved.
+    Redirect(String),
 }
 
 /// What one request carried.
@@ -176,6 +180,18 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Write the response the behavior calls for.
 async fn respond(socket: &mut tokio::net::TcpStream, behavior: &Behavior) {
+    if let Behavior::Redirect(location) = behavior {
+        let _ = socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 307 Temporary Redirect\r\nlocation: {location}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await;
+        let _ = socket.shutdown().await;
+        return;
+    }
     if let Behavior::Status(status) = behavior {
         let _ = socket
             .write_all(
@@ -286,6 +302,6 @@ async fn respond(socket: &mut tokio::net::TcpStream, behavior: &Behavior) {
                 .await;
             let _ = socket.shutdown().await;
         }
-        Behavior::Status(_) => unreachable!("handled above"),
+        Behavior::Status(_) | Behavior::Redirect(_) => unreachable!("handled above"),
     }
 }
