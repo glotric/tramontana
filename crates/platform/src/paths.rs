@@ -108,15 +108,23 @@ fn stored_spelling(parent: &Path, name: &std::ffi::OsStr) -> std::ffi::OsString 
     if !parent.join(name).exists() {
         return name.to_os_string();
     }
-    std::fs::read_dir(parent)
-        .ok()
-        .and_then(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.file_name())
-                .find(|entry| entry == name || entry.eq_ignore_ascii_case(name))
-        })
-        .unwrap_or_else(|| name.to_os_string())
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return name.to_os_string();
+    };
+    // An exact entry always wins. On a case-sensitive filesystem `Project`
+    // and `project` can both exist, and taking whichever the listing returns
+    // first would rewrite one into the other — the direction that can turn a
+    // refusal in [`contains`] into an acceptance.
+    let mut folded = None;
+    for entry in entries.flatten().map(|entry| entry.file_name()) {
+        if entry == name {
+            return entry;
+        }
+        if folded.is_none() && entry.eq_ignore_ascii_case(name) {
+            folded = Some(entry);
+        }
+    }
+    folded.unwrap_or_else(|| name.to_os_string())
 }
 
 /// Rewrite each component to the casing the filesystem stores for it.
@@ -424,6 +432,35 @@ mod tests {
                 "{spelling} must never be inside the root"
             );
         }
+    }
+
+    #[test]
+    fn a_sibling_differing_only_in_case_is_not_inside_the_root() {
+        // Only possible on a case-sensitive filesystem, where `Project` and
+        // `project` are two directories. Folding took the first listing entry
+        // that matched ignoring case, so `project/x` could be rewritten into
+        // `Project/x` and accepted.
+        let temp = tempfile::tempdir().unwrap();
+        let approved = temp.path().join("Project");
+        let sibling = temp.path().join("project");
+        std::fs::create_dir_all(&approved).unwrap();
+        if std::fs::create_dir(&sibling).is_err() {
+            return; // Case-insensitive: one directory, nothing to confuse.
+        }
+        std::fs::write(sibling.join("secret.txt"), "x").unwrap();
+        let root = canonicalize_root(&approved).unwrap();
+
+        assert_eq!(root.as_path().file_name().unwrap(), "Project");
+        assert!(!contains(&root, &sibling.join("secret.txt")).unwrap());
+        assert!(!contains(&root, &sibling.join("not-yet.txt")).unwrap());
+        assert_eq!(
+            canonicalize_root(&sibling)
+                .unwrap()
+                .as_path()
+                .file_name()
+                .unwrap(),
+            "project"
+        );
     }
 
     #[cfg(windows)]
