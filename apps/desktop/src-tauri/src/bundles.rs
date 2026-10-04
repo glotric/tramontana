@@ -241,7 +241,10 @@ mod tests {
             })
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(2), async {
+        // Generous, because a loaded CI runner can take seconds to run the
+        // fixture's task; checked every few milliseconds rather than spun on,
+        // so the wait does not compete with the task for the database.
+        tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 // The outcome event itself, not the state: the state turns
                 // terminal one event before `taskCompleted` is written, and a
@@ -253,7 +256,7 @@ mod tests {
                 {
                     break;
                 }
-                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
