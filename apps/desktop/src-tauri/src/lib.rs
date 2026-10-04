@@ -75,6 +75,7 @@ pub fn run() {
             commands::start_task,
             commands::watch_task,
             commands::unwatch_task,
+            commands::erase_all_data,
             commands::cancel_task,
             commands::get_task,
             commands::create_checkpoint,

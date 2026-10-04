@@ -1311,6 +1311,37 @@ pub(crate) fn restart_application(app: AppHandle) {
     app.request_restart();
 }
 
+/// What "Delete all my data" removed from the credential store.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ErasureView {
+    pub schema_version: u32,
+    /// Credentials the profile named, now removed.
+    pub credentials_removed: usize,
+    /// Credentials it named that were already gone.
+    pub credentials_absent: usize,
+}
+
+/// Delete everything this profile holds (ADR 0068). The window asks the
+/// person first, and restarts the application after: the runtimes, Apps
+/// and browser have been stopped.
+///
+/// # Errors
+///
+/// A conflict while a task runs, with nothing removed; or a storage,
+/// credential-store or folder error.
+#[tauri::command]
+pub(crate) async fn erase_all_data(
+    state: State<'_, AppState>,
+) -> Result<ErasureView, ErrorEnvelope> {
+    let report = state.erase_everything().await?;
+    Ok(ErasureView {
+        schema_version: SCHEMA_VERSION,
+        credentials_removed: report.credentials_removed,
+        credentials_absent: report.credentials_absent,
+    })
+}
+
 /// Whether this build can restart itself.
 ///
 /// Not under `tauri dev`: the development server stops when the application

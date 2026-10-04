@@ -12,10 +12,19 @@ const updatePersonal = vi.hoisted(() => vi.fn());
 const remember = vi.hoisted(() => vi.fn());
 const forget = vi.hoisted(() => vi.fn());
 const dictationStatus = vi.hoisted(() => vi.fn());
+const restartSupported = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
-  return { ...actual, personalProfile, updatePersonal, remember, forget, dictationStatus };
+  return {
+    ...actual,
+    personalProfile,
+    updatePersonal,
+    remember,
+    forget,
+    dictationStatus,
+    restartSupported,
+  };
 });
 
 const { SettingsView } = await import("./SettingsView.js");
@@ -32,6 +41,7 @@ beforeEach(() => {
   for (const mock of [personalProfile, updatePersonal, remember, forget]) mock.mockReset();
   personalProfile.mockResolvedValue(stored);
   dictationStatus.mockResolvedValue({ configured: false });
+  restartSupported.mockResolvedValue(true);
 });
 
 describe("SettingsView", () => {

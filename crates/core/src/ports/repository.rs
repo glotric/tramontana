@@ -230,6 +230,21 @@ pub trait TaskRepository: Send + Sync {
 /// Markdown bodies stay in the project-authored plane. This repository stores
 /// only the hashes and metadata needed to explain which configuration a task
 /// used after the files change.
+/// Removing every record a profile holds (ADR 0068).
+#[async_trait]
+pub trait ProfileEraser: Send + Sync {
+    /// Remove every record — projects, conversations, tasks and their
+    /// events, checkpoints, schedules, settings, Apps, personal notes — in
+    /// one commit, keeping the schema so the profile opens as new, and leave
+    /// none of what was removed readable in the store's own files.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed; then nothing was
+    /// removed.
+    async fn erase_everything(&self) -> Result<(), RepositoryError>;
+}
+
 /// Where a profile keeps the model providers the user configured.
 ///
 /// Profile-scoped, not project-scoped, and deliberately so.

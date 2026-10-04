@@ -296,6 +296,23 @@ export async function forgetCredential(key: string): Promise<boolean> {
   return invoke<boolean>("forget_credential", { key });
 }
 
+/** What "Delete all my data" removed from the credential store. */
+export interface ErasureReport {
+  readonly schemaVersion: number;
+  readonly credentialsRemoved: number;
+  readonly credentialsAbsent: number;
+}
+
+/**
+ * Delete everything Tramontana keeps on this computer (ADR 0068): projects
+ * list, conversations, tasks, settings, Apps, notes, and the keys they name.
+ * Project folders are never touched. The application must be restarted
+ * after it succeeds.
+ */
+export async function eraseAllData(): Promise<ErasureReport> {
+  return invoke<ErasureReport>("erase_all_data");
+}
+
 /** Restart Tramontana, so endpoints configured since it opened are used. */
 export async function restartApplication(): Promise<void> {
   return invoke("restart_application");

@@ -2374,6 +2374,31 @@ h3 {
   border-bottom: 0;
 }
 
+/* Settings' "Delete all my data" (ADR 0068). */
+.erase-start {
+  justify-content: flex-start;
+}
+
+.erase-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--danger-bg);
+  box-shadow: inset 0 0 0 1px var(--danger-line);
+}
+
+.erase-confirm p,
+.erase-confirm ul {
+  margin: 0;
+}
+
+.erase-confirm ul {
+  padding-left: 20px;
+  line-height: 1.6;
+}
+
 .settings-section > label,
 .settings-section h2,
 .style-choices legend {

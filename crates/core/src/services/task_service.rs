@@ -889,7 +889,7 @@ impl TaskService {
 
     /// Refuse with `refusal` while any of `tasks` is under way, waiting a
     /// moment for one whose record has ended but whose driver is finishing.
-    async fn none_under_way(
+    pub(super) async fn none_under_way(
         &self,
         tasks: &[TaskRecord],
         refusal: &str,
