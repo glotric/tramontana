@@ -923,11 +923,13 @@ fn already_there(
 /// attempt finds — and first removes — its own leftover instead of
 /// accumulating them. The target's name is deliberately not part of it: a
 /// long name plus a suffix could exceed the platform's limit.
+///
+/// A SHA-256 prefix, not `DefaultHasher`, whose output the standard library
+/// may change between releases: a retry after an upgrade must still find the
+/// leftover the earlier attempt wrote.
 fn temp_name(invocation: &InvocationId) -> String {
-    use std::hash::{Hash as _, Hasher as _};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    invocation.as_str().hash(&mut hasher);
-    format!(".tramontana-{:016x}.tmp", hasher.finish())
+    let hash = content_hash(invocation.as_str());
+    format!(".tramontana-{}.tmp", &hash[..16])
 }
 
 /// Write `bytes` to a new file and flush them to storage.
