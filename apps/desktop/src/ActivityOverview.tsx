@@ -55,7 +55,7 @@ export function ActivityOverview({
     ["Stopped or failed", String(summary.stopped)],
     ["Active days", String(summary.activeDays)],
     ["Busiest hour", summary.busiestHour === undefined ? "—" : describeHour(summary.busiestHour)],
-    ["Projects", String(summary.projects)],
+    ["Projects with tasks", String(summary.projects)],
   ];
 
   return (

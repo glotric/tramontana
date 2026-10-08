@@ -42,13 +42,13 @@ describe("ActivityOverview", () => {
 
     expect(tile("Tasks")).toBe("3");
     expect(tile("Active days")).toBe("3");
-    expect(tile("Projects")).toBe("2");
+    expect(tile("Projects with tasks")).toBe("2");
     expect(screen.getByRole("img", { name: /Tasks per day over the last 26 weeks/ })).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "7d" }));
     expect(screen.getByRole("button", { name: "7d" })).toHaveAttribute("aria-pressed", "true");
     expect(tile("Tasks")).toBe("2");
-    expect(tile("Projects")).toBe("1");
+    expect(tile("Projects with tasks")).toBe("1");
 
     await user.click(screen.getByRole("button", { name: "Projects" }));
     const list = screen.getByRole("list", { name: "Tasks per project" });

@@ -108,7 +108,8 @@ function History({ appId }: { readonly appId: string }): React.JSX.Element {
 
 interface AppsViewProps {
   /** Return to the work area. */
-  readonly onClose: () => void;
+  /** Return to the work area; absent when shown inside Settings. */
+  readonly onClose?: () => void;
 }
 
 export function AppsView({ onClose }: AppsViewProps): React.JSX.Element {
@@ -168,12 +169,18 @@ export function AppsView({ onClose }: AppsViewProps): React.JSX.Element {
 
   return (
     <section className="models-view" aria-labelledby="apps-heading">
-      <div className="section-heading-row">
-        <h1 id="apps-heading">Apps</h1>
-        <button type="button" className="button button--secondary" onClick={onClose}>
-          Back to work
-        </button>
-      </div>
+      {onClose === undefined ? (
+        <h2 id="apps-heading" className="settings-part-heading">
+          Apps
+        </h2>
+      ) : (
+        <div className="section-heading-row">
+          <h1 id="apps-heading">Apps</h1>
+          <button type="button" className="button button--secondary" onClick={onClose}>
+            Back to work
+          </button>
+        </div>
+      )}
       <p className="inline-empty">
         MCP servers Tramontana starts. A task offers their tools to a model only when you allow Apps
         for it, and every call is still put to you. Add or remove an App with{" "}

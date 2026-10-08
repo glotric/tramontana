@@ -39,6 +39,7 @@ const latestCheckpoint = vi.hoisted(() => vi.fn());
 const listWorkers = vi.hoisted(() => vi.fn());
 const listSkills = vi.hoisted(() => vi.fn());
 const suggestSkills = vi.hoisted(() => vi.fn());
+const deleteProject = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -67,6 +68,7 @@ vi.mock("./core.js", async () => {
     listWorkers,
     listSkills,
     suggestSkills,
+    deleteProject,
   };
 });
 
@@ -193,10 +195,12 @@ async function openChip(user: ReturnType<typeof userEvent.setup>, name: string):
   await user.click(screen.getByRole("button", { name: new RegExp(`^${name}:`) }));
 }
 
-/** The rarer screens sit under More in the sidebar. */
-async function openMore(user: ReturnType<typeof userEvent.setup>): Promise<void> {
-  const more = screen.getByRole("button", { name: "More" });
-  if (more.getAttribute("aria-expanded") !== "true") await user.click(more);
+/** Open a part of Settings: "Models and credentials", "Customize". */
+async function openSettings(user: ReturnType<typeof userEvent.setup>, part: string): Promise<void> {
+  if (screen.queryByRole("heading", { name: "Settings", level: 1 }) === null) {
+    await user.click(screen.getByRole("button", { name: /Settings/ }));
+  }
+  await user.click(screen.getByRole("button", { name: part }));
 }
 
 /**
@@ -281,6 +285,7 @@ describe("M2 durable desktop surface", () => {
       watchTask,
       latestCheckpoint,
       listApps,
+      deleteProject,
     ]) {
       mock.mockReset();
     }
@@ -364,8 +369,7 @@ describe("M2 durable desktop surface", () => {
     // Models or Apps left no button to show it again.
     const user = userEvent.setup();
     await renderLoaded();
-    await openMore(user);
-    await user.click(screen.getByRole("button", { name: "Models and credentials" }));
+    await openSettings(user, "Models and credentials");
     await user.click(screen.getByRole("button", { name: "Hide sidebar" }));
     expect(
       screen.queryByRole("complementary", { name: "Projects and conversations" }),
@@ -496,27 +500,76 @@ describe("M2 durable desktop surface", () => {
     expect(screen.getByRole("heading", { name: "New task", level: 1 })).toBeInTheDocument();
   });
 
-  it("keeps the rarer screens under More, the same in Chat and Agent", async () => {
+  it("keeps projects in the sidebar and models and connectors in Settings, in both modes", async () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByRole("button", { name: "Project: Tramontana" });
 
     for (const mode of ["Agent", "Chat"]) {
       await user.click(screen.getByRole("button", { name: mode }));
-      expect(screen.getByRole("button", { name: "Scheduled" })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "More" })).toHaveAttribute(
-        "aria-expanded",
-        "false",
+      const sidebar = within(
+        screen.getByRole("complementary", { name: "Projects and conversations" }),
       );
-      expect(screen.queryByRole("button", { name: "Apps" })).not.toBeInTheDocument();
+      expect(sidebar.getByRole("button", { name: "Scheduled" })).toBeInTheDocument();
+      expect(sidebar.getByRole("button", { name: "Projects" })).toBeInTheDocument();
+      expect(sidebar.getByRole("button", { name: "Open project" })).toBeInTheDocument();
+      expect(sidebar.queryByRole("button", { name: "More" })).not.toBeInTheDocument();
+      expect(
+        sidebar.queryByRole("button", { name: "Models and credentials" }),
+      ).not.toBeInTheDocument();
     }
 
-    await user.click(screen.getByRole("button", { name: "More" }));
-    for (const name of ["Projects", "Models and credentials", "Apps"]) {
-      expect(screen.getByRole("button", { name })).toBeInTheDocument();
+    await openSettings(user, "Customize");
+    expect(await screen.findByRole("heading", { name: "Apps", level: 2 })).toBeInTheDocument();
+    for (const part of ["General", "Customize", "Models and credentials", "Data"]) {
+      expect(screen.getByRole("button", { name: part })).toBeInTheDocument();
     }
-    // Remembered, as the mode is: a convenience of this window, not a record.
-    expect(localStorage.getItem("tramontana.sidebar.more")).toBe("open");
+  });
+
+  it("removes a project from its right-click menu, after asking, and opens the next one", async () => {
+    const other: ProjectRecord = {
+      ...project,
+      projectId: "project-2",
+      name: "Harbor Cafe",
+      roots: ["/work/harbor"],
+    };
+    let listed = [project, other];
+    listProjects.mockImplementation(() => Promise.resolve(listed));
+    deleteProject.mockImplementation(() => {
+      listed = [other];
+      return Promise.resolve(undefined);
+    });
+    inspectProject.mockImplementation((projectId: string) =>
+      Promise.resolve({
+        schemaVersion: 1,
+        project: projectId === other.projectId ? other : project,
+        configuration,
+      }),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    const row = await screen.findByRole("button", { name: "Tramontana" });
+
+    fireEvent.contextMenu(row, { clientX: 40, clientY: 200 });
+    const menu = screen.getByRole("menu", { name: "Tramontana options" });
+    await user.click(within(menu).getByRole("menuitem", { name: /Remove from Tramontana/ }));
+
+    const dialog = screen.getByRole("alertdialog", { name: "Remove Tramontana from Tramontana?" });
+    expect(dialog).toHaveTextContent("The folder and its files are not touched");
+    expect(dialog).toHaveTextContent("/work/tramontana");
+    // Keep is the safe answer, and changes nothing.
+    await user.click(within(dialog).getByRole("button", { name: "Keep" }));
+    expect(deleteProject).not.toHaveBeenCalled();
+
+    fireEvent.contextMenu(row, { clientX: 40, clientY: 200 });
+    await user.click(screen.getByRole("menuitem", { name: /Remove from Tramontana/ }));
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => {
+      expect(deleteProject).toHaveBeenCalledWith(project.projectId);
+    });
+    // The open project went; the next one opens in its place.
+    expect(await screen.findByRole("button", { name: "Project: Harbor Cafe" })).toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
   it("opens a native-picked project and refreshes the durable recents", async () => {
@@ -1244,13 +1297,12 @@ describe("M2 durable desktop surface", () => {
       expect(duplicateIds()).toEqual([]);
     }
 
-    await openMore(user);
-    await user.click(screen.getByRole("button", { name: "Models and credentials" }));
+    await openSettings(user, "Models and credentials");
     await screen.findByRole("heading", { name: "Local Qwen" });
     expect(unnamedControls()).toEqual([]);
     expect(duplicateIds()).toEqual([]);
 
-    await user.click(screen.getByRole("button", { name: "Apps" }));
+    await openSettings(user, "Customize");
     await screen.findByText(/No Apps are configured/);
     expect(unnamedControls()).toEqual([]);
     expect(duplicateIds()).toEqual([]);
@@ -1295,18 +1347,19 @@ describe("M2 durable desktop surface", () => {
     });
   });
 
-  it("opens the models and credentials, and goes back to work", async () => {
+  it("opens the models and credentials in Settings, and goes back to work", async () => {
     const user = userEvent.setup();
     await renderLoaded();
 
-    await openMore(user);
-    await user.click(screen.getByRole("button", { name: "Models and credentials" }));
+    await openSettings(user, "Models and credentials");
     expect(
-      await screen.findByRole("heading", { name: "Models and credentials" }),
+      await screen.findByRole("heading", { name: "Models and credentials", level: 2 }),
     ).toBeInTheDocument();
     expect(listConfiguredEndpoints).toHaveBeenCalled();
+    // Inside Settings there is nothing to go "back" from: the sidebar does it.
+    expect(screen.queryByRole("button", { name: "Back to work" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Back to work" }));
+    await user.click(screen.getByRole("button", { name: "M2 Conversation" }));
     expect(await screen.findByRole("heading", { name: "M2 Conversation" })).toBeInTheDocument();
   });
 

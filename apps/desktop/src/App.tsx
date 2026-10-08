@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isSchemaCompatible, SCHEMA_VERSION } from "@tramontana/shared";
-import type { ApprovalRequest, ConversationRecord, EventEnvelope } from "@tramontana/shared";
+import type {
+  ApprovalRequest,
+  ConversationRecord,
+  EventEnvelope,
+  ProjectRecord,
+} from "@tramontana/shared";
 
 import { isTerminal, projectState } from "./activity.js";
 import { AgentComposer } from "./AgentComposer.js";
 import { AgentHome } from "./AgentHome.js";
 import { ApprovalCard } from "./ApprovalCard.js";
-import { AppsView } from "./AppsView.js";
 import { useAttachments } from "./Attachments.js";
 import { BundlesPanel } from "./BundlesPanel.js";
 import { buildCards, describeHeader, MODE_LABEL } from "./cards.js";
@@ -15,6 +19,7 @@ import { ChatView } from "./ChatView.js";
 import { CheckpointPanel } from "./CheckpointPanel.js";
 import { titleFromGoal } from "./choices.js";
 import { ConversationMenu } from "./ConversationMenu.js";
+import { CustomizeSettings } from "./CustomizeSettings.js";
 import {
   cancelTask,
   createConversation,
@@ -38,6 +43,7 @@ import { ProjectsView } from "./ProjectsView.js";
 import { ScheduledView } from "./ScheduledView.js";
 import { SearchPanel } from "./SearchPanel.js";
 import { SettingsView } from "./SettingsView.js";
+import type { SettingsTab } from "./SettingsView.js";
 import { ShareDialog } from "./ShareDialog.js";
 import { Sidebar } from "./Sidebar.js";
 import type { Mode, View } from "./Sidebar.js";
@@ -69,6 +75,12 @@ function describeCoreStatus(status: CoreStatus): string {
 function attached(tokens: readonly string[]): { readonly attachments?: readonly string[] } {
   return tokens.length === 0 ? {} : { attachments: tokens };
 }
+
+/**
+ * On macOS the window has no title bar: its traffic lights sit over the
+ * sidebar, and the sidebar and header leave room for them.
+ */
+const MAC = typeof navigator !== "undefined" && navigator.platform.includes("Mac");
 
 /** Where the window remembers which half it was last showing. */
 const MODE_KEY = "tramontana.mode";
@@ -106,6 +118,7 @@ export function App(): React.JSX.Element {
   const [revision, setRevision] = useState(0);
   // The work area, or the models and credentials the tasks run against.
   const [view, setView] = useState<View>("work");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   // Both side panels can be put away, leaving the work column on its own.
   // The details start put away, every time: the work comes first.
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -319,6 +332,24 @@ export function App(): React.JSX.Element {
       });
   }, [selectProject, setProjects]);
 
+  /**
+   * Remove a project from Tramontana; its folder is not touched. When it was
+   * the one open, the next project opens in its place, so the composer is
+   * never left without one while others remain.
+   */
+  const removeProject = useCallback(
+    async (project: ProjectRecord): Promise<void> => {
+      await deleteProject(project.projectId);
+      const remaining = await listProjects();
+      setProjects(remaining);
+      if (inspection?.project.projectId !== project.projectId) return;
+      const next = remaining[0];
+      if (next === undefined) closeProject();
+      else await selectProject(next.projectId);
+    },
+    [closeProject, inspection?.project.projectId, selectProject, setProjects],
+  );
+
   const onStart = useCallback(() => {
     const projectId = inspection?.project.projectId;
     if (projectId === undefined) {
@@ -387,6 +418,7 @@ export function App(): React.JSX.Element {
   return (
     <div
       className="app-shell"
+      data-platform={MAC ? "mac" : "other"}
       data-sidebar={sidebarOpen ? "open" : "closed"}
       data-details={detailsOpen && view === "work" && mode === "agent" ? "open" : "closed"}
     >
@@ -467,6 +499,7 @@ export function App(): React.JSX.Element {
             goalInput.current?.focus();
           }}
           onOpenProject={onOpenProject}
+          onRemoveProject={removeProject}
           openingProject={openingProject}
           canOpenProject={status.kind === "ready"}
           personName={personName}
@@ -507,7 +540,12 @@ export function App(): React.JSX.Element {
             }}
           />
         ) : view === "settings" ? (
-          <SettingsView />
+          <SettingsView
+            tab={settingsTab}
+            onTab={setSettingsTab}
+            customize={<CustomizeSettings />}
+            models={<ModelsView />}
+          />
         ) : view === "projects" ? (
           <ProjectsView
             projects={projects}
@@ -521,30 +559,11 @@ export function App(): React.JSX.Element {
               chooseMode("agent");
               void selectProject(project.projectId);
             }}
-            onDelete={async (project) => {
-              await deleteProject(project.projectId);
-              const remaining = await listProjects();
-              setProjects(remaining);
-              // The open project was the one removed: nothing of it stays
-              // on screen.
-              if (inspection?.project.projectId === project.projectId) closeProject();
-            }}
-          />
-        ) : view === "models" ? (
-          <ModelsView
-            onClose={() => {
-              setView("work");
-            }}
-          />
-        ) : view === "apps" ? (
-          <AppsView
-            onClose={() => {
-              setView("work");
-            }}
+            onDelete={removeProject}
           />
         ) : mode === "chat" ? (
           <>
-            <header className="workspace-header">
+            <header className="workspace-header" data-tauri-drag-region>
               {!sidebarOpen && (
                 <button
                   type="button"
@@ -622,7 +641,7 @@ export function App(): React.JSX.Element {
           </>
         ) : (
           <>
-            <header className="workspace-header">
+            <header className="workspace-header" data-tauri-drag-region>
               {!sidebarOpen && (
                 <button
                   type="button"
