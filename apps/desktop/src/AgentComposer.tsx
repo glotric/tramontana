@@ -8,6 +8,8 @@ import { MODES, MODE_TEXT, describeAccess, describeChoices } from "./choices.js"
 import { DictateButton } from "./Dictation.js";
 import type { useDictation } from "./Dictation.js";
 import { Icon } from "./icons.js";
+import { ChosenSkills, SlashMenu } from "./SkillSlash.js";
+import type { SkillSlash } from "./SkillSlash.js";
 import { ADMISSIONS } from "./useComposerOptions.js";
 import type { useComposerOptions } from "./useComposerOptions.js";
 
@@ -39,6 +41,8 @@ export function AgentComposer({
   canStart,
   onStart,
   onCancel,
+  slash,
+  hasSkills,
 }: {
   readonly goal: string;
   readonly onGoal: (goal: string) => void;
@@ -54,11 +58,12 @@ export function AgentComposer({
   readonly canStart: boolean;
   readonly onStart: () => void;
   readonly onCancel: () => void;
+  /** Skills chosen with `/` for this message (ADR 0070). */
+  readonly slash: SkillSlash;
+  /** Whether any skill exists to offer, for the menu's empty line. */
+  readonly hasSkills: boolean;
 }): React.JSX.Element {
-  const { routingMode, admission, chosenSkills, chosenWorker } = options;
-  const suggestedOffered = options.listedSkills.some((skill) =>
-    options.suggested.includes(skill.id),
-  );
+  const { routingMode, admission, chosenWorker } = options;
 
   return (
     <div className="composer-dock">
@@ -153,46 +158,6 @@ export function AgentComposer({
           )}
         </ChipMenu>
 
-        {options.offeredSkills.length > 0 && (
-          <ChipMenu
-            name="Skills"
-            value={
-              chosenSkills.length === 0
-                ? "Skills"
-                : chosenSkills.length === 1
-                  ? "1 skill"
-                  : `${chosenSkills.length} skills`
-            }
-            icon="sparkle"
-            marked={suggestedOffered && chosenSkills.length === 0}
-            disabled={running}
-          >
-            {() => (
-              <fieldset className="chip-choices chip-choices--wide">
-                <legend>Skills this project offers</legend>
-                {options.listedSkills.map((skill) => (
-                  <label key={skill.id} className="chip-toggle chip-toggle--skill">
-                    <input
-                      type="checkbox"
-                      checked={chosenSkills.includes(skill.id)}
-                      onChange={(changed) => {
-                        options.tick(skill.id, changed.target.checked);
-                      }}
-                    />
-                    <span>
-                      {skill.displayName}
-                      {options.suggested.includes(skill.id) && (
-                        <em className="composer-suggested"> suggested for this goal</em>
-                      )}
-                      {skill.description === undefined ? "" : ` — ${skill.description}`}
-                    </span>
-                  </label>
-                ))}
-              </fieldset>
-            )}
-          </ChipMenu>
-        )}
-
         {options.offeredWorkers.length > 1 && (
           <ChipMenu
             name="Worker"
@@ -222,6 +187,7 @@ export function AgentComposer({
         )}
       </div>
 
+      <SlashMenu slash={slash} hasAny={hasSkills} />
       <form
         className="composer"
         onSubmit={(submitted) => {
@@ -233,6 +199,7 @@ export function AgentComposer({
           Task goal
         </label>
         <PendingFiles files={files.files} onRemove={files.remove} />
+        <ChosenSkills slash={slash} />
         <textarea
           ref={goalInput}
           id="goal"
@@ -240,12 +207,16 @@ export function AgentComposer({
           placeholder={
             project === undefined
               ? "Open a project to start a task"
-              : `Describe a task, or ask about ${project.name}`
+              : `Describe a task, or ask about ${project.name}. Type / for skills.`
           }
           onChange={(changed) => {
             onGoal(changed.target.value);
           }}
           onKeyDown={(pressed) => {
+            if (slash.onKeyDown(pressed)) {
+              pressed.preventDefault();
+              return;
+            }
             if (pressed.key === "Enter" && !pressed.shiftKey && !pressed.nativeEvent.isComposing) {
               pressed.preventDefault();
               if (canStart) onStart();
@@ -280,7 +251,7 @@ export function AgentComposer({
         </div>
       </form>
       <p className="composer-disclosure">
-        {describeChoices(routingMode, admission, chosenSkills.length)}
+        {describeChoices(routingMode, admission, slash.chosen.length)}
       </p>
     </div>
   );

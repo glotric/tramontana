@@ -40,6 +40,7 @@ const listWorkers = vi.hoisted(() => vi.fn());
 const listSkills = vi.hoisted(() => vi.fn());
 const suggestSkills = vi.hoisted(() => vi.fn());
 const deleteProject = vi.hoisted(() => vi.fn());
+const listPersonalSkills = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -69,6 +70,7 @@ vi.mock("./core.js", async () => {
     listSkills,
     suggestSkills,
     deleteProject,
+    listPersonalSkills,
   };
 });
 
@@ -286,6 +288,7 @@ describe("M2 durable desktop surface", () => {
       latestCheckpoint,
       listApps,
       deleteProject,
+      listPersonalSkills,
     ]) {
       mock.mockReset();
     }
@@ -294,6 +297,7 @@ describe("M2 durable desktop surface", () => {
     listApps.mockResolvedValue([]);
     listWorkers.mockResolvedValue([]);
     listSkills.mockResolvedValue([]);
+    listPersonalSkills.mockResolvedValue([]);
     suggestSkills.mockResolvedValue([]);
     listProjectGrants.mockResolvedValue([]);
     listConfiguredEndpoints.mockResolvedValue([]);
@@ -823,7 +827,7 @@ describe("M2 durable desktop surface", () => {
     });
   });
 
-  it("gives a task the project's skills the person ticked, and none otherwise", async () => {
+  it("gives a task the project's skills chosen with /, and none otherwise", async () => {
     listSkills.mockResolvedValue([
       { id: "review", displayName: "Review Rust", description: "Look for unsafe code." },
       { id: "release", displayName: "Release checklist" },
@@ -831,10 +835,7 @@ describe("M2 durable desktop surface", () => {
     const user = userEvent.setup();
     await renderLoaded();
 
-    // Offering is not selecting: nothing is ticked until the person ticks it.
-    await screen.findByRole("button", { name: "Skills: Skills" });
-    await openChip(user, "Skills");
-    await screen.findByText(/Review Rust — Look for unsafe code\./);
+    // Offering is not selecting: nothing is chosen until the person picks it.
     await user.click(screen.getByRole("button", { name: "Start task" }));
     await waitFor(() => {
       expect(startTask).toHaveBeenCalledWith(
@@ -845,23 +846,67 @@ describe("M2 durable desktop surface", () => {
       );
     });
 
-    writeGoal();
-    await openChip(user, "Skills");
-    await user.click(screen.getByRole("checkbox", { name: /Review Rust/ }));
-    expect(screen.getByRole("button", { name: "Skills: 1 skill" })).toBeInTheDocument();
-    expect(screen.getByText(/It is given one of the project's skills to follow\./)).toBeTruthy();
+    const goal = screen.getByLabelText("Task goal");
+    await user.type(goal, "Check it /rev");
+    const menu = await screen.findByRole("listbox", { name: "Skills" });
+    expect(within(menu).getAllByRole("option")).toHaveLength(1);
+    expect(within(menu).getByRole("option")).toHaveTextContent("/review");
+    await user.keyboard("{Enter}");
+    // The `/word` was only how it was asked for; the skill is now a chip.
+    expect(goal).toHaveValue("Check it ");
+    expect(screen.getByRole("list", { name: "Skills for this message" })).toHaveTextContent(
+      "/review",
+    );
+    expect(screen.getByText(/It is given one skill to follow\./)).toBeTruthy();
+
     await user.click(screen.getByRole("button", { name: "Start task" }));
     await waitFor(() => {
       expect(startTask).toHaveBeenLastCalledWith(
-        "Say hello",
+        "Check it",
         expect.any(Function),
         conversation.conversationId,
         expect.objectContaining({ skills: ["review"] }),
       );
     });
+    // It went with that message; the next starts with none.
+    await waitFor(() => {
+      expect(screen.queryByRole("list", { name: "Skills for this message" })).toBeNull();
+    });
   });
 
-  it("marks the skills that match the goal and shows them first, ticking none", async () => {
+  it("offers the person's own skills with /, and gives them to the task", async () => {
+    listPersonalSkills.mockResolvedValue([
+      {
+        schemaVersion: 1,
+        id: "plain-english",
+        name: "Plain English",
+        description: "Short sentences.",
+        contentHash: "h",
+        byteCount: 40,
+      },
+    ]);
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    const goal = screen.getByLabelText("Task goal");
+    await user.clear(goal);
+    await user.type(goal, "/pla");
+    const option = await screen.findByRole("option", { name: /plain-english/ });
+    expect(option).toHaveTextContent("your skill");
+    await user.click(option);
+    await user.type(goal, "Explain the menu");
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalledWith(
+        "Explain the menu",
+        expect.any(Function),
+        conversation.conversationId,
+        expect.objectContaining({ personalSkills: ["plain-english"] }),
+      );
+    });
+  });
+
+  it("marks the skills that match the goal and lists them first, choosing none", async () => {
     listSkills.mockResolvedValue([
       { id: "release", displayName: "Release checklist" },
       { id: "rust-quality", displayName: "Rust quality pass", description: "Format and lint." },
@@ -870,23 +915,24 @@ describe("M2 durable desktop surface", () => {
     const user = userEvent.setup();
     await renderLoaded();
 
-    await openChip(user, "Skills");
-    const marked = await screen.findByText("suggested for this goal");
-    // Said in words, and put first, without ticking anything.
-    const boxes = screen.getAllByRole<HTMLInputElement>("checkbox", { name: /pass|checklist/ });
-    expect(boxes.map((box) => box.checked)).toEqual([false, false]);
-    expect(marked.closest("label")?.textContent).toContain("Rust quality pass");
-    const names = screen
-      .getAllByRole("checkbox", { name: /pass|checklist/ })
-      .map((box) => box.closest("label")?.textContent ?? "");
-    expect(names[0]).toContain("Rust quality pass");
-    expect(names[1]).toContain("Release checklist");
+    const goal = screen.getByLabelText("Task goal");
+    await user.type(goal, " /");
+    const menu = await screen.findByRole("listbox", { name: "Skills" });
+    await waitFor(() => {
+      expect(within(menu).getAllByRole("option")[0]).toHaveTextContent("suggested for this goal");
+    });
+    const options = within(menu).getAllByRole("option");
+    expect(options[0]).toHaveTextContent("/rust-quality");
+    expect(options[1]).toHaveTextContent("/release");
+    // Escape puts the menu away without choosing.
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox", { name: "Skills" })).toBeNull();
 
-    // Suggesting is not selecting: the task carries nothing until it is ticked.
+    // Suggesting is not selecting: the task carries nothing until one is picked.
     await user.click(screen.getByRole("button", { name: "Start task" }));
     await waitFor(() => {
       expect(startTask).toHaveBeenCalledWith(
-        "Say hello",
+        "Say hello /",
         expect.any(Function),
         conversation.conversationId,
         expect.not.objectContaining({ skills: expect.anything() }),

@@ -3369,3 +3369,165 @@ h3 {
 .app-shell[data-platform="mac"][data-sidebar="closed"] .sidebar-restore {
   left: 88px;
 }
+
+/* ---- Skills: the "/" menu, chosen skills, and Settings ---------------------- */
+
+.composer-dock {
+  position: relative;
+}
+
+/* Above the composer, as the chips' panels are. */
+.slash-menu {
+  position: absolute;
+  z-index: 25;
+  bottom: calc(100% - 4px);
+  left: max(24px, calc((100% - 760px) / 2));
+  width: min(520px, calc(100% - 48px));
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--field);
+  box-shadow: var(--shadow);
+}
+
+.slash-menu ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.slash-menu li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 9px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.slash-menu li[data-active="true"],
+.slash-menu li:hover {
+  background: var(--active-row);
+}
+
+.slash-name {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-title {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.slash-meta {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.slash-description {
+  grid-column: 2 / -1;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.slash-empty,
+.slash-hint {
+  margin: 0;
+  padding: 6px 9px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.slash-hint {
+  color: var(--faint);
+  font-size: 11.5px;
+}
+
+.skill-chip strong {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.skills-where code {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.skill-list {
+  display: flex;
+  flex-direction: column;
+  margin: 4px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.skill-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.skill-list-text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 14px;
+}
+
+.skill-list-text code {
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+.skill-list-text span,
+.skill-list-text small {
+  color: var(--muted);
+}
+
+.skill-list-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.settings-actions {
+  margin-top: 4px;
+}
+
+/* Settings parts: a card per part, with room between its lines. */
+.skills-settings {
+  gap: 12px;
+  padding: 20px 24px;
+}
+
+.skills-settings .settings-part-heading {
+  margin: 0;
+}
+
+/* The Apps and Models views, when shown inside Settings rather than as a
+   screen of their own. */
+.settings-card > .models-view,
+.settings-view > .models-view {
+  padding: 16px 0;
+  overflow: visible;
+}

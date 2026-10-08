@@ -48,6 +48,8 @@ import { ShareDialog } from "./ShareDialog.js";
 import { Sidebar } from "./Sidebar.js";
 import type { Mode, View } from "./Sidebar.js";
 import { TaskThread } from "./TaskThread.js";
+import { usePersonalSkills, useSkillSlash } from "./SkillSlash.js";
+import type { SkillOption } from "./SkillSlash.js";
 import { useComposerOptions } from "./useComposerOptions.js";
 import { useProjectSelection } from "./useProjectSelection.js";
 import { useTaskStream } from "./useTaskStream.js";
@@ -182,7 +184,31 @@ export function App(): React.JSX.Element {
     refreshTasks,
   } = useProjectSelection({ select: selectTask, clear: clearTask }, setFailure);
   const composer = useComposerOptions(goal, inspection?.project.projectId);
-  const { routingMode, setRoutingMode, admission, chosenWorker, chosenSkills } = composer;
+  const { routingMode, setRoutingMode, admission, chosenWorker } = composer;
+  // Skills come by `/` (ADR 0070): the person's own, and the project's.
+  const personalSkills = usePersonalSkills();
+  const projectSkillOptions = useMemo<readonly SkillOption[]>(
+    () =>
+      composer.listedSkills.map((skill) => ({
+        kind: "project",
+        id: skill.id,
+        name: skill.displayName,
+        ...(skill.description === undefined ? {} : { description: skill.description }),
+        suggested: composer.suggested.includes(skill.id),
+      })),
+    [composer.listedSkills, composer.suggested],
+  );
+  const slash = useSkillSlash({
+    draft: goal,
+    setDraft: setGoal,
+    personal: personalSkills.skills,
+    project: projectSkillOptions,
+    onOpen: personalSkills.refresh,
+  });
+  // Only the open project's own skills can reach its task.
+  const chosenSkills = slash.projectIds.filter((id) =>
+    composer.offeredSkills.some((skill) => skill.id === id),
+  );
   useEffect(() => {
     onTaskEvent.current = (event) => {
       if (event.payload.kind === "configurationResolved") {
@@ -364,6 +390,7 @@ export function App(): React.JSX.Element {
       routingMode,
       ...(chosenWorker === undefined ? {} : { worker: chosenWorker.agentId }),
       ...(chosenSkills.length === 0 ? {} : { skills: chosenSkills }),
+      ...(slash.personalIds.length === 0 ? {} : { personalSkills: slash.personalIds }),
       ...attached(tokens),
     };
 
@@ -382,10 +409,12 @@ export function App(): React.JSX.Element {
         // A new task on screen: updates from any stream opened for the one
         // before it are no longer this window's to show.
         const onUpdate = beginTask();
-        return startTask(goal, onUpdate, conversationId, options).then((id) => {
+        return startTask(goal.trim(), onUpdate, conversationId, options).then((id) => {
           // Only now: a task that failed to start keeps its files.
           agentFiles.sent(tokens);
           setGoal("");
+          // The skills went with this message, as Claude's do.
+          slash.clear();
           adoptTask(id);
           refreshTasks(conversationId);
         });
@@ -400,6 +429,7 @@ export function App(): React.JSX.Element {
     agentFiles,
     beginTask,
     chosenSkills,
+    slash,
     chosenWorker,
     goal,
     inspection?.project.projectId,
@@ -791,6 +821,8 @@ export function App(): React.JSX.Element {
                 canStart={inspection !== undefined && goal.trim() !== ""}
                 onStart={onStart}
                 onCancel={onCancel}
+                slash={slash}
+                hasSkills={personalSkills.skills.length > 0 || projectSkillOptions.length > 0}
               />
             )}
           </>

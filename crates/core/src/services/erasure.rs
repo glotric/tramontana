@@ -28,6 +28,8 @@ pub struct ErasureReport {
     pub credentials_removed: usize,
     /// Credentials the profile named that the store no longer held.
     pub credentials_absent: usize,
+    /// The person's own skills deleted from their library (ADR 0070).
+    pub skills_removed: usize,
 }
 
 impl TaskService {
@@ -88,6 +90,14 @@ impl TaskService {
         }
 
         erasure.records.erase_everything().await.or_envelope(self)?;
+
+        // The person's own skills are their data too (ADR 0070).
+        if let Some(library) = &self.skill_library {
+            for file in library.list().await.or_envelope(self)? {
+                library.remove(&file.folder).await.or_envelope(self)?;
+                report.skills_removed += 1;
+            }
+        }
         Ok(report)
     }
 }

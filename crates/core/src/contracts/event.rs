@@ -145,6 +145,11 @@ pub enum EventPayload {
         /// told: every task with a project, and every chat before profiles.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         personal: Option<String>,
+        /// The person's own skills this task was given, as their redacted
+        /// text when it started (ADR 0070). Absent when none were, and from
+        /// every task recorded before personal skills were.
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        skills: Vec<super::TaskSkill>,
     },
     /// The task moved between states.
     #[serde(rename_all = "camelCase")]

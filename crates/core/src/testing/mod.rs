@@ -34,7 +34,8 @@ pub use receiving_worker::{HANDOFF_RECEIVED, RECEIVING_AGENT_ID, ReceivingWorker
 pub use repositories::{
     FakeTranscriber, InMemoryCheckpointRepository, InMemoryConfigurationRepository,
     InMemoryConversationRepository, InMemoryDictationRepository, InMemoryPersonalRepository,
-    InMemoryProjectRepository, InMemoryScheduleRepository, InMemoryTaskRepository,
+    InMemoryProjectRepository, InMemoryScheduleRepository, InMemorySkillLibrary,
+    InMemoryTaskRepository,
 };
 pub use secret::InMemorySecretVault;
 pub use tool::{FAKE_TOOL_ID, FAKE_WRITE_TOOL_ID, FakeToolProvider, FakeWriteTool};

@@ -279,6 +279,7 @@ mod tests {
                     routing_mode: None,
                     attachments,
                     personal: None,
+                    skills: Vec::new(),
                 },
             ),
             envelope(&task, 2, EventPayload::MessageCommitted { message }),

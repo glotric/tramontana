@@ -502,6 +502,7 @@ async fn task_and_initial_events_commit_as_one_transaction() {
         routing_mode: None,
         attachments: Vec::new(),
         personal: None,
+        skills: Vec::new(),
     };
     let error = tasks
         .create_with_initial_events(&record, &[event])

@@ -63,6 +63,8 @@ pub(crate) struct TaskDriver {
     attachments: Arc<Vec<crate::contracts::TaskAttachment>>,
     /// What the person's profile tells a chat's model (ADR 0061).
     personal: Option<Arc<str>>,
+    /// The person's own skills the task was given (ADR 0070).
+    skills: Arc<Vec<crate::contracts::TaskSkill>>,
     /// What was removed from the goal when the task was created.
     ///
     /// Carried rather than recomputed: the goal the driver receives is already
@@ -175,6 +177,7 @@ impl TaskDriver {
             earlier: Arc::new(EarlierTurns::default()),
             attachments: Arc::new(Vec::new()),
             personal: None,
+            skills: Arc::new(Vec::new()),
             goal_redactions: Vec::new(),
             checkpoint: None,
             handoff: None,
@@ -247,6 +250,12 @@ impl TaskDriver {
     /// Tell the task's model what the person's profile says (ADR 0061).
     pub(crate) fn with_personal(mut self, personal: Option<String>) -> Self {
         self.personal = personal.map(Arc::from);
+        self
+    }
+
+    /// Give the task's model the person's own skills (ADR 0070).
+    pub(crate) fn with_skills(mut self, skills: Vec<crate::contracts::TaskSkill>) -> Self {
+        self.skills = Arc::new(skills);
         self
     }
 
@@ -413,6 +422,7 @@ impl TaskDriver {
             earlier: Arc::clone(&self.earlier),
             attachments: Arc::clone(&self.attachments),
             personal: self.personal.clone(),
+            skills: Arc::clone(&self.skills),
             routing_mode: self.routing_mode,
             scope: self.scope.clone(),
             tools: ToolBroker {
@@ -554,36 +564,41 @@ impl TaskDriver {
         );
         // The earlier turns come first, then the attached files, as the
         // model reads them (ADRs 0057 and 0058).
-        let manifest =
-            if self.earlier.is_empty() && self.attachments.is_empty() && self.personal.is_none() {
-                assembled
-            } else {
-                // The profile is personal data the person wrote (ADR 0061):
-                // sensitive, and named so a disclosure can say so.
-                let mut sources: Vec<_> = self
-                    .personal
-                    .iter()
-                    .map(|text| {
-                        crate::contracts::ContextSource::redacted(
-                            crate::services::PERSONAL_SOURCE_ID,
-                            crate::contracts::ContextCategory::Instruction,
-                            crate::contracts::DataClass::Sensitive,
-                            text,
-                            Vec::new(),
-                        )
-                    })
-                    .collect();
-                sources.extend(self.earlier.sources());
-                sources.extend(crate::services::attachment_sources(&self.attachments));
-                sources.extend(assembled.sources);
-                crate::contracts::ContextManifest::new(
-                    assembled.context_manifest_id,
-                    assembled.task_id,
-                    assembled.destination_class,
-                    sources,
-                    assembled.created_at,
-                )
-            };
+        let manifest = if self.earlier.is_empty()
+            && self.attachments.is_empty()
+            && self.personal.is_none()
+            && self.skills.is_empty()
+        {
+            assembled
+        } else {
+            // The profile is personal data the person wrote (ADR 0061):
+            // sensitive, and named so a disclosure can say so.
+            let mut sources: Vec<_> = self
+                .personal
+                .iter()
+                .map(|text| {
+                    crate::contracts::ContextSource::redacted(
+                        crate::services::PERSONAL_SOURCE_ID,
+                        crate::contracts::ContextCategory::Instruction,
+                        crate::contracts::DataClass::Sensitive,
+                        text,
+                        Vec::new(),
+                    )
+                })
+                .collect();
+            // The person's own skills, after the profile (ADR 0070).
+            sources.extend(crate::services::skill_sources(&self.skills));
+            sources.extend(self.earlier.sources());
+            sources.extend(crate::services::attachment_sources(&self.attachments));
+            sources.extend(assembled.sources);
+            crate::contracts::ContextManifest::new(
+                assembled.context_manifest_id,
+                assembled.task_id,
+                assembled.destination_class,
+                sources,
+                assembled.created_at,
+            )
+        };
 
         self.record(EventDraft::user(
             TaskEventKind::ContextPrepared,
@@ -826,6 +841,8 @@ struct BrokeredHost {
     attachments: Arc<Vec<crate::contracts::TaskAttachment>>,
     /// What the person's profile tells a chat's model, as every turn sends it.
     personal: Option<Arc<str>>,
+    /// The person's own skills, as every turn sends them.
+    skills: Arc<Vec<crate::contracts::TaskSkill>>,
     /// Serialize requests so approvals and model starts cannot overlap per host.
     model_gate: tokio::sync::Mutex<()>,
     /// The standing policy in force.

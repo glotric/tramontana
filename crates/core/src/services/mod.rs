@@ -36,6 +36,8 @@ mod routing;
 mod runtime;
 mod schedule;
 mod scheduling;
+mod skill_library;
+mod skills;
 mod suggestion;
 mod task_export;
 mod task_recovery;
@@ -93,6 +95,10 @@ pub use redaction::{
 pub use schedule::{
     SCHEDULE_GOAL_BYTES, SCHEDULE_TITLE_BYTES, SCHEDULES, check_new_schedule, due_occurrence,
     latest_occurrence, next_occurrence, weekday_of,
+};
+pub use skills::{
+    SKILL_BYTES, SKILL_ID_CHARS, TASK_SKILLS, is_skill_id, prepare_import, read_skill, skill_id,
+    skill_message, skill_source_id, skill_sources,
 };
 pub use transcript::render_transcript;
 /// The reason a task moved on to another worker, from which that worker's
