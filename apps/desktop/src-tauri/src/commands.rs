@@ -354,6 +354,14 @@ pub(crate) async fn choose_dictation(
         .map(Some)
 }
 
+/// What the model guide can see on this computer: `llama-server` where
+/// installers put it, and model files in the usual download folders. Runs
+/// and downloads nothing.
+#[tauri::command]
+pub(crate) fn model_setup_hints() -> Option<crate::model_hints::ModelSetupHints> {
+    crate::model_hints::home().map(|home| crate::model_hints::find(&home))
+}
+
 /// The person's own skills (ADR 0070).
 ///
 /// # Errors

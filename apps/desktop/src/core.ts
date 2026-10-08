@@ -914,3 +914,25 @@ export async function importSkill(folder: boolean): Promise<PersonalSkill | unde
 export async function removeSkill(id: string): Promise<void> {
   await invoke("remove_skill", { id });
 }
+
+/** A model file the guide found. */
+export interface FoundModel {
+  readonly path: string;
+  readonly bytes: number;
+}
+
+/** What the model guide can see on this computer. */
+export interface ModelSetupHints {
+  readonly llamaServer?: string | null;
+  readonly models: readonly FoundModel[];
+  readonly lookedIn: readonly string[];
+  readonly platform: "macos" | "windows" | "linux";
+}
+
+/**
+ * Where `llama-server` and model files already are, so the guide can point
+ * at them. Runs and downloads nothing; `undefined` when it cannot look.
+ */
+export async function modelSetupHints(): Promise<ModelSetupHints | undefined> {
+  return (await invoke<ModelSetupHints | null>("model_setup_hints")) ?? undefined;
+}

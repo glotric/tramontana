@@ -5,6 +5,8 @@ import { asErrorEnvelope, forget, personalProfile, remember, updatePersonal } fr
 import { DictationSettings } from "./Dictation.js";
 import { EraseAllData } from "./EraseAllData.js";
 import { Glyph } from "./Glyph.js";
+import { chooseTheme, rememberedTheme } from "./theme.js";
+import type { Theme } from "./theme.js";
 import type { GlyphHue, GlyphIcon } from "./Glyph.js";
 
 const STYLES: readonly {
@@ -46,6 +48,37 @@ function message(error: unknown, fallback: string): string {
  * about the person, and the notes they remember. Everything here is the
  * person's own words, shown in full; nothing is remembered on its own.
  */
+const THEMES: readonly (readonly [Theme, string])[] = [
+  ["system", "Same as this computer"],
+  ["light", "Light"],
+  ["dark", "Dark"],
+];
+
+/** Settings, General, Appearance: light, dark, or as the computer is. */
+function AppearanceSettings(): React.JSX.Element {
+  const [theme, setTheme] = useState<Theme>(rememberedTheme);
+  return (
+    <fieldset className="settings-section appearance">
+      <legend>Appearance</legend>
+      <div className="overview-segments" role="group" aria-label="Appearance">
+        {THEMES.map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={theme === value}
+            onClick={() => {
+              chooseTheme(value);
+              setTheme(value);
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
 function GeneralSettings(): React.JSX.Element {
   const [profile, setProfile] = useState<PersonalProfile | undefined>();
   const [name, setName] = useState("");
@@ -311,7 +344,12 @@ export function SettingsView({
         ))}
       </div>
       {tab === "general" ? (
-        <GeneralSettings />
+        <div className="settings-parts">
+          <div className="settings-card">
+            <AppearanceSettings />
+          </div>
+          <GeneralSettings />
+        </div>
       ) : tab === "customize" ? (
         customize
       ) : tab === "models" ? (

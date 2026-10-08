@@ -48,6 +48,8 @@ import { ShareDialog } from "./ShareDialog.js";
 import { Sidebar } from "./Sidebar.js";
 import type { Mode, View } from "./Sidebar.js";
 import { TaskThread } from "./TaskThread.js";
+import { CommandTerminal } from "./CommandTerminal.js";
+import { commandRuns, commandUnderway } from "./terminal.js";
 import { usePersonalSkills, useSkillSlash } from "./SkillSlash.js";
 import type { SkillOption } from "./SkillSlash.js";
 import { useComposerOptions } from "./useComposerOptions.js";
@@ -325,6 +327,15 @@ export function App(): React.JSX.Element {
   );
   const taskState = useMemo(() => projectState(events), [events]);
   const cards = useMemo(() => buildCards(events), [events]);
+  // The commands this task ran, for the terminal (it pops up on a new one).
+  const runs = useMemo(() => commandRuns(events), [events]);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [runsSeen, setRunsSeen] = useState(0);
+  if (runs.length !== runsSeen) {
+    setRunsSeen(runs.length);
+    if (runs.length > runsSeen && commandUnderway(runs)) setTerminalOpen(true);
+    if (runs.length === 0) setTerminalOpen(false);
+  }
   const header = useMemo(() => describeHeader(events), [events]);
   const goalInput = useRef<HTMLTextAreaElement>(null);
   const agentFiles = useAttachments();
@@ -539,6 +550,14 @@ export function App(): React.JSX.Element {
       )}
 
       <main className="workspace">
+        {/* Without a title bar, the top of the window still moves it: a strip
+            above everything, taller on the screens with no header (ADR 0069). */}
+        <div
+          className="window-drag"
+          data-tall={view !== "work" ? "true" : undefined}
+          data-tauri-drag-region
+          aria-hidden="true"
+        />
         {/* The views without a work header (Scheduled, Projects, Settings,
             Models, Apps) still need a way back to the sidebar. */}
         {!sidebarOpen && view !== "work" && (
@@ -606,8 +625,8 @@ export function App(): React.JSX.Element {
                   <Icon name="sidebar" />
                 </button>
               )}
-              <div className="workspace-title workspace-title--row">
-                <h1>{selectedChat?.title ?? "New chat"}</h1>
+              <div className="workspace-title workspace-title--row" data-tauri-drag-region>
+                <h1 data-tauri-drag-region>{selectedChat?.title ?? "New chat"}</h1>
                 {selectedChat !== undefined && (
                   <ConversationMenu
                     key={selectedChat.conversationId}
@@ -629,7 +648,7 @@ export function App(): React.JSX.Element {
                 )}
               </div>
               <ModeSwitch mode={mode} onChange={chooseMode} />
-              <div className="workspace-header-end">
+              <div className="workspace-header-end" data-tauri-drag-region>
                 <span className="runtime-chip" data-mode={routingMode}>
                   {routingMode === "localOnly" && <Icon name="lock" size={13} strokeWidth={2.2} />}
                   {MODE_LABEL[routingMode]}
@@ -684,8 +703,8 @@ export function App(): React.JSX.Element {
                   <Icon name="sidebar" />
                 </button>
               )}
-              <div className="workspace-title workspace-title--row">
-                <h1>{selectedConversation?.title ?? "New task"}</h1>
+              <div className="workspace-title workspace-title--row" data-tauri-drag-region>
+                <h1 data-tauri-drag-region>{selectedConversation?.title ?? "New task"}</h1>
                 {selectedConversation !== undefined && inspection !== undefined && (
                   <ConversationMenu
                     key={selectedConversation.conversationId}
@@ -706,7 +725,7 @@ export function App(): React.JSX.Element {
                 )}
               </div>
               <ModeSwitch mode={mode} onChange={chooseMode} />
-              <div className="workspace-header-end">
+              <div className="workspace-header-end" data-tauri-drag-region>
                 {selectedConversation !== undefined && (
                   <button
                     type="button"
@@ -717,6 +736,19 @@ export function App(): React.JSX.Element {
                   >
                     <Icon name="share" size={15} />
                     Share
+                  </button>
+                )}
+                {runs.length > 0 && !terminalOpen && (
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Terminal"
+                    title="The commands this task ran"
+                    onClick={() => {
+                      setTerminalOpen(true);
+                    }}
+                  >
+                    <Icon name="terminal" />
                   </button>
                 )}
                 {/* Only while the panel is put away: once open, it closes from
@@ -802,6 +834,15 @@ export function App(): React.JSX.Element {
                 )}
               </div>
             </div>
+
+            {terminalOpen && runs.length > 0 && (
+              <CommandTerminal
+                runs={runs}
+                onClose={() => {
+                  setTerminalOpen(false);
+                }}
+              />
+            )}
 
             {!loadingProject && (
               <AgentComposer

@@ -352,6 +352,7 @@ export function Sidebar({
 
   return (
     <aside className="rail" aria-label="Projects and conversations">
+      <div className="window-drag window-drag--rail" data-tauri-drag-region aria-hidden="true" />
       <div className="brand-lockup" data-tauri-drag-region>
         <Glyph icon="wind" hue="blue" size={30} />
         <strong data-tauri-drag-region>Tramontana</strong>
@@ -437,28 +438,33 @@ export function Sidebar({
         )}
       </nav>
 
+      {/* With a name, the person's initial and name; without one, a plain
+          Settings row like the others. */}
       <button
         type="button"
-        className="rail-row rail-person"
+        className="rail-row rail-row--nav rail-person"
         aria-pressed={view === "settings"}
         onClick={() => {
           onView("settings");
         }}
       >
-        <span className="rail-avatar" aria-hidden="true">
-          {(personName?.trim()[0] ?? "").toUpperCase() || <Icon name="gear" size={15} />}
-        </span>
-        <span className="rail-person-name">
-          {personName === undefined || personName.trim() === "" ? (
-            "Settings"
-          ) : (
-            <>
+        {personName === undefined || personName.trim() === "" ? (
+          <>
+            <Icon name="gear" />
+            <span className="rail-person-name">Settings</span>
+          </>
+        ) : (
+          <>
+            <span className="rail-avatar" aria-hidden="true">
+              {(personName.trim()[0] ?? "").toUpperCase()}
+            </span>
+            <span className="rail-person-name">
               {personName}
               <span className="rail-person-sub"> · Settings</span>
-            </>
-          )}
-        </span>
-        <Icon name="gear" size={16} />
+            </span>
+            <Icon name="gear" size={16} />
+          </>
+        )}
       </button>
       <footer className="rail-status">
         <span className="status-dot" data-state={status} aria-hidden="true" />

@@ -698,6 +698,79 @@ describe("M2 durable desktop surface", () => {
     });
   });
 
+  it("opens a terminal when the task runs a command, showing what it printed", async () => {
+    const updates = captureUpdates();
+    const user = userEvent.setup();
+    await renderLoaded();
+    expect(screen.queryByRole("region", { name: "Terminal" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Terminal" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalled();
+    });
+    updates.emit({
+      kind: "event",
+      event: event(1, { kind: "taskCreated", goalSummary: "Say hello" }),
+    });
+    updates.emit({
+      kind: "event",
+      event: event(2, {
+        kind: "toolRequested",
+        invocationId: "run-1",
+        toolId: "builtin.recipe.run",
+        argumentsSummary: "recipe test",
+        riskClass: "dangerous",
+      }),
+    });
+
+    // It opens by itself the moment a command is asked for.
+    const terminal = await screen.findByRole("region", { name: "Terminal" });
+    expect(terminal).toHaveTextContent("$ recipe test");
+    expect(terminal).toHaveTextContent("waiting for your approval");
+
+    updates.emit({
+      kind: "event",
+      event: event(3, {
+        kind: "messageCommitted",
+        message: {
+          schemaVersion: 1,
+          messageId: "m-1",
+          role: "tool",
+          createdAt: "2026-01-01T00:00:01.000Z",
+          parts: [
+            {
+              kind: "toolResult",
+              invocationId: "run-1",
+              content: { exitCode: 0, stdout: "Ran 2 tests\nOK", stderr: "" },
+              truncated: false,
+            },
+          ],
+        },
+      } as unknown as EventPayload),
+    });
+    updates.emit({
+      kind: "event",
+      event: event(4, {
+        kind: "toolCompleted",
+        invocationId: "run-1",
+        displaySummary: "Recipe `test` passed",
+        sideEffect: "external",
+        truncated: false,
+      }),
+    });
+    await waitFor(() => {
+      expect(terminal).toHaveTextContent("done · exit 0");
+    });
+    expect(terminal).toHaveTextContent("Ran 2 tests");
+
+    // Closed, it waits behind a header button.
+    await user.click(within(terminal).getByRole("button", { name: "Close terminal" }));
+    expect(screen.queryByRole("region", { name: "Terminal" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Terminal" }));
+    expect(screen.getByRole("region", { name: "Terminal" })).toBeInTheDocument();
+  });
+
   it("puts a question raised before this window opened to the person", async () => {
     listPendingApprovals.mockResolvedValue([approval("approval-1")]);
     const user = userEvent.setup();

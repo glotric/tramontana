@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { AddEndpointForm } from "./AddEndpointForm.js";
+import { ModelGuide } from "./ModelGuide.js";
 import {
   asErrorEnvelope,
   checkEndpointModel,
@@ -233,6 +234,8 @@ export function ModelsView({ onClose }: ModelsViewProps): React.JSX.Element {
           )}
         </div>
       )}
+
+      {configured !== undefined && <ModelGuide hasEndpoint={configured.length > 0} />}
 
       {configured === undefined ? (
         <p className="inline-empty">Reading the model settings…</p>
