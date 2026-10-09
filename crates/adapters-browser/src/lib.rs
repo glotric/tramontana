@@ -766,12 +766,23 @@ impl Tab {
             ));
         };
         for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
-            self.call(
-                "Input.dispatchMouseEvent",
-                json!({ "type": kind, "x": x, "y": y, "button": "left", "clickCount": 1 }),
-            )
-            .await
-            .map_err(browser_error)?;
+            match self
+                .call(
+                    "Input.dispatchMouseEvent",
+                    json!({ "type": kind, "x": x, "y": y, "button": "left", "clickCount": 1 }),
+                )
+                .await
+            {
+                Ok(_) => {}
+                // The browser acknowledges a mouse event only once the page
+                // has handled it, and a page busy with what the click started
+                // (a blocked pop-up, a refused download) can be slow to. The
+                // event was delivered: carry on, and let the page read that
+                // follows say what the click did, or fail if the page is
+                // truly stuck.
+                Err(CdpError::Timeout(_)) => {}
+                Err(error) => return Err(browser_error(error)),
+            }
         }
         Ok(aim
             .get("name")
@@ -1182,7 +1193,7 @@ fn no_page() -> ErrorEnvelope {
 
 fn browser_error(error: CdpError) -> ErrorEnvelope {
     match error {
-        CdpError::Timeout => failure(ErrorCode::Timeout, error.to_string()),
+        CdpError::Timeout(_) => failure(ErrorCode::Timeout, error.to_string()),
         CdpError::Closed => failure(
             ErrorCode::NotFound,
             "The browser window was closed. Open a page to start again.",
