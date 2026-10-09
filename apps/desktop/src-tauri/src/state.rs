@@ -386,6 +386,13 @@ fn skills_folder(profile: &Path) -> std::path::PathBuf {
     reason = "tests assert on isolated fixtures; a panic is the failure report"
 )]
 mod tests {
+    /// How long a test waits for a fixture's task: generous, because a
+    /// loaded CI runner (Windows especially) can take seconds to run one.
+    const TASK_DEADLINE: Duration = Duration::from_secs(20);
+    /// How often a test looks again while it waits, rather than spinning on
+    /// the database and competing with the task it is waiting for.
+    const POLL: Duration = Duration::from_millis(10);
+
     use std::time::Duration;
 
     use tramontana_core::config::ConfigurationSelection;
@@ -461,7 +468,7 @@ mod tests {
         // Wait until the record holds more than the window saw, so the
         // reattached window gets some events from the record and the rest
         // live; a window that came back at once would only test the second.
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(TASK_DEADLINE, async {
             while state
                 .service
                 .replay_task_events(&task_id, 0)
@@ -470,7 +477,7 @@ mod tests {
                 .len()
                 < 4
             {
-                tokio::task::yield_now().await;
+                tokio::time::sleep(POLL).await;
             }
         })
         .await
@@ -504,7 +511,7 @@ mod tests {
         );
 
         let mut sequences = Vec::new();
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(TASK_DEADLINE, async {
             while let Some(update) = received.recv().await {
                 if let tramontana_core::contracts::TaskUpdate::Event { event } = update {
                     sequences.push(event.sequence);
@@ -658,7 +665,7 @@ mod tests {
 
         state.watches.close(watch_id);
         // The forwarder dropped its sender: the window's end is closed.
-        let ended = tokio::time::timeout(Duration::from_secs(5), received.recv())
+        let ended = tokio::time::timeout(TASK_DEADLINE, received.recv())
             .await
             .expect("the forwarding did not stop");
         assert!(
@@ -761,7 +768,7 @@ mod tests {
                 ..
             }
         ));
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(TASK_DEADLINE, async {
             while !state
                 .service
                 .get_task(&task_id)
@@ -770,7 +777,7 @@ mod tests {
                 .state
                 .is_terminal()
             {
-                tokio::task::yield_now().await;
+                tokio::time::sleep(POLL).await;
             }
         })
         .await
@@ -827,7 +834,7 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(TASK_DEADLINE, async {
             loop {
                 let snapshot = first.service.get_task(&task_id).await.unwrap();
                 let events = first.service.replay_task_events(&task_id, 0).await.unwrap();
@@ -838,7 +845,7 @@ mod tests {
                 if snapshot.state.is_terminal() && terminal_is_fully_projected {
                     break;
                 }
-                tokio::task::yield_now().await;
+                tokio::time::sleep(POLL).await;
             }
         })
         .await
