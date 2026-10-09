@@ -29,8 +29,8 @@ const MESSAGE_LIMIT: usize = 16 * 1024 * 1024;
 pub(crate) enum CdpError {
     /// The browser answered with an error.
     Protocol(String),
-    /// No answer in time.
-    Timeout,
+    /// No answer in time to the named call.
+    Timeout(&'static str),
     /// The connection is gone: the browser quit, or was closed.
     Closed,
 }
@@ -39,9 +39,23 @@ impl std::fmt::Display for CdpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Protocol(message) => write!(f, "the browser refused: {message}"),
-            Self::Timeout => f.write_str("the browser did not answer in time"),
+            Self::Timeout(step) => write!(f, "the browser did not answer in time ({step})"),
             Self::Closed => f.write_str("the browser is no longer running"),
         }
+    }
+}
+
+/// What a call was for, in words a person or a model can act on: which step
+/// of a task's browsing went unanswered.
+fn step(method: &str) -> &'static str {
+    match method {
+        "Input.dispatchMouseEvent" => "the click",
+        "Input.dispatchKeyEvent" | "Input.insertText" => "the typing",
+        "Page.navigate" => "opening the page",
+        "Runtime.evaluate" | "Runtime.callFunctionOn" | "Page.createIsolatedWorld" => {
+            "reading the page"
+        }
+        _ => "a browser call",
     }
 }
 
@@ -87,7 +101,7 @@ impl Connection {
             tokio_tungstenite::connect_async_with_config(endpoint, Some(config), false),
         )
         .await
-        .map_err(|_| CdpError::Timeout)?
+        .map_err(|_| CdpError::Timeout("connecting to the browser"))?
         .map_err(|_| CdpError::Closed)?;
         let (mut sink, mut stream) = socket.split();
         let (outgoing, mut queue) = mpsc::unbounded_channel::<String>();
@@ -204,7 +218,7 @@ impl Connection {
         match result {
             Ok(Ok(answer)) => answer,
             Ok(Err(_)) => Err(CdpError::Closed),
-            Err(_) => Err(CdpError::Timeout),
+            Err(_) => Err(CdpError::Timeout(step(method))),
         }
     }
 
@@ -283,6 +297,17 @@ fn dispatch(
     reason = "tests assert on known-good literals; a panic is the failure report"
 )]
 mod tests {
+
+    #[test]
+    fn a_timeout_says_which_step_went_unanswered() {
+        assert_eq!(
+            CdpError::Timeout(step("Input.dispatchMouseEvent")).to_string(),
+            "the browser did not answer in time (the click)"
+        );
+        assert_eq!(step("Runtime.evaluate"), "reading the page");
+        assert_eq!(step("Page.navigate"), "opening the page");
+        assert_eq!(step("Target.getTargetInfo"), "a browser call");
+    }
     use super::*;
 
     #[test]
