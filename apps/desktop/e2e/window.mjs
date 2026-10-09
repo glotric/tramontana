@@ -165,16 +165,14 @@ async function main() {
     await shows("//*[@aria-label='Task summary']//dd[@data-state]", "completed");
     step("after a reload the task and its state came back from the record");
 
-    // 5. The settings views open, and say what is and is not configured.
-    // They sit under More in the sidebar.
-    await click(button("More"));
+    // 5. Models and Apps live in Settings, and say what is and is not
+    // configured. Settings opens from the foot of the sidebar.
+    await click(button("Settings"));
     await click(button("Models and credentials"));
     await shows("//section[contains(@class,'models-view')]", "No model endpoints are configured");
-    await click(button("Back to work"));
-    await click(button("Apps"));
+    await click(button("Customize"));
     await shows("//section[contains(@class,'models-view')]", "No Apps are configured");
-    await click(button("Back to work"));
-    step("the Models and Apps views open, and say nothing is configured");
+    step("Settings shows the models and the Apps, and says nothing is configured");
 
     console.log(`window: PASS (${steps.length} steps)`);
   } finally {
