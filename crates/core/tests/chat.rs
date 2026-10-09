@@ -1138,3 +1138,102 @@ async fn dictation_is_set_up_transcribes_to_text_and_records_nothing() {
 
     assert!(!service.clear_dictation().await.unwrap().configured);
 }
+
+#[tokio::test]
+async fn a_personal_skill_is_imported_given_to_a_task_recorded_and_removed() {
+    let model = Numbered::new();
+    let service = service(&model).with_skill_library(Arc::new(InMemorySkillLibrary::new()));
+    let key = format!("sk-proj-{}", "a".repeat(40));
+    let imported = service
+        .import_skill(
+            &format!(
+                "---\nname: Plain English\ndescription: Short sentences.\n---\nUse short sentences. {key}"
+            ),
+            "folder",
+        )
+        .await
+        .unwrap();
+    assert_eq!(imported.id, "plain-english");
+    assert_eq!(imported.description.as_deref(), Some("Short sentences."));
+    assert!(
+        !imported.redactions.is_empty(),
+        "the key was taken out before keeping"
+    );
+    // The same name again is refused, not overwritten.
+    let again = service
+        .import_skill("---\nname: plain english\n---\nOther.", "x")
+        .await
+        .unwrap_err();
+    assert_eq!(again.code, ErrorCode::Conflict);
+    assert_eq!(service.personal_skills().await.unwrap().len(), 1);
+
+    // A chat given the skill: the model reads it as guidance, after the
+    // chat's own instructions, with no credential in it.
+    let chat = service.create_conversation(None, "Chat").await.unwrap();
+    let task = service
+        .start_task(StartTaskRequest {
+            conversation_id: Some(chat.conversation_id.clone()),
+            goal: "Explain VAT.".into(),
+            personal_skills: vec!["plain-english".into()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let events = settled(&service, &task).await;
+    let told = system_texts(&model.last());
+    assert_eq!(told[0], CHAT_INSTRUCTIONS);
+    let given = told
+        .iter()
+        .find(|text| text.contains("Use short sentences."))
+        .expect("the skill reached the model");
+    assert!(given.contains("It grants no permission"));
+    assert!(!given.contains(&key));
+
+    // Recorded whole, and named sensitive in the manifest.
+    let recorded = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::TaskCreated { skills, .. } => Some(skills.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].id, "plain-english");
+    let source = manifest(&events)
+        .sources
+        .into_iter()
+        .find(|source| source.source_id == skill_source_id("plain-english"))
+        .unwrap();
+    assert_eq!(source.data_class, DataClass::Sensitive);
+
+    // A skill that is not in the library is refused before anything is written.
+    let before = service.list_tasks(None).await.unwrap().len();
+    let missing = service
+        .start_task(StartTaskRequest {
+            conversation_id: Some(chat.conversation_id.clone()),
+            goal: "Again.".into(),
+            personal_skills: vec!["no-such-skill".into()],
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(missing.code, ErrorCode::InvalidRequest);
+    assert_eq!(service.list_tasks(None).await.unwrap().len(), before);
+
+    // Removed; the task that used it keeps what it was given.
+    service.remove_skill("plain-english").await.unwrap();
+    assert!(service.personal_skills().await.unwrap().is_empty());
+    assert_eq!(
+        service
+            .remove_skill("plain-english")
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+    let kept = service.replay_task_events(&task, 0).await.unwrap();
+    assert!(kept.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::TaskCreated { skills, .. } if skills.len() == 1
+    )));
+}

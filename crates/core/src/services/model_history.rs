@@ -73,6 +73,8 @@ pub struct ConversationContext<'a> {
     pub attachments: &'a [crate::contracts::TaskAttachment],
     /// What the person's profile tells a chat, if anything.
     pub personal: Option<&'a str>,
+    /// The person's own skills the task was given (ADR 0070).
+    pub skills: &'a [crate::contracts::TaskSkill],
 }
 
 impl std::fmt::Debug for ConversationContext<'_> {
@@ -83,6 +85,7 @@ impl std::fmt::Debug for ConversationContext<'_> {
             .field("earlier", &self.earlier.turns().len())
             .field("attachments", &self.attachments.len())
             .field("personal", &self.personal.is_some())
+            .field("skills", &self.skills.len())
             .finish()
     }
 }
@@ -267,6 +270,7 @@ impl CanonicalModelHistory {
             earlier,
             attachments,
             personal,
+            skills,
         } = conversation;
         let at = self.messages.first().map_or_else(
             || crate::contracts::Timestamp::new(""),
@@ -362,6 +366,30 @@ impl CanonicalModelHistory {
                     // is disclosed and approved like any other project content.
                     data_class: DataClass::Project,
                     redactions: project.redactions.clone(),
+                },
+            );
+        }
+
+        // The person's own skills, in the order chosen, after the profile
+        // and before the project's instructions (ADR 0070). Inserted in
+        // reverse because each goes in at the front.
+        for skill in skills.iter().rev() {
+            let source_id = crate::services::skill_source_id(&skill.id);
+            let mut message = NormalizedMessage::text(
+                MessageId::new(format!("{source_id}-{}", self.task_id)),
+                None,
+                MessageRole::System,
+                at.clone(),
+                crate::services::skill_message(skill),
+            );
+            message.task_id = Some(self.task_id.clone());
+            self.messages.insert(0, message);
+            self.provenance.insert(
+                0,
+                ModelContentProvenance {
+                    source_id,
+                    data_class: DataClass::Sensitive,
+                    redactions: skill.redactions.clone(),
                 },
             );
         }

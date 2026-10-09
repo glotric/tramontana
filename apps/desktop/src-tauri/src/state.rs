@@ -60,6 +60,8 @@ pub(crate) struct AppState {
     pub(crate) settings: Arc<SqliteProviderSettingsRepository>,
     /// The operating system's credential store.
     pub(crate) vault: Arc<PlatformSecretVault>,
+    /// Where the person's own skills are kept (ADR 0070).
+    pub(crate) skills_folder: std::path::PathBuf,
     /// Empties the profile's records, for "Delete all my data" (ADR 0068).
     pub(crate) eraser: Arc<tramontana_persistence::SqliteProfileEraser>,
     /// Where the profile's database is; its folders sit beside it.
@@ -255,6 +257,10 @@ impl AppState {
                 Arc::new(tramontana_platform::SystemLocalClock::new()),
             )
             // So speech can be transcribed on this device (ADR 0065).
+            // The person's own skills, in a folder beside the profile (ADR 0070).
+            .with_skill_library(Arc::new(tramontana_platform::FsSkillLibrary::new(
+                skills_folder(path),
+            )))
             .with_dictation(
                 Arc::new(tramontana_persistence::SqliteDictationRepository::new(
                     database.clone(),
@@ -285,6 +291,7 @@ impl AppState {
                 database.clone(),
             )),
             profile: path.to_path_buf(),
+            skills_folder: skills_folder(path),
         })
     }
 
@@ -362,6 +369,14 @@ async fn acquire_lease(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// The person's skills live in a folder beside the profile (ADR 0070).
+fn skills_folder(profile: &Path) -> std::path::PathBuf {
+    profile
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("skills")
 }
 
 #[cfg(test)]

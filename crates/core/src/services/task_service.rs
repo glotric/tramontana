@@ -97,6 +97,9 @@ pub struct StartTaskRequest {
     /// Files the person attached to this message (ADR 0058). Checked, and
     /// their text redacted, before anything is written.
     pub attachments: Vec<super::AttachmentInput>,
+    /// The person's own skills this task uses, by id, in order (ADR 0070).
+    /// Each contributes its text and nothing else, as a project's skill does.
+    pub personal_skills: Vec<String>,
 }
 
 /// Runtime state for a task that is currently running.
@@ -283,6 +286,9 @@ pub struct TaskService {
     pub(super) schedules: Option<SchedulePorts>,
     /// Where the dictation setup is kept, and what transcribes (ADR 0065).
     pub(super) dictation: Option<DictationPorts>,
+    /// The person's own skills (ADR 0070). Without a library, tasks use
+    /// only their project's skills.
+    pub(super) skill_library: Option<Arc<dyn crate::ports::SkillLibrary>>,
     pub(super) execution_allowed: bool,
     pub(super) execution_guard: Option<Arc<dyn Send + Sync>>,
 }
@@ -319,6 +325,7 @@ impl TaskService {
             personal: None,
             schedules: None,
             dictation: None,
+            skill_library: None,
             execution_allowed: true,
             execution_guard: None,
         }
@@ -1249,6 +1256,9 @@ impl TaskService {
         // Chosen now and recorded, so a resumed task is told the same
         // (ADR 0061). Only a chat is told anything.
         let personal = self.personal_for(project_id.as_ref()).await;
+        // Read now and recorded whole, so a resume is given the same text
+        // even if the skill was changed or removed since (ADR 0070).
+        let skills = self.skills_for(&request.personal_skills).await?;
 
         let created_at = self.clock.now();
         let mut record = TaskRecord::new(
@@ -1271,6 +1281,7 @@ impl TaskService {
                     routing_mode: Some(routing_mode),
                     attachments: attachments.clone(),
                     personal: personal.clone(),
+                    skills: skills.clone(),
                 },
             )
             .into_envelope(
@@ -1361,6 +1372,7 @@ impl TaskService {
         .with_earlier_turns(earlier)
         .with_attachments(attachments)
         .with_personal(personal)
+        .with_skills(skills)
         .with_goal_redactions(goal.reason_codes.clone())
         .with_checkpoints(Arc::clone(&self.repositories.checkpoints))
         .continuing(None, super::ResumePlan::default(), interrupt);

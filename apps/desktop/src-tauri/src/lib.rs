@@ -11,6 +11,7 @@ mod apps;
 mod attachments;
 mod bundles;
 mod commands;
+mod model_hints;
 mod settings;
 mod state;
 
@@ -99,6 +100,11 @@ pub fn run() {
             commands::dictation_status,
             commands::choose_dictation,
             commands::clear_dictation,
+            commands::model_setup_hints,
+            commands::list_personal_skills,
+            commands::skills_folder,
+            commands::import_skill,
+            commands::remove_skill,
             commands::transcribe,
             commands::list_schedules,
             commands::create_schedule,

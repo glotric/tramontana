@@ -1493,6 +1493,13 @@
             "routingMode": {
               "$ref": "#/$defs/RoutingMode",
               "description": "Where this task's models may run, chosen when it was created and\nkept if it is resumed.\n\nAbsent from tasks recorded before the mode was, which resume under\nthe profile's mode (ADR 0031)."
+            },
+            "skills": {
+              "description": "The person's own skills this task was given, as their redacted\ntext when it started (ADR 0070). Absent when none were, and from\nevery task recorded before personal skills were.",
+              "items": {
+                "$ref": "#/$defs/TaskSkill"
+              },
+              "type": "array"
             }
           },
           "required": [
@@ -3299,6 +3306,54 @@
       ],
       "type": "object"
     },
+    "PersonalSkill": {
+      "description": "A skill in the person's own library, as a list shows it: what it is\ncalled and what it is for, without its text.",
+      "properties": {
+        "byteCount": {
+          "description": "The length of its redacted text in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "contentHash": {
+          "description": "The content hash of its redacted text.",
+          "type": "string"
+        },
+        "description": {
+          "description": "What it is for, in a line, when it says.",
+          "type": "string"
+        },
+        "id": {
+          "description": "The name `/` finds it by: lowercase letters, digits and hyphens.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Its declared name, or its id.",
+          "type": "string"
+        },
+        "redactions": {
+          "description": "What was removed from it as a credential, when anything was.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "schemaVersion": {
+          "description": "Contract schema version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "id",
+        "name",
+        "contentHash",
+        "byteCount"
+      ],
+      "type": "object"
+    },
     "ProjectGrant": {
       "description": "A persistent, revocable grant.",
       "properties": {
@@ -4300,6 +4355,41 @@
         "lastSequence",
         "createdAt",
         "updatedAt"
+      ],
+      "type": "object"
+    },
+    "TaskSkill": {
+      "description": "A personal skill a task was given, as it was when the task started: its\nredacted text is the guidance the model read, and a resume gives the same.",
+      "properties": {
+        "contentHash": {
+          "description": "The content hash of `text`.",
+          "type": "string"
+        },
+        "id": {
+          "description": "The skill's id.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Its name.",
+          "type": "string"
+        },
+        "redactions": {
+          "description": "What was removed from it as a credential.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "Its redacted text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "text",
+        "contentHash"
       ],
       "type": "object"
     },

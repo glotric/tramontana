@@ -57,8 +57,10 @@
   text-rendering: optimizeLegibility;
 }
 
+/* Dark follows the computer unless the person chose Light or Dark in
+   Settings, which sets data-theme on the root (a window preference). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     color-scheme: dark;
     --bg: #18191d;
     --main-bg: radial-gradient(120% 90% at 50% 25%, #212229 0%, #18191d 70%);
@@ -94,6 +96,43 @@
     --danger-bg: rgb(255 138 138 / 8%);
     --danger-line: #5a2e33;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #18191d;
+  --main-bg: radial-gradient(120% 90% at 50% 25%, #212229 0%, #18191d 70%);
+  --side: #131417;
+  --side-active: #25272e;
+  --text: #f2f3f5;
+  --soft: #d3d5db;
+  --muted: #a4a7b0;
+  --faint: #8d909a;
+  --line: #2a2c33;
+  --line2: #3a3c44;
+  --seg: rgb(255 255 255 / 4%);
+  --seg-on: #2e3038;
+  --seg-shadow: 0 2px 8px rgb(0 0 0 / 35%);
+  --glass: rgb(40 41 48 / 80%);
+  --glass-line: rgb(255 255 255 / 8%);
+  --shadow: 0 16px 40px rgb(0 0 0 / 40%);
+  --card: rgb(255 255 255 / 3%);
+  --field: #202127;
+  --bubble: #2a2c34;
+  --ok: #4cd98a;
+  --ok-bg: rgb(76 217 138 / 12%);
+  --accent: #5c9bff;
+  --accent-text: #8fb0ff;
+  --active-row: rgb(92 155 255 / 6%);
+  --ask-bg: rgb(92 155 255 / 8%);
+  --ask-line: rgb(92 155 255 / 30%);
+  --stop-bg: #30323a;
+  --warn: #ffb454;
+  --warn-bg: rgb(255 180 84 / 8%);
+  --warn-line: rgb(255 180 84 / 30%);
+  --danger: #ff8a8a;
+  --danger-bg: rgb(255 138 138 / 8%);
+  --danger-line: #5a2e33;
 }
 
 * {
@@ -1531,6 +1570,8 @@ h3 {
 
 /* ---- Details panel -------------------------------------------------------- */
 
+/* The details float beside the work, a card like the composer's, rather
+   than a panel flush against the window's edge. */
 .inspector {
   display: flex;
   width: 340px;
@@ -1539,9 +1580,13 @@ h3 {
   min-height: 0;
   flex-direction: column;
   overflow-y: auto;
+  margin: 12px 12px 12px 0;
   padding: 0 18px 18px;
-  border-left: 1px solid var(--line);
-  background: var(--side);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-xl);
+  background: var(--glass);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(20px);
 }
 
 .inspector[hidden] {
@@ -2678,30 +2723,22 @@ h3 {
   margin-left: 22px;
 }
 
+/* The same row as Scheduled or Projects, set apart only by space. */
 .rail-person {
-  height: 44px;
-  margin-top: 6px;
-  padding: 0 8px;
-  border-top: 1px solid var(--line);
-  border-radius: 0;
-}
-
-.rail-person:hover:not(:disabled),
-.rail-person[aria-pressed="true"] {
-  border-radius: 10px;
+  margin-top: 8px;
 }
 
 .rail-avatar {
   display: inline-flex;
-  width: 26px;
-  height: 26px;
+  width: 20px;
+  height: 20px;
   flex: none;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
   background: var(--accent-gradient);
   color: #ffffff;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -2834,22 +2871,25 @@ h3 {
   font-weight: 600;
 }
 
-/* Weeks stretch to the card's width, so the grid reads at a glance. */
+/* Weeks share the card's width; each day is square, sized from that width
+   and never larger than 24px, however narrow the card gets. */
 .overview-heatmap {
-  display: grid;
-  grid-auto-columns: minmax(0, 1fr);
-  grid-auto-flow: column;
-  gap: 4px;
+  display: flex;
+  justify-content: space-between;
+  gap: 3px;
+  container-type: inline-size;
 }
 
 .overview-week {
-  display: grid;
-  gap: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .overview-day {
-  aspect-ratio: 1;
-  border-radius: 4px;
+  width: min(24px, calc((100cqw - 75px) / 26));
+  height: min(24px, calc((100cqw - 75px) / 26));
+  border-radius: 3px;
   background: var(--line);
 }
 
@@ -3225,4 +3265,856 @@ h3 {
   overflow-wrap: anywhere;
   color: var(--muted);
   font-size: 12px;
+}
+
+/* ---- Sidebar: Projects row and its menu ------------------------------------ */
+
+.rail-projects-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.rail-projects-row > .rail-row {
+  flex: 1;
+}
+
+.rail-projects-row > .rail-add {
+  margin-right: 4px;
+}
+
+.rail-scroll > section > .rail-list {
+  margin-top: 2px;
+  padding-left: 8px;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  min-width: 220px;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--field);
+  box-shadow: var(--shadow);
+}
+
+.context-menu button {
+  display: flex;
+  height: 32px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+}
+
+.context-menu button:hover,
+.context-menu button:focus-visible {
+  background: var(--active-row);
+}
+
+.context-menu .context-menu-danger {
+  color: var(--danger);
+}
+
+.dialog {
+  display: flex;
+  width: min(480px, 100% - 32px);
+  flex-direction: column;
+  gap: 12px;
+  align-self: flex-start;
+  margin-top: 18vh;
+  padding: 22px;
+  border: 1px solid var(--glass-line);
+  border-radius: 22px;
+  background: var(--glass);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(24px);
+}
+
+.dialog h2 {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.dialog p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.dialog code {
+  overflow-wrap: anywhere;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ---- Settings tabs --------------------------------------------------------- */
+
+.settings-tabs {
+  align-self: flex-start;
+  flex-wrap: wrap;
+}
+
+.settings-parts {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.settings-part-heading {
+  margin: 14px 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+/* ---- macOS: no title bar ----------------------------------------------------- */
+
+/* The window's traffic lights sit at the top left, over the sidebar. */
+.app-shell[data-platform="mac"] .rail {
+  padding-top: 40px;
+}
+
+.app-shell[data-platform="mac"] .brand-lockup {
+  margin-top: -6px;
+}
+
+.app-shell[data-platform="mac"][data-sidebar="closed"] .workspace-header {
+  padding-left: 88px;
+}
+
+.app-shell[data-platform="mac"][data-sidebar="closed"] .sidebar-restore {
+  left: 88px;
+}
+
+/* ---- Skills: the "/" menu, chosen skills, and Settings ---------------------- */
+
+.composer-dock {
+  position: relative;
+}
+
+/* Above the composer, as the chips' panels are. */
+.slash-menu {
+  position: absolute;
+  z-index: 25;
+  bottom: calc(100% - 4px);
+  left: max(24px, calc((100% - 760px) / 2));
+  width: min(520px, calc(100% - 48px));
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--field);
+  box-shadow: var(--shadow);
+}
+
+.slash-menu ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.slash-menu li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 9px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.slash-menu li[data-active="true"],
+.slash-menu li:hover {
+  background: var(--active-row);
+}
+
+.slash-name {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-title {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.slash-meta {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.slash-description {
+  grid-column: 2 / -1;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.slash-empty,
+.slash-hint {
+  margin: 0;
+  padding: 6px 9px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.slash-hint {
+  color: var(--faint);
+  font-size: 11.5px;
+}
+
+.skill-chip strong {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.skills-where code {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.skill-list {
+  display: flex;
+  flex-direction: column;
+  margin: 4px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.skill-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.skill-list-text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 14px;
+}
+
+.skill-list-text code {
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+.skill-list-text span,
+.skill-list-text small {
+  color: var(--muted);
+}
+
+.skill-list-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.settings-actions {
+  margin-top: 4px;
+}
+
+/* Settings parts: a card per part, with room between its lines. */
+.skills-settings {
+  gap: 12px;
+  padding: 20px 24px;
+}
+
+.skills-settings .settings-part-heading {
+  margin: 0;
+}
+
+/* The Apps and Models views, when shown inside Settings rather than as a
+   screen of their own. */
+.settings-card > .models-view,
+.settings-view > .models-view {
+  padding: 16px 0;
+  overflow: visible;
+}
+
+.appearance {
+  margin: 0;
+  border: 0;
+}
+
+.appearance legend {
+  margin-bottom: 10px;
+  padding: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* A theme change eases rather than flashing (Apple: avoid abrupt
+   brightness jumps). */
+body,
+.rail,
+.workspace,
+.composer,
+.settings-card,
+.inspector {
+  transition:
+    background-color 220ms ease,
+    color 220ms ease,
+    border-color 220ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body,
+  .rail,
+  .workspace,
+  .composer,
+  .settings-card,
+  .inspector {
+    transition: none;
+  }
+}
+
+/* ---- Moving the window (ADR 0069) ------------------------------------------ */
+
+.rail {
+  position: relative;
+}
+
+/* Invisible strips that move the window. Under the window's own buttons and
+   above nothing that can be clicked: the header's controls start below them. */
+.window-drag {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 12px;
+}
+
+.window-drag[data-tall="true"] {
+  height: 44px;
+}
+
+.window-drag--rail {
+  height: 34px;
+}
+
+.app-shell[data-platform="other"] .window-drag {
+  display: none;
+}
+
+/* The header's own empty space moves the window too. */
+.workspace-header,
+.workspace-title,
+.workspace-header-end {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ---- Terminal: the commands a task ran -------------------------------------- */
+
+/* A terminal reads as one in either theme: always dark, monospaced. */
+.terminal {
+  position: absolute;
+  z-index: 15;
+  right: 24px;
+  bottom: 168px;
+  display: flex;
+  width: min(560px, calc(100% - 48px));
+  max-height: min(46vh, 420px);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: var(--radius-lg);
+  background: rgb(14 15 19 / 94%);
+  box-shadow: 0 20px 50px rgb(0 0 0 / 35%);
+  color: #d7dbe2;
+  backdrop-filter: blur(20px);
+  transform-origin: 100% 100%;
+  animation: surface-in 260ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+.terminal-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px 9px 14px;
+  border-bottom: 1px solid rgb(255 255 255 / 7%);
+  font-size: 13px;
+}
+
+.terminal-bar span {
+  flex: 1;
+  color: #8b909a;
+}
+
+.terminal-close {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 8%);
+  color: #c4c8cf;
+}
+
+.terminal-close:hover {
+  background: rgb(255 255 255 / 14%);
+}
+
+.terminal-body {
+  overflow-y: auto;
+  padding: 10px 14px 14px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.terminal-run + .terminal-run {
+  margin-top: 14px;
+}
+
+.terminal-command {
+  color: #f2f4f7;
+  font-weight: 600;
+}
+
+.terminal-command span {
+  color: #7ee2a8;
+}
+
+.terminal-out {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.terminal-err {
+  color: #ffb3b3;
+}
+
+.terminal-status {
+  margin-top: 4px;
+  color: #8b909a;
+}
+
+.terminal-run[data-status="running"] .terminal-status,
+.terminal-run[data-status="waiting"] .terminal-status {
+  color: #ffd27a;
+}
+
+.terminal-run[data-status="done"] .terminal-status {
+  color: #7ee2a8;
+}
+
+.terminal-run[data-status="failed"] .terminal-status,
+.terminal-run[data-status="refused"] .terminal-status {
+  color: #ff9a9a;
+}
+
+/* Surfaces arrive from where they belong: grown from their anchor, not
+   faded in from nowhere (Apple: spatial consistency). */
+@keyframes surface-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal {
+    animation: fade-in 150ms ease;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ---- Model guide ------------------------------------------------------------- */
+
+.model-guide {
+  gap: 12px;
+  padding: 18px 24px 20px;
+}
+
+.model-guide > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.model-guide > summary::-webkit-details-marker {
+  display: none;
+}
+
+.model-guide[open] > summary {
+  margin-bottom: 8px;
+}
+
+.guide-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.guide-step {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.guide-step h3 {
+  margin: 3px 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.guide-step p {
+  margin: 4px 0;
+  color: var(--soft);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.guide-number {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line2);
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.guide-step[data-done="true"] .guide-number {
+  border-color: transparent;
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.guide-command {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 10px;
+  background: var(--seg);
+}
+
+.guide-command code {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+}
+
+.guide-command .button {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12.5px;
+}
+
+.guide-model + .guide-model {
+  margin-top: 10px;
+}
+
+.guide-found code,
+.guide-found-list code {
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+}
+
+.guide-found-list {
+  margin: 4px 0 10px;
+  padding-left: 18px;
+  color: var(--soft);
+  font-size: 13px;
+}
+
+/* ---- Motion and feedback (Apple's fluid-interface guidance) ---------------- */
+
+/* One curve for everything that arrives: fast out of the gate, settling
+   without overshoot, like a critically damped spring. */
+:root {
+  --ease-out: cubic-bezier(0.2, 0.9, 0.3, 1);
+  --ease-standard: cubic-bezier(0.3, 0, 0.2, 1);
+}
+
+/* Feedback on press, not release: controls give under the pointer at once. */
+.button,
+.icon-button,
+.pill-button,
+.send-button,
+.attach-button,
+.dictate-button,
+.chip,
+.rail-row,
+.rail-search,
+.rail-add,
+.mode-switch button,
+.overview-segments button,
+.context-menu button,
+.chip-list button,
+.thread-goal,
+.terminal-close,
+.close-button {
+  transition:
+    transform 140ms var(--ease-out),
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    box-shadow 160ms ease,
+    opacity 160ms ease;
+}
+
+.button:active:not(:disabled),
+.icon-button:active:not(:disabled),
+.pill-button:active:not(:disabled),
+.send-button:active:not(:disabled),
+.attach-button:active:not(:disabled),
+.dictate-button:active:not(:disabled),
+.chip:active:not(:disabled),
+.rail-add:active:not(:disabled),
+.mode-switch button:active,
+.overview-segments button:active,
+.terminal-close:active,
+.close-button:active {
+  transform: scale(0.96);
+  transition-duration: 60ms;
+}
+
+/* Rows dip less: they are wide, and a large surface should move less. */
+.rail-row:active:not(:disabled),
+.rail-search:active,
+.context-menu button:active,
+.chip-list button:active,
+.thread-goal:active {
+  transform: scale(0.985);
+  transition-duration: 60ms;
+}
+
+/* Popovers grow from the control that opened them. The chips and the "/"
+   menu sit below their panel, so the panel grows up from its bottom left;
+   a right-click menu grows from where the pointer was. */
+.chip-popover,
+.slash-menu {
+  transform-origin: 0 100%;
+  animation: surface-in 200ms var(--ease-out);
+}
+
+.context-menu {
+  transform-origin: 0 0;
+  animation: menu-in 160ms var(--ease-out);
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+}
+
+/* Dialogs dim the window behind them and rise into place. */
+.search-backdrop {
+  animation: scrim-in 200ms ease;
+  backdrop-filter: blur(2px);
+}
+
+@keyframes scrim-in {
+  from {
+    background-color: transparent;
+    backdrop-filter: blur(0);
+  }
+}
+
+.search-panel,
+.share-dialog,
+.dialog {
+  transform-origin: 50% 0;
+  animation: dialog-in 240ms var(--ease-out);
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+}
+
+/* The details float in from the side they live on. */
+.inspector:not([hidden]) {
+  animation: from-right 260ms var(--ease-out);
+}
+
+@keyframes from-right {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+}
+
+/* A task arriving in the thread settles up into place. */
+.thread-item:last-child {
+  animation: rise-in 280ms var(--ease-out);
+}
+
+.agent-home,
+.settings-view > *,
+.chat-home {
+  animation: rise-in 320ms var(--ease-out) both;
+}
+
+.settings-view > :nth-child(2) {
+  animation-delay: 30ms;
+}
+
+.settings-view > :nth-child(3) {
+  animation-delay: 60ms;
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* The composer lifts a little when it has the keyboard. */
+.composer {
+  transition:
+    box-shadow 200ms ease,
+    transform 200ms var(--ease-out);
+}
+
+.composer:focus-within {
+  box-shadow:
+    var(--shadow),
+    0 0 0 4px var(--ask-bg);
+}
+
+/* Rows answer the pointer before the click. */
+.rail-row:hover:not(:disabled) {
+  transition-duration: 80ms;
+}
+
+/* Reduced motion: the same states, reached by a short cross-fade rather
+   than movement or scale. */
+@media (prefers-reduced-motion: reduce) {
+  .chip-popover,
+  .slash-menu,
+  .context-menu,
+  .search-backdrop,
+  .search-panel,
+  .share-dialog,
+  .dialog,
+  .inspector:not([hidden]),
+  .thread-item:last-child,
+  .agent-home,
+  .settings-view > *,
+  .chat-home {
+    animation: fade-in 150ms ease both;
+  }
+
+  .button:active:not(:disabled),
+  .icon-button:active:not(:disabled),
+  .pill-button:active:not(:disabled),
+  .send-button:active:not(:disabled),
+  .attach-button:active:not(:disabled),
+  .dictate-button:active:not(:disabled),
+  .chip:active:not(:disabled),
+  .rail-add:active:not(:disabled),
+  .mode-switch button:active,
+  .overview-segments button:active,
+  .terminal-close:active,
+  .close-button:active,
+  .rail-row:active:not(:disabled),
+  .rail-search:active,
+  .context-menu button:active,
+  .chip-list button:active,
+  .thread-goal:active {
+    transform: none;
+  }
+}
+
+/* Reduced transparency: glass becomes solid, so text never sits on a blur. */
+@media (prefers-reduced-transparency: reduce) {
+  .composer,
+  .inspector,
+  .search-panel,
+  .share-dialog,
+  .dialog,
+  .terminal {
+    backdrop-filter: none;
+    background: var(--field);
+  }
+
+  .terminal {
+    background: #0e0f13;
+  }
+
+  .search-backdrop {
+    backdrop-filter: none;
+  }
+}
+
+/* More contrast: lines and quiet text are drawn firmer. */
+@media (prefers-contrast: more) {
+  /* From the text colour, so it holds in light and dark alike. Repeated
+     :root outranks the theme rules, which name an attribute. */
+  :root:root:root {
+    --line: color-mix(in srgb, var(--text) 30%, transparent);
+    --line2: color-mix(in srgb, var(--text) 45%, transparent);
+    --faint: color-mix(in srgb, var(--text) 72%, transparent);
+    --muted: color-mix(in srgb, var(--text) 80%, transparent);
+  }
+
+  .composer,
+  .inspector,
+  .settings-card,
+  .chip-popover,
+  .context-menu {
+    border-color: var(--line2);
+  }
 }

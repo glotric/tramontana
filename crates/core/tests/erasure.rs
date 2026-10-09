@@ -125,28 +125,34 @@ fn service(chunk_delay_ms: u64) -> Arc<TaskService> {
     )
     .unwrap();
     let events = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
-    Arc::new(TaskService::new(
-        Repositories {
-            projects: Arc::new(InMemoryProjectRepository::new()),
-            conversations: Arc::new(InMemoryConversationRepository::new()),
-            tasks: Arc::new(InMemoryTaskRepository::with_events(Arc::clone(&events))),
-            events,
-            configuration: Arc::new(InMemoryConfigurationRepository::new()),
-            checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
-        },
-        Providers {
-            models: vec![Arc::new(FakeModelProvider::streaming_paced(
-                ["one ", "two ", "three"],
-                chunk_delay_ms,
-            ))],
-            tools: registry,
-            permissions,
-            releases,
-            worker: Arc::new(FakeWorker::new()),
-        },
-        Arc::new(FakeClock::new()),
-        Arc::new(SequentialIdSource::new()),
-    ))
+    Arc::new(
+        TaskService::new(
+            Repositories {
+                projects: Arc::new(InMemoryProjectRepository::new()),
+                conversations: Arc::new(InMemoryConversationRepository::new()),
+                tasks: Arc::new(InMemoryTaskRepository::with_events(Arc::clone(&events))),
+                events,
+                configuration: Arc::new(InMemoryConfigurationRepository::new()),
+                checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
+            },
+            Providers {
+                models: vec![Arc::new(FakeModelProvider::streaming_paced(
+                    ["one ", "two ", "three"],
+                    chunk_delay_ms,
+                ))],
+                tools: registry,
+                permissions,
+                releases,
+                worker: Arc::new(FakeWorker::new()),
+            },
+            Arc::new(FakeClock::new()),
+            Arc::new(SequentialIdSource::new()),
+        )
+        // One skill of the person's own, which erasing must take too.
+        .with_skill_library(Arc::new(
+            tramontana_core::testing::InMemorySkillLibrary::holding(&[("tone", "Write plainly.")]),
+        )),
+    )
 }
 
 async fn vault_holding(keys: &[&str]) -> InMemorySecretVault {
@@ -180,6 +186,7 @@ async fn every_credential_the_profile_names_goes_with_its_records() {
         ErasureReport {
             credentials_removed: 2,
             credentials_absent: 1,
+            skills_removed: 1,
         }
     );
     assert_eq!(eraser.calls.load(Ordering::SeqCst), 1);
@@ -187,6 +194,7 @@ async fn every_credential_the_profile_names_goes_with_its_records() {
         assert!(!vault.contains(&secret(gone)).await.unwrap(), "{gone}");
     }
     assert!(vault.contains(&secret("unrelated")).await.unwrap());
+    assert!(service.personal_skills().await.unwrap().is_empty());
 }
 
 #[tokio::test]

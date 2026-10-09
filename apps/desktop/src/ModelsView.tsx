@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { AddEndpointForm } from "./AddEndpointForm.js";
+import { ModelGuide } from "./ModelGuide.js";
 import {
   asErrorEnvelope,
   checkEndpointModel,
@@ -99,7 +100,8 @@ function describeCredential(credential: CredentialStatus): string {
 
 interface ModelsViewProps {
   /** Return to the work area. */
-  readonly onClose: () => void;
+  /** Return to the work area; absent when shown inside Settings. */
+  readonly onClose?: () => void;
 }
 
 export function ModelsView({ onClose }: ModelsViewProps): React.JSX.Element {
@@ -186,12 +188,18 @@ export function ModelsView({ onClose }: ModelsViewProps): React.JSX.Element {
 
   return (
     <section className="models-view" aria-labelledby="models-heading">
-      <div className="section-heading-row">
-        <h1 id="models-heading">Models and credentials</h1>
-        <button type="button" className="button button--secondary" onClick={onClose}>
-          Back to work
-        </button>
-      </div>
+      {onClose === undefined ? (
+        <h2 id="models-heading" className="settings-part-heading">
+          Models and credentials
+        </h2>
+      ) : (
+        <div className="section-heading-row">
+          <h1 id="models-heading">Models and credentials</h1>
+          <button type="button" className="button button--secondary" onClick={onClose}>
+            Back to work
+          </button>
+        </div>
+      )}
 
       {failure !== undefined && (
         <p className="notice notice--error" role="alert">
@@ -226,6 +234,8 @@ export function ModelsView({ onClose }: ModelsViewProps): React.JSX.Element {
           )}
         </div>
       )}
+
+      {configured !== undefined && <ModelGuide hasEndpoint={configured.length > 0} />}
 
       {configured === undefined ? (
         <p className="inline-empty">Reading the model settings…</p>

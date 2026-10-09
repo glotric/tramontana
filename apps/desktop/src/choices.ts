@@ -67,8 +67,8 @@ export function describeChoices(
     skills === 0
       ? ""
       : skills === 1
-        ? " It is given one of the project's skills to follow."
-        : ` It is given ${skills} of the project's skills to follow.`;
+        ? " It is given one skill to follow."
+        : ` It is given ${skills} skills to follow.`;
   return `${MODE_TEXT[mode]} ${access}${commands}${browsing}${chosen}`;
 }
 

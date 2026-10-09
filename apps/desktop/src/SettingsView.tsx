@@ -5,6 +5,8 @@ import { asErrorEnvelope, forget, personalProfile, remember, updatePersonal } fr
 import { DictationSettings } from "./Dictation.js";
 import { EraseAllData } from "./EraseAllData.js";
 import { Glyph } from "./Glyph.js";
+import { chooseTheme, rememberedTheme } from "./theme.js";
+import type { Theme } from "./theme.js";
 import type { GlyphHue, GlyphIcon } from "./Glyph.js";
 
 const STYLES: readonly {
@@ -46,7 +48,38 @@ function message(error: unknown, fallback: string): string {
  * about the person, and the notes they remember. Everything here is the
  * person's own words, shown in full; nothing is remembered on its own.
  */
-export function SettingsView(): React.JSX.Element {
+const THEMES: readonly (readonly [Theme, string])[] = [
+  ["system", "Same as this computer"],
+  ["light", "Light"],
+  ["dark", "Dark"],
+];
+
+/** Settings, General, Appearance: light, dark, or as the computer is. */
+function AppearanceSettings(): React.JSX.Element {
+  const [theme, setTheme] = useState<Theme>(rememberedTheme);
+  return (
+    <fieldset className="settings-section appearance">
+      <legend>Appearance</legend>
+      <div className="overview-segments" role="group" aria-label="Appearance">
+        {THEMES.map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={theme === value}
+            onClick={() => {
+              chooseTheme(value);
+              setTheme(value);
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+function GeneralSettings(): React.JSX.Element {
   const [profile, setProfile] = useState<PersonalProfile | undefined>();
   const [name, setName] = useState("");
   const [about, setAbout] = useState("");
@@ -87,186 +120,245 @@ export function SettingsView(): React.JSX.Element {
       memory !== profile.memoryEnabled);
 
   return (
-    <section className="settings-view" aria-labelledby="settings-heading">
-      <h1 id="settings-heading">Settings</h1>
-      <div className="settings-card">
-        <div className="settings-intro">
-          <Glyph icon="lock" hue="green" size={48} />
-          <p>
-            What you write here is kept on this computer and given only to chats, never to Agent
-            tasks. It is marked as sensitive: you are asked before it goes to a cloud model, and
-            Local only keeps it on this device.
-          </p>
+    <div className="settings-card">
+      <div className="settings-intro">
+        <Glyph icon="lock" hue="green" size={48} />
+        <p>
+          What you write here is kept on this computer and given only to chats, never to Agent
+          tasks. It is marked as sensitive: you are asked before it goes to a cloud model, and Local
+          only keeps it on this device.
+        </p>
+      </div>
+
+      {failure !== undefined && (
+        <p className="notice notice--error" role="alert">
+          {failure}
+        </p>
+      )}
+
+      <form
+        className="settings-section"
+        onSubmit={(submitted) => {
+          submitted.preventDefault();
+          setFailure(undefined);
+          void updatePersonal({ name, about, answerStyle: style, memoryEnabled: memory }).then(
+            (updated) => {
+              show(updated);
+              setSaved(true);
+            },
+            (error: unknown) => {
+              setFailure(message(error, "Could not save your profile."));
+            },
+          );
+        }}
+      >
+        <label htmlFor="personal-name">What should Tramontana call you?</label>
+        <input
+          id="personal-name"
+          value={name}
+          maxLength={100}
+          onChange={(event) => {
+            setName(event.target.value);
+            setSaved(false);
+          }}
+        />
+        <label htmlFor="personal-about">What do you do at work?</label>
+        <p className="settings-hint">A sentence or two helps chats give more useful answers.</p>
+        <textarea
+          id="personal-about"
+          rows={3}
+          value={about}
+          maxLength={1000}
+          placeholder="For example: I plan maintenance for our crane systems."
+          onChange={(event) => {
+            setAbout(event.target.value);
+            setSaved(false);
+          }}
+        />
+
+        <fieldset className="style-choices">
+          <legend>How should Tramontana answer?</legend>
+          {STYLES.map((choice) => (
+            <label key={choice.id} className="style-choice" data-selected={style === choice.id}>
+              <input
+                type="radio"
+                name="answer-style"
+                value={choice.id}
+                checked={style === choice.id}
+                onChange={() => {
+                  setStyle(choice.id);
+                  setSaved(false);
+                }}
+              />
+              <Glyph icon={choice.icon} hue={choice.hue} size={40} />
+              <strong>{choice.label}</strong>
+              <span>{choice.description}</span>
+            </label>
+          ))}
+        </fieldset>
+
+        <label className="switch-row">
+          <span>
+            <strong>Remember things between chats</strong>
+            <span>
+              Chats are given the notes below. Notes are kept when this is off, but not sent.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            className="switch"
+            checked={memory}
+            onChange={(event) => {
+              setMemory(event.target.checked);
+              setSaved(false);
+            }}
+          />
+        </label>
+
+        <div className="menu-actions">
+          {saved && !changed && (
+            <span className="settings-saved" role="status">
+              Saved
+            </span>
+          )}
+          <button
+            type="submit"
+            className="button button--primary"
+            disabled={profile === undefined || !changed}
+          >
+            Save
+          </button>
         </div>
+      </form>
 
-        {failure !== undefined && (
-          <p className="notice notice--error" role="alert">
-            {failure}
-          </p>
+      <section className="settings-section" aria-labelledby="notes-heading">
+        <h2 id="notes-heading">Notes to remember</h2>
+        <p className="settings-hint">
+          Only what you add here. Tramontana does not remember anything on its own.
+        </p>
+        {profile !== undefined && profile.notes.length > 0 ? (
+          <ul className="memory-notes" aria-label="Notes">
+            {profile.notes.map((kept) => (
+              <li key={kept.noteId}>
+                <span>{kept.text}</span>
+                <button
+                  type="button"
+                  className="file-chip-remove"
+                  aria-label={`Forget “${kept.text}”`}
+                  onClick={() => {
+                    void forget(kept.noteId).then(show, (error: unknown) => {
+                      setFailure(message(error, "Could not forget the note."));
+                    });
+                  }}
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="inline-empty">No notes yet.</p>
         )}
-
         <form
-          className="settings-section"
+          className="new-conversation"
           onSubmit={(submitted) => {
             submitted.preventDefault();
             setFailure(undefined);
-            void updatePersonal({ name, about, answerStyle: style, memoryEnabled: memory }).then(
+            void remember(note).then(
               (updated) => {
                 show(updated);
-                setSaved(true);
+                setNote("");
               },
               (error: unknown) => {
-                setFailure(message(error, "Could not save your profile."));
+                setFailure(message(error, "Could not add the note."));
               },
             );
           }}
         >
-          <label htmlFor="personal-name">What should Tramontana call you?</label>
-          <input
-            id="personal-name"
-            value={name}
-            maxLength={100}
-            onChange={(event) => {
-              setName(event.target.value);
-              setSaved(false);
-            }}
-          />
-          <label htmlFor="personal-about">What do you do at work?</label>
-          <p className="settings-hint">A sentence or two helps chats give more useful answers.</p>
-          <textarea
-            id="personal-about"
-            rows={3}
-            value={about}
-            maxLength={1000}
-            placeholder="For example: I plan maintenance for our crane systems."
-            onChange={(event) => {
-              setAbout(event.target.value);
-              setSaved(false);
-            }}
-          />
-
-          <fieldset className="style-choices">
-            <legend>How should Tramontana answer?</legend>
-            {STYLES.map((choice) => (
-              <label key={choice.id} className="style-choice" data-selected={style === choice.id}>
-                <input
-                  type="radio"
-                  name="answer-style"
-                  value={choice.id}
-                  checked={style === choice.id}
-                  onChange={() => {
-                    setStyle(choice.id);
-                    setSaved(false);
-                  }}
-                />
-                <Glyph icon={choice.icon} hue={choice.hue} size={40} />
-                <strong>{choice.label}</strong>
-                <span>{choice.description}</span>
-              </label>
-            ))}
-          </fieldset>
-
-          <label className="switch-row">
-            <span>
-              <strong>Remember things between chats</strong>
-              <span>
-                Chats are given the notes below. Notes are kept when this is off, but not sent.
-              </span>
-            </span>
-            <input
-              type="checkbox"
-              role="switch"
-              className="switch"
-              checked={memory}
-              onChange={(event) => {
-                setMemory(event.target.checked);
-                setSaved(false);
-              }}
-            />
+          <label className="sr-only" htmlFor="memory-note">
+            New note
           </label>
-
-          <div className="menu-actions">
-            {saved && !changed && (
-              <span className="settings-saved" role="status">
-                Saved
-              </span>
-            )}
-            <button
-              type="submit"
-              className="button button--primary"
-              disabled={profile === undefined || !changed}
-            >
-              Save
-            </button>
-          </div>
+          <input
+            id="memory-note"
+            value={note}
+            maxLength={500}
+            placeholder="For example: Our site is in Koper."
+            onChange={(event) => {
+              setNote(event.target.value);
+            }}
+          />
+          <button type="submit" disabled={note.trim() === ""}>
+            Remember
+          </button>
         </form>
+      </section>
 
-        <section className="settings-section" aria-labelledby="notes-heading">
-          <h2 id="notes-heading">Notes to remember</h2>
-          <p className="settings-hint">
-            Only what you add here. Tramontana does not remember anything on its own.
-          </p>
-          {profile !== undefined && profile.notes.length > 0 ? (
-            <ul className="memory-notes" aria-label="Notes">
-              {profile.notes.map((kept) => (
-                <li key={kept.noteId}>
-                  <span>{kept.text}</span>
-                  <button
-                    type="button"
-                    className="file-chip-remove"
-                    aria-label={`Forget “${kept.text}”`}
-                    onClick={() => {
-                      void forget(kept.noteId).then(show, (error: unknown) => {
-                        setFailure(message(error, "Could not forget the note."));
-                      });
-                    }}
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="inline-empty">No notes yet.</p>
-          )}
-          <form
-            className="new-conversation"
-            onSubmit={(submitted) => {
-              submitted.preventDefault();
-              setFailure(undefined);
-              void remember(note).then(
-                (updated) => {
-                  show(updated);
-                  setNote("");
-                },
-                (error: unknown) => {
-                  setFailure(message(error, "Could not add the note."));
-                },
-              );
+      <DictationSettings />
+    </div>
+  );
+}
+
+export type SettingsTab = "general" | "customize" | "models" | "data";
+
+const TABS: readonly (readonly [SettingsTab, string])[] = [
+  ["general", "General"],
+  ["customize", "Customize"],
+  ["models", "Models and credentials"],
+  ["data", "Data"],
+];
+
+/**
+ * Settings, in four parts: what chats are told about the person and how
+ * they dictate; what Tramontana is extended with (skills and connectors);
+ * the models it runs on; and the profile's data.
+ */
+export function SettingsView({
+  tab,
+  onTab,
+  customize,
+  models,
+}: {
+  readonly tab: SettingsTab;
+  readonly onTab: (tab: SettingsTab) => void;
+  /** The Customize part: skills and connectors. */
+  readonly customize: React.ReactNode;
+  /** The Models and credentials part. */
+  readonly models: React.ReactNode;
+}): React.JSX.Element {
+  return (
+    <section className="settings-view" aria-labelledby="settings-heading">
+      <h1 id="settings-heading">Settings</h1>
+      <div className="settings-tabs overview-segments" role="group" aria-label="Settings sections">
+        {TABS.map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={tab === value}
+            onClick={() => {
+              onTab(value);
             }}
           >
-            <label className="sr-only" htmlFor="memory-note">
-              New note
-            </label>
-            <input
-              id="memory-note"
-              value={note}
-              maxLength={500}
-              placeholder="For example: Our site is in Koper."
-              onChange={(event) => {
-                setNote(event.target.value);
-              }}
-            />
-            <button type="submit" disabled={note.trim() === ""}>
-              Remember
-            </button>
-          </form>
-        </section>
-
-        <DictationSettings />
-
-        <EraseAllData />
+            {label}
+          </button>
+        ))}
       </div>
+      {tab === "general" ? (
+        <div className="settings-parts">
+          <div className="settings-card">
+            <AppearanceSettings />
+          </div>
+          <GeneralSettings />
+        </div>
+      ) : tab === "customize" ? (
+        customize
+      ) : tab === "models" ? (
+        models
+      ) : (
+        <div className="settings-card">
+          <EraseAllData />
+        </div>
+      )}
     </section>
   );
 }

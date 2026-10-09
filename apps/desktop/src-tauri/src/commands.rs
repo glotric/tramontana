@@ -354,6 +354,72 @@ pub(crate) async fn choose_dictation(
         .map(Some)
 }
 
+/// What the model guide can see on this computer: `llama-server` where
+/// installers put it, and model files in the usual download folders. Runs
+/// and downloads nothing.
+#[tauri::command]
+pub(crate) fn model_setup_hints() -> Option<crate::model_hints::ModelSetupHints> {
+    crate::model_hints::home().map(|home| crate::model_hints::find(&home))
+}
+
+/// The person's own skills (ADR 0070).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn list_personal_skills(
+    state: State<'_, AppState>,
+) -> Result<Vec<tramontana_core::contracts::PersonalSkill>, ErrorEnvelope> {
+    state.service.personal_skills().await
+}
+
+/// Where the person's skills are kept, to show them.
+#[tauri::command]
+pub(crate) fn skills_folder(state: State<'_, AppState>) -> String {
+    state.skills_folder.display().to_string()
+}
+
+/// Import a skill picked in the native dialog: a skill folder when `folder`,
+/// otherwise a `.zip` or `.md` file. Only its `SKILL.md` is read; `None`
+/// when the person cancels (ADR 0070).
+///
+/// # Errors
+///
+/// [`ErrorCode::InvalidRequest`] when it holds no usable `SKILL.md`, or
+/// whatever the service reports.
+#[tauri::command]
+pub(crate) async fn import_skill(
+    folder: bool,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<tramontana_core::contracts::PersonalSkill>, ErrorEnvelope> {
+    let picked = if folder {
+        pick_folder(&app, "Choose a skill folder (with a SKILL.md)").await?
+    } else {
+        pick_file(&app, "Choose a skill: a .zip, or a .md file").await?
+    };
+    let Some(path) = picked else {
+        return Ok(None);
+    };
+    let (name, markdown) = tramontana_platform::read_skill_source(&path)
+        .map_err(|error| invalid(format!("Could not import the skill: {error}")))?;
+    state.service.import_skill(&markdown, &name).await.map(Some)
+}
+
+/// Delete one of the person's skills (ADR 0070).
+///
+/// # Errors
+///
+/// Whatever the service reports.
+#[tauri::command]
+pub(crate) async fn remove_skill(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<(), ErrorEnvelope> {
+    state.service.remove_skill(&id).await
+}
+
 /// Forget the dictation setup; the files are not touched (ADR 0065).
 ///
 /// # Errors
@@ -557,6 +623,8 @@ pub(crate) struct TaskChoices {
     pub(crate) worker: Option<String>,
     /// The project's skills this task uses, by declared id.
     pub(crate) skills: Option<Vec<String>>,
+    /// The person's own skills this task uses, by id (ADR 0070).
+    pub(crate) personal_skills: Option<Vec<String>>,
     /// Files picked with [`choose_attachments`] for this message, by token
     /// (ADR 0058).
     pub(crate) attachments: Option<Vec<String>>,
@@ -636,6 +704,7 @@ where
                 ..ConfigurationSelection::default()
             }),
             attachments,
+            personal_skills: choices.personal_skills.unwrap_or_default(),
         })
         .await?;
     for token in &tokens {

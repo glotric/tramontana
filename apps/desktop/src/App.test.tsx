@@ -39,6 +39,8 @@ const latestCheckpoint = vi.hoisted(() => vi.fn());
 const listWorkers = vi.hoisted(() => vi.fn());
 const listSkills = vi.hoisted(() => vi.fn());
 const suggestSkills = vi.hoisted(() => vi.fn());
+const deleteProject = vi.hoisted(() => vi.fn());
+const listPersonalSkills = vi.hoisted(() => vi.fn());
 
 vi.mock("./core.js", async () => {
   const actual = await vi.importActual<CoreModule>("./core.js");
@@ -67,6 +69,8 @@ vi.mock("./core.js", async () => {
     listWorkers,
     listSkills,
     suggestSkills,
+    deleteProject,
+    listPersonalSkills,
   };
 });
 
@@ -193,10 +197,12 @@ async function openChip(user: ReturnType<typeof userEvent.setup>, name: string):
   await user.click(screen.getByRole("button", { name: new RegExp(`^${name}:`) }));
 }
 
-/** The rarer screens sit under More in the sidebar. */
-async function openMore(user: ReturnType<typeof userEvent.setup>): Promise<void> {
-  const more = screen.getByRole("button", { name: "More" });
-  if (more.getAttribute("aria-expanded") !== "true") await user.click(more);
+/** Open a part of Settings: "Models and credentials", "Customize". */
+async function openSettings(user: ReturnType<typeof userEvent.setup>, part: string): Promise<void> {
+  if (screen.queryByRole("heading", { name: "Settings", level: 1 }) === null) {
+    await user.click(screen.getByRole("button", { name: /Settings/ }));
+  }
+  await user.click(screen.getByRole("button", { name: part }));
 }
 
 /**
@@ -281,6 +287,8 @@ describe("M2 durable desktop surface", () => {
       watchTask,
       latestCheckpoint,
       listApps,
+      deleteProject,
+      listPersonalSkills,
     ]) {
       mock.mockReset();
     }
@@ -289,6 +297,7 @@ describe("M2 durable desktop surface", () => {
     listApps.mockResolvedValue([]);
     listWorkers.mockResolvedValue([]);
     listSkills.mockResolvedValue([]);
+    listPersonalSkills.mockResolvedValue([]);
     suggestSkills.mockResolvedValue([]);
     listProjectGrants.mockResolvedValue([]);
     listConfiguredEndpoints.mockResolvedValue([]);
@@ -364,8 +373,7 @@ describe("M2 durable desktop surface", () => {
     // Models or Apps left no button to show it again.
     const user = userEvent.setup();
     await renderLoaded();
-    await openMore(user);
-    await user.click(screen.getByRole("button", { name: "Models and credentials" }));
+    await openSettings(user, "Models and credentials");
     await user.click(screen.getByRole("button", { name: "Hide sidebar" }));
     expect(
       screen.queryByRole("complementary", { name: "Projects and conversations" }),
@@ -496,27 +504,76 @@ describe("M2 durable desktop surface", () => {
     expect(screen.getByRole("heading", { name: "New task", level: 1 })).toBeInTheDocument();
   });
 
-  it("keeps the rarer screens under More, the same in Chat and Agent", async () => {
+  it("keeps projects in the sidebar and models and connectors in Settings, in both modes", async () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByRole("button", { name: "Project: Tramontana" });
 
     for (const mode of ["Agent", "Chat"]) {
       await user.click(screen.getByRole("button", { name: mode }));
-      expect(screen.getByRole("button", { name: "Scheduled" })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "More" })).toHaveAttribute(
-        "aria-expanded",
-        "false",
+      const sidebar = within(
+        screen.getByRole("complementary", { name: "Projects and conversations" }),
       );
-      expect(screen.queryByRole("button", { name: "Apps" })).not.toBeInTheDocument();
+      expect(sidebar.getByRole("button", { name: "Scheduled" })).toBeInTheDocument();
+      expect(sidebar.getByRole("button", { name: "Projects" })).toBeInTheDocument();
+      expect(sidebar.getByRole("button", { name: "Open project" })).toBeInTheDocument();
+      expect(sidebar.queryByRole("button", { name: "More" })).not.toBeInTheDocument();
+      expect(
+        sidebar.queryByRole("button", { name: "Models and credentials" }),
+      ).not.toBeInTheDocument();
     }
 
-    await user.click(screen.getByRole("button", { name: "More" }));
-    for (const name of ["Projects", "Models and credentials", "Apps"]) {
-      expect(screen.getByRole("button", { name })).toBeInTheDocument();
+    await openSettings(user, "Customize");
+    expect(await screen.findByRole("heading", { name: "Apps", level: 2 })).toBeInTheDocument();
+    for (const part of ["General", "Customize", "Models and credentials", "Data"]) {
+      expect(screen.getByRole("button", { name: part })).toBeInTheDocument();
     }
-    // Remembered, as the mode is: a convenience of this window, not a record.
-    expect(localStorage.getItem("tramontana.sidebar.more")).toBe("open");
+  });
+
+  it("removes a project from its right-click menu, after asking, and opens the next one", async () => {
+    const other: ProjectRecord = {
+      ...project,
+      projectId: "project-2",
+      name: "Harbor Cafe",
+      roots: ["/work/harbor"],
+    };
+    let listed = [project, other];
+    listProjects.mockImplementation(() => Promise.resolve(listed));
+    deleteProject.mockImplementation(() => {
+      listed = [other];
+      return Promise.resolve(undefined);
+    });
+    inspectProject.mockImplementation((projectId: string) =>
+      Promise.resolve({
+        schemaVersion: 1,
+        project: projectId === other.projectId ? other : project,
+        configuration,
+      }),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    const row = await screen.findByRole("button", { name: "Tramontana" });
+
+    fireEvent.contextMenu(row, { clientX: 40, clientY: 200 });
+    const menu = screen.getByRole("menu", { name: "Tramontana options" });
+    await user.click(within(menu).getByRole("menuitem", { name: /Remove from Tramontana/ }));
+
+    const dialog = screen.getByRole("alertdialog", { name: "Remove Tramontana from Tramontana?" });
+    expect(dialog).toHaveTextContent("The folder and its files are not touched");
+    expect(dialog).toHaveTextContent("/work/tramontana");
+    // Keep is the safe answer, and changes nothing.
+    await user.click(within(dialog).getByRole("button", { name: "Keep" }));
+    expect(deleteProject).not.toHaveBeenCalled();
+
+    fireEvent.contextMenu(row, { clientX: 40, clientY: 200 });
+    await user.click(screen.getByRole("menuitem", { name: /Remove from Tramontana/ }));
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => {
+      expect(deleteProject).toHaveBeenCalledWith(project.projectId);
+    });
+    // The open project went; the next one opens in its place.
+    expect(await screen.findByRole("button", { name: "Project: Harbor Cafe" })).toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
   it("opens a native-picked project and refreshes the durable recents", async () => {
@@ -639,6 +696,79 @@ describe("M2 durable desktop surface", () => {
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
     });
+  });
+
+  it("opens a terminal when the task runs a command, showing what it printed", async () => {
+    const updates = captureUpdates();
+    const user = userEvent.setup();
+    await renderLoaded();
+    expect(screen.queryByRole("region", { name: "Terminal" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Terminal" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalled();
+    });
+    updates.emit({
+      kind: "event",
+      event: event(1, { kind: "taskCreated", goalSummary: "Say hello" }),
+    });
+    updates.emit({
+      kind: "event",
+      event: event(2, {
+        kind: "toolRequested",
+        invocationId: "run-1",
+        toolId: "builtin.recipe.run",
+        argumentsSummary: "recipe test",
+        riskClass: "dangerous",
+      }),
+    });
+
+    // It opens by itself the moment a command is asked for.
+    const terminal = await screen.findByRole("region", { name: "Terminal" });
+    expect(terminal).toHaveTextContent("$ recipe test");
+    expect(terminal).toHaveTextContent("waiting for your approval");
+
+    updates.emit({
+      kind: "event",
+      event: event(3, {
+        kind: "messageCommitted",
+        message: {
+          schemaVersion: 1,
+          messageId: "m-1",
+          role: "tool",
+          createdAt: "2026-01-01T00:00:01.000Z",
+          parts: [
+            {
+              kind: "toolResult",
+              invocationId: "run-1",
+              content: { exitCode: 0, stdout: "Ran 2 tests\nOK", stderr: "" },
+              truncated: false,
+            },
+          ],
+        },
+      } as unknown as EventPayload),
+    });
+    updates.emit({
+      kind: "event",
+      event: event(4, {
+        kind: "toolCompleted",
+        invocationId: "run-1",
+        displaySummary: "Recipe `test` passed",
+        sideEffect: "external",
+        truncated: false,
+      }),
+    });
+    await waitFor(() => {
+      expect(terminal).toHaveTextContent("done · exit 0");
+    });
+    expect(terminal).toHaveTextContent("Ran 2 tests");
+
+    // Closed, it waits behind a header button.
+    await user.click(within(terminal).getByRole("button", { name: "Close terminal" }));
+    expect(screen.queryByRole("region", { name: "Terminal" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Terminal" }));
+    expect(screen.getByRole("region", { name: "Terminal" })).toBeInTheDocument();
   });
 
   it("puts a question raised before this window opened to the person", async () => {
@@ -770,7 +900,7 @@ describe("M2 durable desktop surface", () => {
     });
   });
 
-  it("gives a task the project's skills the person ticked, and none otherwise", async () => {
+  it("gives a task the project's skills chosen with /, and none otherwise", async () => {
     listSkills.mockResolvedValue([
       { id: "review", displayName: "Review Rust", description: "Look for unsafe code." },
       { id: "release", displayName: "Release checklist" },
@@ -778,10 +908,7 @@ describe("M2 durable desktop surface", () => {
     const user = userEvent.setup();
     await renderLoaded();
 
-    // Offering is not selecting: nothing is ticked until the person ticks it.
-    await screen.findByRole("button", { name: "Skills: Skills" });
-    await openChip(user, "Skills");
-    await screen.findByText(/Review Rust — Look for unsafe code\./);
+    // Offering is not selecting: nothing is chosen until the person picks it.
     await user.click(screen.getByRole("button", { name: "Start task" }));
     await waitFor(() => {
       expect(startTask).toHaveBeenCalledWith(
@@ -792,23 +919,67 @@ describe("M2 durable desktop surface", () => {
       );
     });
 
-    writeGoal();
-    await openChip(user, "Skills");
-    await user.click(screen.getByRole("checkbox", { name: /Review Rust/ }));
-    expect(screen.getByRole("button", { name: "Skills: 1 skill" })).toBeInTheDocument();
-    expect(screen.getByText(/It is given one of the project's skills to follow\./)).toBeTruthy();
+    const goal = screen.getByLabelText("Task goal");
+    await user.type(goal, "Check it /rev");
+    const menu = await screen.findByRole("listbox", { name: "Skills" });
+    expect(within(menu).getAllByRole("option")).toHaveLength(1);
+    expect(within(menu).getByRole("option")).toHaveTextContent("/review");
+    await user.keyboard("{Enter}");
+    // The `/word` was only how it was asked for; the skill is now a chip.
+    expect(goal).toHaveValue("Check it ");
+    expect(screen.getByRole("list", { name: "Skills for this message" })).toHaveTextContent(
+      "/review",
+    );
+    expect(screen.getByText(/It is given one skill to follow\./)).toBeTruthy();
+
     await user.click(screen.getByRole("button", { name: "Start task" }));
     await waitFor(() => {
       expect(startTask).toHaveBeenLastCalledWith(
-        "Say hello",
+        "Check it",
         expect.any(Function),
         conversation.conversationId,
         expect.objectContaining({ skills: ["review"] }),
       );
     });
+    // It went with that message; the next starts with none.
+    await waitFor(() => {
+      expect(screen.queryByRole("list", { name: "Skills for this message" })).toBeNull();
+    });
   });
 
-  it("marks the skills that match the goal and shows them first, ticking none", async () => {
+  it("offers the person's own skills with /, and gives them to the task", async () => {
+    listPersonalSkills.mockResolvedValue([
+      {
+        schemaVersion: 1,
+        id: "plain-english",
+        name: "Plain English",
+        description: "Short sentences.",
+        contentHash: "h",
+        byteCount: 40,
+      },
+    ]);
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    const goal = screen.getByLabelText("Task goal");
+    await user.clear(goal);
+    await user.type(goal, "/pla");
+    const option = await screen.findByRole("option", { name: /plain-english/ });
+    expect(option).toHaveTextContent("your skill");
+    await user.click(option);
+    await user.type(goal, "Explain the menu");
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalledWith(
+        "Explain the menu",
+        expect.any(Function),
+        conversation.conversationId,
+        expect.objectContaining({ personalSkills: ["plain-english"] }),
+      );
+    });
+  });
+
+  it("marks the skills that match the goal and lists them first, choosing none", async () => {
     listSkills.mockResolvedValue([
       { id: "release", displayName: "Release checklist" },
       { id: "rust-quality", displayName: "Rust quality pass", description: "Format and lint." },
@@ -817,23 +988,24 @@ describe("M2 durable desktop surface", () => {
     const user = userEvent.setup();
     await renderLoaded();
 
-    await openChip(user, "Skills");
-    const marked = await screen.findByText("suggested for this goal");
-    // Said in words, and put first, without ticking anything.
-    const boxes = screen.getAllByRole<HTMLInputElement>("checkbox", { name: /pass|checklist/ });
-    expect(boxes.map((box) => box.checked)).toEqual([false, false]);
-    expect(marked.closest("label")?.textContent).toContain("Rust quality pass");
-    const names = screen
-      .getAllByRole("checkbox", { name: /pass|checklist/ })
-      .map((box) => box.closest("label")?.textContent ?? "");
-    expect(names[0]).toContain("Rust quality pass");
-    expect(names[1]).toContain("Release checklist");
+    const goal = screen.getByLabelText("Task goal");
+    await user.type(goal, " /");
+    const menu = await screen.findByRole("listbox", { name: "Skills" });
+    await waitFor(() => {
+      expect(within(menu).getAllByRole("option")[0]).toHaveTextContent("suggested for this goal");
+    });
+    const options = within(menu).getAllByRole("option");
+    expect(options[0]).toHaveTextContent("/rust-quality");
+    expect(options[1]).toHaveTextContent("/release");
+    // Escape puts the menu away without choosing.
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox", { name: "Skills" })).toBeNull();
 
-    // Suggesting is not selecting: the task carries nothing until it is ticked.
+    // Suggesting is not selecting: the task carries nothing until one is picked.
     await user.click(screen.getByRole("button", { name: "Start task" }));
     await waitFor(() => {
       expect(startTask).toHaveBeenCalledWith(
-        "Say hello",
+        "Say hello /",
         expect.any(Function),
         conversation.conversationId,
         expect.not.objectContaining({ skills: expect.anything() }),
@@ -1244,13 +1416,12 @@ describe("M2 durable desktop surface", () => {
       expect(duplicateIds()).toEqual([]);
     }
 
-    await openMore(user);
-    await user.click(screen.getByRole("button", { name: "Models and credentials" }));
+    await openSettings(user, "Models and credentials");
     await screen.findByRole("heading", { name: "Local Qwen" });
     expect(unnamedControls()).toEqual([]);
     expect(duplicateIds()).toEqual([]);
 
-    await user.click(screen.getByRole("button", { name: "Apps" }));
+    await openSettings(user, "Customize");
     await screen.findByText(/No Apps are configured/);
     expect(unnamedControls()).toEqual([]);
     expect(duplicateIds()).toEqual([]);
@@ -1295,18 +1466,19 @@ describe("M2 durable desktop surface", () => {
     });
   });
 
-  it("opens the models and credentials, and goes back to work", async () => {
+  it("opens the models and credentials in Settings, and goes back to work", async () => {
     const user = userEvent.setup();
     await renderLoaded();
 
-    await openMore(user);
-    await user.click(screen.getByRole("button", { name: "Models and credentials" }));
+    await openSettings(user, "Models and credentials");
     expect(
-      await screen.findByRole("heading", { name: "Models and credentials" }),
+      await screen.findByRole("heading", { name: "Models and credentials", level: 2 }),
     ).toBeInTheDocument();
     expect(listConfiguredEndpoints).toHaveBeenCalled();
+    // Inside Settings there is nothing to go "back" from: the sidebar does it.
+    expect(screen.queryByRole("button", { name: "Back to work" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Back to work" }));
+    await user.click(screen.getByRole("button", { name: "M2 Conversation" }));
     expect(await screen.findByRole("heading", { name: "M2 Conversation" })).toBeInTheDocument();
   });
 

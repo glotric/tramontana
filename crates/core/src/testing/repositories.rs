@@ -612,6 +612,69 @@ impl crate::ports::DictationRepository for InMemoryDictationRepository {
     }
 }
 
+/// The person's skill library, in memory (ADR 0070).
+#[derive(Debug, Default)]
+pub struct InMemorySkillLibrary {
+    files: Mutex<std::collections::BTreeMap<String, String>>,
+}
+
+impl InMemorySkillLibrary {
+    /// An empty library.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A library holding `files`, as `(folder, SKILL.md)` pairs, without the
+    /// checks an import makes: as if copied in by hand.
+    #[must_use]
+    pub fn holding(files: &[(&str, &str)]) -> Self {
+        Self {
+            files: Mutex::new(
+                files
+                    .iter()
+                    .map(|(folder, markdown)| ((*folder).to_owned(), (*markdown).to_owned()))
+                    .collect(),
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl crate::ports::SkillLibrary for InMemorySkillLibrary {
+    async fn list(&self) -> Result<Vec<crate::ports::SkillFile>, RepositoryError> {
+        Ok(lock(&self.files)?
+            .iter()
+            .map(|(folder, markdown)| crate::ports::SkillFile {
+                folder: folder.clone(),
+                markdown: markdown.clone(),
+            })
+            .collect())
+    }
+
+    async fn add(&self, file: &crate::ports::SkillFile) -> Result<(), RepositoryError> {
+        let mut files = lock(&self.files)?;
+        if files.contains_key(&file.folder) {
+            return Err(RepositoryError::Conflict {
+                kind: "skill",
+                id: file.folder.clone(),
+            });
+        }
+        files.insert(file.folder.clone(), file.markdown.clone());
+        Ok(())
+    }
+
+    async fn remove(&self, folder: &str) -> Result<(), RepositoryError> {
+        lock(&self.files)?
+            .remove(folder)
+            .map(|_| ())
+            .ok_or_else(|| RepositoryError::NotFound {
+                kind: "skill",
+                id: folder.to_owned(),
+            })
+    }
+}
+
 /// A transcriber that answers with what it was built with, and counts the
 /// audio it was given (ADR 0065).
 #[derive(Debug)]

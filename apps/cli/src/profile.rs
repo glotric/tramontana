@@ -127,6 +127,7 @@ async fn erase(profile: Option<PathBuf>, yes: bool) -> ExitCode {
             "erased": true,
             "credentialsRemoved": report.credentials_removed,
             "credentialsAbsent": report.credentials_absent,
+            "skillsRemoved": report.skills_removed,
         })),
         Err(error) => render::application_error(&error),
     }

@@ -273,6 +273,12 @@ async fn open_with(
             Arc::new(tramontana_platform::SystemLocalClock::new()),
         )
         // So speech can be transcribed on this device (ADR 0065).
+        // The person's own skills, in a folder beside the profile (ADR 0070).
+        .with_skill_library(Arc::new(tramontana_platform::FsSkillLibrary::new(
+            path.parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("skills"),
+        )))
         .with_dictation(
             Arc::new(tramontana_persistence::SqliteDictationRepository::new(
                 database.clone(),

@@ -49,6 +49,9 @@ pdf-extract = { version = "=0.12.1", default-features = false }
 chrono = { version = "=0.4.45", default-features = false, features = ["clock", "std"] }
 quick-xml = { version = "=0.42.0", default-features = false }
 zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2"] }
+# zip's deflate, with the pure-Rust backend the tree already builds, for a
+# crate that has nothing else choosing one (ADR 0070).
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 async-trait = "0.1.92"
 clap = { version = "4.6.6", features = ["derive"] }
 # Owning a command's whole process tree — a process group on Unix, a job object
