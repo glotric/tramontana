@@ -412,6 +412,99 @@ describe("M2 durable desktop surface", () => {
     expect(screen.getByRole("button", { name: "Details" })).toBeInTheDocument();
   });
 
+  it("starts one task for two quick Enters, in one conversation", async () => {
+    // Nothing held a second Enter back while the first was still starting,
+    // and from the home screen each start creates a conversation first.
+    const user = userEvent.setup();
+    let finishCreating: (created: ConversationRecord) => void = () => undefined;
+    createConversation.mockImplementation(
+      () =>
+        new Promise<ConversationRecord>((resolve) => {
+          finishCreating = resolve;
+        }),
+    );
+    render(<App />);
+    await screen.findByRole("button", { name: "Project: Tramontana" });
+
+    await user.type(screen.getByLabelText("Task goal"), "Check the menu");
+    await user.keyboard("{Enter}");
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "Starting task" })).toBeDisabled();
+    act(() => {
+      finishCreating({ ...conversation, conversationId: "conversation-new" });
+    });
+
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalledTimes(1);
+    });
+    expect(createConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not take the screen back when a start finishes after the person moved on", async () => {
+    // A start that finished late used to select its task over whatever the
+    // person had opened since, so Stop cancelled a task not on screen.
+    const user = userEvent.setup();
+    const other: ConversationRecord = {
+      ...conversation,
+      conversationId: "conversation-other",
+      title: "Other conversation",
+    };
+    const otherTask: TaskRecord = {
+      ...task,
+      taskId: "task-other",
+      conversationId: other.conversationId,
+      goalSummary: "Other running task",
+      state: "running",
+    };
+    listConversations.mockResolvedValue([conversation, other]);
+    listTasks.mockImplementation((conversationId?: string) =>
+      Promise.resolve(conversationId === other.conversationId ? [otherTask] : [task]),
+    );
+    replayTaskEvents.mockImplementation((taskId: string) =>
+      Promise.resolve(
+        taskId === otherTask.taskId
+          ? [
+              event(1, { kind: "taskCreated", goalSummary: "Other running task" }),
+              event(2, {
+                kind: "taskStateChanged",
+                previous: "queued",
+                current: "running",
+                reasonCode: "worker.started",
+              }),
+            ]
+          : [],
+      ),
+    );
+    let finishStarting: (taskId: string) => void = () => undefined;
+    startTask.mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          finishStarting = resolve;
+        }),
+    );
+    await renderLoaded();
+
+    await user.click(screen.getByRole("button", { name: "Start task" }));
+    await waitFor(() => {
+      expect(startTask).toHaveBeenCalled();
+    });
+    await user.click(screen.getByRole("button", { name: "Other conversation" }));
+    await screen.findByRole("heading", { name: "Other conversation" });
+    await screen.findByRole("button", { name: "Stop" });
+
+    // The late start finishes, and whatever it would read back arrives.
+    await act(async () => {
+      finishStarting("task-started");
+      await new Promise((settled) => setTimeout(settled, 50));
+    });
+
+    expect(screen.getByRole("heading", { name: "Other conversation" })).toBeInTheDocument();
+    expect(screen.getByText("Other running task")).toBeInTheDocument();
+    expect(screen.queryByText("Existing durable task")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect(cancelTask).toHaveBeenCalledWith("task-other");
+  });
+
   it("starts from the home screen in a conversation of its own, named after the goal", async () => {
     const user = userEvent.setup();
     const created: ConversationRecord = {

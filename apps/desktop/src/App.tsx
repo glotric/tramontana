@@ -184,6 +184,7 @@ export function App(): React.JSX.Element {
     leaveConversation,
     addConversation,
     refreshTasks,
+    moveCount,
   } = useProjectSelection({ select: selectTask, clear: clearTask }, setFailure);
   const composer = useComposerOptions(goal, inspection?.project.projectId);
   const { routingMode, setRoutingMode, admission, chosenWorker } = composer;
@@ -369,6 +370,10 @@ export function App(): React.JSX.Element {
       });
   }, [selectProject, setProjects]);
 
+  // A start under way: a second Enter or click must not start the task
+  // again, or, from the home screen, create a second conversation for it.
+  const [starting, setStarting] = useState(false);
+
   /**
    * Remove a project from Tramontana; its folder is not touched. When it was
    * the one open, the next project opens in its place, so the composer is
@@ -393,8 +398,10 @@ export function App(): React.JSX.Element {
       setFailure("Open a project before starting a task.");
       return;
     }
-    if (goal.trim() === "") return;
+    if (goal.trim() === "" || starting) return;
+    setStarting(true);
     setFailure(undefined);
+    const submitted = goal;
     const tokens = agentFiles.tokens();
     const options = {
       ...admission,
@@ -404,34 +411,52 @@ export function App(): React.JSX.Element {
       ...(slash.personalIds.length === 0 ? {} : { personalSkills: slash.personalIds }),
       ...attached(tokens),
     };
+    // Where the person is now. If they choose anything else before the task
+    // has started, it still starts, but it does not take the screen back.
+    const move = moveCount();
+    const stillHere = (): boolean => moveCount() === move;
 
     // From the home screen, the task starts a conversation of its own,
     // named after what it was asked; it can be renamed afterwards.
     const conversation =
       selectedConversationId === undefined
-        ? createConversation(projectId, titleFromGoal(goal)).then((created) => {
-            addConversation(created);
+        ? createConversation(projectId, titleFromGoal(submitted)).then((created) => {
+            if (stillHere()) addConversation(created);
             return created.conversationId;
           })
         : Promise.resolve(selectedConversationId);
 
     void conversation
       .then((conversationId) => {
-        // A new task on screen: updates from any stream opened for the one
-        // before it are no longer this window's to show.
-        const onUpdate = beginTask();
-        return startTask(goal.trim(), onUpdate, conversationId, options).then((id) => {
-          // Only now: a task that failed to start keeps its files.
+        // A new task on screen, unless the person has moved on: then it runs
+        // without being shown, and its conversation is where to find it.
+        const beginning = stillHere() ? beginTask() : undefined;
+        const shown = (): boolean =>
+          beginning !== undefined && beginning.isCurrent() && stillHere();
+        return startTask(
+          submitted.trim(),
+          beginning?.onUpdate ?? (() => undefined),
+          conversationId,
+          options,
+        ).then((id) => {
+          // Only now: a task that failed to start keeps its files. They went
+          // with this task wherever the person is.
           agentFiles.sent(tokens);
-          setGoal("");
+          // Text typed since is the next task's, not this one's.
+          setGoal((current) => (current === submitted ? "" : current));
           // The skills went with this message, as Claude's do.
           slash.clear();
-          adoptTask(id);
-          refreshTasks(conversationId);
+          if (shown()) {
+            adoptTask(id);
+            refreshTasks(conversationId);
+          }
         });
       })
       .catch((error: unknown) => {
         setFailure(failureText(error, "Could not start the task."));
+      })
+      .finally(() => {
+        setStarting(false);
       });
   }, [
     addConversation,
@@ -444,10 +469,25 @@ export function App(): React.JSX.Element {
     chosenWorker,
     goal,
     inspection?.project.projectId,
+    moveCount,
     refreshTasks,
     routingMode,
     selectedConversationId,
+    starting,
   ]);
+
+  // A conversation in any project, from the sidebar or the home screen.
+  const openConversation = useCallback(
+    (projectId: string, conversationId: string) => {
+      setView("work");
+      if (projectId === inspection?.project.projectId) {
+        void selectConversation(conversationId);
+      } else {
+        void selectProject(projectId).then(() => selectConversation(conversationId));
+      }
+    },
+    [inspection?.project.projectId, selectConversation, selectProject],
+  );
 
   const onCancel = useCallback(() => {
     if (selectedTaskId === undefined) return;
@@ -525,14 +565,7 @@ export function App(): React.JSX.Element {
           openProjectId={inspection?.project.projectId}
           conversations={conversations}
           selectedConversationId={selectedConversationId}
-          onOpenConversation={(projectId, conversationId) => {
-            setView("work");
-            if (projectId === inspection?.project.projectId) {
-              void selectConversation(conversationId);
-            } else {
-              void selectProject(projectId).then(() => selectConversation(conversationId));
-            }
-          }}
+          onOpenConversation={openConversation}
           onNewTaskIn={(projectId) => {
             setView("work");
             if (projectId === inspection?.project.projectId) leaveConversation();
@@ -805,6 +838,7 @@ export function App(): React.JSX.Element {
                     revision={revision}
                     onOpenProject={onOpenProject}
                     canOpenProject={status.kind === "ready" && !openingProject}
+                    onOpenConversation={openConversation}
                   />
                 ) : (
                   <TaskThread
@@ -859,7 +893,8 @@ export function App(): React.JSX.Element {
                 files={agentFiles}
                 dictation={agentDictation}
                 running={running}
-                canStart={inspection !== undefined && goal.trim() !== ""}
+                canStart={inspection !== undefined && goal.trim() !== "" && !starting}
+                starting={starting}
                 onStart={onStart}
                 onCancel={onCancel}
                 slash={slash}

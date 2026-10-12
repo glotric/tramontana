@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ProjectRecord, TaskRecord } from "@tramontana/shared";
 
 import { heatmap, intensity, perProject, summarize, withinRange } from "./activity-overview.js";
@@ -13,6 +13,28 @@ const RANGES: readonly (readonly [ActivityRange, string])[] = [
 /** An hour of the day the way this computer writes it, such as "12 PM". */
 function describeHour(hour: number): string {
   return new Date(2000, 0, 1, hour).toLocaleTimeString([], { hour: "numeric" });
+}
+
+/**
+ * The current moment, moved on at each local midnight. It holds still
+ * between, so the counts do not shift while the card is read, yet a window
+ * left open overnight shows the new day rather than the one it opened on.
+ */
+function useToday(): Date {
+  const [today, setToday] = useState(() => new Date());
+  useEffect(() => {
+    const midnight = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    const timer = setTimeout(
+      () => {
+        setToday(new Date());
+      },
+      Math.max(1000, midnight.getTime() - Date.now()),
+    );
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [today]);
+  return today;
 }
 
 function describeDay(date: Date): string {
@@ -36,9 +58,8 @@ export function ActivityOverview({
 }): React.JSX.Element {
   const [tab, setTab] = useState<"overview" | "projects">("overview");
   const [range, setRange] = useState<ActivityRange>("all");
-  // Read once, so the counts hold still while the card is open.
-  const [opened] = useState(() => new Date());
-  const today = now ?? opened;
+  const current = useToday();
+  const today = now ?? current;
 
   const chosen = useMemo(() => withinRange(tasks ?? [], range, today), [tasks, range, today]);
   const summary = useMemo(() => summarize(chosen), [chosen]);

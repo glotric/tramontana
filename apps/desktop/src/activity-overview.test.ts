@@ -131,3 +131,29 @@ describe("the activity card's counting", () => {
     ]);
   });
 });
+
+describe("withinRange across a clock change", () => {
+  it("counts the range in calendar days, not in 24-hour steps", () => {
+    // Clocks in Ljubljana went forward on 29 March 2026, so that week has a
+    // 23-hour day. Counting back seven 24-hour steps from midnight lands an
+    // hour early, at 23:00 on the day before the range, and took in a task
+    // from then.
+    const zone = process.env["TZ"];
+    process.env["TZ"] = "Europe/Ljubljana";
+    try {
+      const shifted =
+        new Date(2026, 2, 28, 12).getTimezoneOffset() !==
+        new Date(2026, 2, 30, 12).getTimezoneOffset();
+      expect(shifted, "this runtime cannot switch time zones for the test").toBe(true);
+
+      const now = new Date(2026, 2, 31, 12, 0);
+      const before = task("before", new Date(2026, 2, 24, 23, 30));
+      const first = task("first", new Date(2026, 2, 25, 0, 30));
+
+      expect(withinRange([before, first], "7d", now).map((kept) => kept.taskId)).toEqual(["first"]);
+    } finally {
+      if (zone === undefined) delete process.env["TZ"];
+      else process.env["TZ"] = zone;
+    }
+  });
+});

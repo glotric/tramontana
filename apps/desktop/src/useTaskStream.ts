@@ -6,6 +6,17 @@ import { failureText, replayTaskEvents, watchTask } from "./core.js";
 import { foldFrame } from "./stream.js";
 import type { LiveStream } from "./stream.js";
 
+/** A task about to start, from the moment `begin` cleared the screen for it. */
+export interface TaskBeginning {
+  /** Delivers its updates, for as long as it is the task on screen. */
+  readonly onUpdate: (update: TaskUpdate) => void;
+  /**
+   * Whether it still is: false once anything else was chosen. A start that
+   * finishes after the person moved on must not take the screen back.
+   */
+  readonly isCurrent: () => boolean;
+}
+
 /** The task on screen: its record so far, and the answer streaming in. */
 export interface TaskStream {
   readonly selectedTaskId: string | undefined;
@@ -13,11 +24,8 @@ export interface TaskStream {
   readonly stream: LiveStream | undefined;
   /** Show a task's record, and follow it while it is still under way. */
   readonly select: (taskId: string) => Promise<void>;
-  /**
-   * Clear the screen for a task about to start. The handler returned
-   * delivers that task's updates, for as long as it is the one on screen.
-   */
-  readonly begin: () => (update: TaskUpdate) => void;
+  /** Clear the screen for a task about to start. */
+  readonly begin: () => TaskBeginning;
   /** Name the task `begin` cleared the screen for, once its id is known. */
   readonly adopt: (taskId: string) => void;
   /** Show no task. */
@@ -126,8 +134,12 @@ export function useTaskStream(
     setEvents([]);
     setStream(undefined);
     setSelectedTaskId(undefined);
-    return (update: TaskUpdate): void => {
-      if (current === request.current) handleUpdate(update);
+    const isCurrent = (): boolean => current === request.current;
+    return {
+      onUpdate: (update: TaskUpdate): void => {
+        if (isCurrent()) handleUpdate(update);
+      },
+      isCurrent,
     };
   }, [handleUpdate, next]);
 

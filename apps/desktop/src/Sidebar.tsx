@@ -232,10 +232,14 @@ export function Sidebar({
   readonly status: string;
   readonly statusText: string;
 }): React.JSX.Element {
-  // Projects the person opened or closed against the default, which is
-  // open for the project on screen and closed for the rest.
-  const [toggled, setToggled] = useState<ReadonlySet<string>>(new Set());
-  // Conversations of the other expanded projects, read when expanded.
+  // What the person chose for a project, by id: expanded or collapsed. A
+  // project they have not touched is expanded while it is the open one.
+  // Stored as the choice itself, not as a difference from that default: the
+  // default moves when another project opens, and a difference would flip
+  // with it — collapsing a project at the moment it was opened.
+  const [chosen, setChosen] = useState<ReadonlyMap<string, boolean>>(new Map());
+  // Conversations of expanded projects other than the open one, read each
+  // time one is expanded or stops being the open one.
   const [listed, setListed] = useState<ReadonlyMap<string, readonly ConversationRecord[]>>(
     new Map(),
   );
@@ -249,24 +253,33 @@ export function Sidebar({
   }, []);
 
   const isExpanded = (projectId: string): boolean =>
-    (projectId === openProjectId) !== toggled.has(projectId);
+    chosen.get(projectId) ?? projectId === openProjectId;
+
+  const readConversations = useCallback((projectId: string): void => {
+    void listConversations(projectId).then(
+      (found) => {
+        setListed((current) => new Map(current).set(projectId, found));
+      },
+      () => undefined,
+    );
+  }, []);
+
+  // The project that was open a moment ago had its list only in the
+  // window's state, current until now; read it again if it stays expanded,
+  // so it is not shown as it was when it was last expanded.
+  const previousOpen = useRef(openProjectId);
+  useEffect(() => {
+    const previous = previousOpen.current;
+    previousOpen.current = openProjectId;
+    if (previous !== undefined && previous !== openProjectId && (chosen.get(previous) ?? false)) {
+      readConversations(previous);
+    }
+  }, [chosen, openProjectId, readConversations]);
 
   const toggleProject = (projectId: string): void => {
     const opening = !isExpanded(projectId);
-    setToggled((current) => {
-      const next = new Set(current);
-      if (next.has(projectId)) next.delete(projectId);
-      else next.add(projectId);
-      return next;
-    });
-    if (opening && projectId !== openProjectId) {
-      void listConversations(projectId).then(
-        (found) => {
-          setListed((current) => new Map(current).set(projectId, found));
-        },
-        () => undefined,
-      );
-    }
+    setChosen((current) => new Map(current).set(projectId, opening));
+    if (opening && projectId !== openProjectId) readConversations(projectId);
   };
 
   const conversationsOf = (projectId: string): readonly ConversationRecord[] =>

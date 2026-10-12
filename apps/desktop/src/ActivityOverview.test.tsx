@@ -1,6 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { act } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import type { ProjectRecord, TaskRecord } from "@tramontana/shared";
 
 import { ActivityOverview } from "./ActivityOverview.js";
@@ -65,5 +66,33 @@ describe("ActivityOverview", () => {
     rerender(<ActivityOverview tasks={[]} projects={[]} now={now} />);
     expect(screen.getByText("No tasks yet. Your activity will appear here.")).toBeTruthy();
     expect(screen.queryByRole("img")).toBeNull();
+  });
+
+  it("moves on to the new day at midnight while the card stays open", () => {
+    // "Today" was read once when the card opened, so a window left open
+    // overnight kept counting from the day before.
+    vi.useFakeTimers({ now: new Date(2026, 9, 4, 23, 59, 30) });
+    try {
+      render(<ActivityOverview tasks={[task("a", 0, "p1")]} projects={projects} />);
+      // The heatmap ends on today: its last dated cell names today.
+      const lastDay = () =>
+        [...screen.getByRole("img", { name: /Tasks per day/ }).querySelectorAll("[title]")]
+          .at(-1)
+          ?.getAttribute("title");
+      const before = lastDay();
+      expect(before).toContain(
+        new Date(2026, 9, 4).toLocaleDateString([], { day: "numeric", month: "long" }),
+      );
+
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+
+      expect(lastDay()).toContain(
+        new Date(2026, 9, 5).toLocaleDateString([], { day: "numeric", month: "long" }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
