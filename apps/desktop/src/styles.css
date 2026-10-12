@@ -275,11 +275,9 @@ h3 {
   padding: 0 6px 0 8px;
 }
 
-.brand-lockup strong {
-  flex: 1;
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
+/* The mark alone; the sidebar button takes the far end. */
+.brand-lockup .sidebar-toggle {
+  margin-left: auto;
 }
 
 .icon-button {
@@ -3417,11 +3415,22 @@ h3 {
 
 /* The window's traffic lights sit at the top left, over the sidebar. */
 .app-shell[data-platform="mac"] .rail {
-  padding-top: 40px;
+  padding-top: 56px;
 }
 
+/* The mark sits in the title-bar row, right of the sidebar button, so the
+   lockup takes no row of its own. */
 .app-shell[data-platform="mac"] .brand-lockup {
-  margin-top: -6px;
+  height: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.app-shell[data-platform="mac"] .brand-lockup > .glyph {
+  position: fixed;
+  z-index: 6;
+  top: 13px;
+  left: 122px;
 }
 
 .app-shell[data-platform="mac"][data-sidebar="closed"] .workspace-header {
@@ -3434,11 +3443,18 @@ h3 {
 .app-shell[data-platform="mac"] .sidebar-restore {
   position: fixed;
   z-index: 6;
-  top: 2px;
+  top: 14px;
   left: 82px;
   width: 28px;
   height: 28px;
   margin: 0;
+}
+
+/* One row with the traffic lights: the window moves them down (see
+   trafficLightPosition in tauri.conf.json) so they, the title and the
+   full-size controls share one centre line. */
+.app-shell[data-platform="mac"] .workspace-header {
+  height: 56px;
 }
 
 /* ---- Skills: the "/" menu, chosen skills, and Settings ---------------------- */

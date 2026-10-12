@@ -355,7 +355,6 @@ export function Sidebar({
       <div className="window-drag window-drag--rail" data-tauri-drag-region aria-hidden="true" />
       <div className="brand-lockup" data-tauri-drag-region>
         <Glyph icon="wind" hue="blue" size={30} />
-        <strong data-tauri-drag-region>Tramontana</strong>
         <button
           type="button"
           className="icon-button sidebar-toggle"
