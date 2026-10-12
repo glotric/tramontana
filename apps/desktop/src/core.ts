@@ -12,6 +12,7 @@ import type {
   ApprovalRequest,
   ConversationRecord,
   DictationStatus,
+  PersonalSkill,
   CoreInfo,
   EffectiveConfiguration,
   ErrorEnvelope,
@@ -435,6 +436,11 @@ export interface TaskOptions {
    */
   readonly skills?: readonly string[];
   /**
+   * The person's own skills this task uses, by id, from
+   * {@link listPersonalSkills} (ADR 0070). Guidance only, like a project's.
+   */
+  readonly personalSkills?: readonly string[];
+  /**
    * Files picked with {@link chooseAttachments} for this message, by token
    * (ADR 0058). Their text is given to the model before the goal.
    */
@@ -472,6 +478,8 @@ export async function startTask(
             routingMode: options.routingMode,
             worker: options.worker ?? null,
             skills: options.skills === undefined ? null : [...options.skills],
+            personalSkills:
+              options.personalSkills === undefined ? null : [...options.personalSkills],
             attachments: options.attachments === undefined ? null : [...options.attachments],
           },
     channel,
@@ -882,4 +890,49 @@ export async function clearDictation(): Promise<DictationStatus> {
 export async function transcribe(wav: Uint8Array): Promise<string> {
   // Raw bytes in the request body, not a JSON array of numbers.
   return invoke<string>("transcribe", wav);
+}
+
+/** The person's own skills (ADR 0070). */
+export async function listPersonalSkills(): Promise<readonly PersonalSkill[]> {
+  return invoke<PersonalSkill[]>("list_personal_skills");
+}
+
+/** Where the person's skills are kept on this computer. */
+export async function skillsFolder(): Promise<string> {
+  return invoke<string>("skills_folder");
+}
+
+/**
+ * Import a skill picked in the native dialog: a skill folder when `folder`,
+ * otherwise a `.zip` or `.md` file. `undefined` when the person cancels.
+ */
+export async function importSkill(folder: boolean): Promise<PersonalSkill | undefined> {
+  return (await invoke<PersonalSkill | null>("import_skill", { folder })) ?? undefined;
+}
+
+/** Delete one of the person's skills. */
+export async function removeSkill(id: string): Promise<void> {
+  await invoke("remove_skill", { id });
+}
+
+/** A model file the guide found. */
+export interface FoundModel {
+  readonly path: string;
+  readonly bytes: number;
+}
+
+/** What the model guide can see on this computer. */
+export interface ModelSetupHints {
+  readonly llamaServer?: string | null;
+  readonly models: readonly FoundModel[];
+  readonly lookedIn: readonly string[];
+  readonly platform: "macos" | "windows" | "linux";
+}
+
+/**
+ * Where `llama-server` and model files already are, so the guide can point
+ * at them. Runs and downloads nothing; `undefined` when it cannot look.
+ */
+export async function modelSetupHints(): Promise<ModelSetupHints | undefined> {
+  return (await invoke<ModelSetupHints | null>("model_setup_hints")) ?? undefined;
 }

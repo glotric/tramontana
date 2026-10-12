@@ -186,6 +186,7 @@ impl BrokeredHost {
                 earlier: &self.earlier,
                 attachments: &self.attachments,
                 personal: self.personal.as_deref(),
+                skills: &self.skills,
             },
         )?;
         input.request.limits.max_output_tokens = Some(u64::from(limits.turn_tokens));

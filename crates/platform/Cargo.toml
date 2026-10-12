@@ -17,6 +17,9 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "net", "io-util", "time"] }
+# Reading one SKILL.md out of an imported skill archive (ADR 0070).
+zip = { workspace = true }
+flate2 = { workspace = true }
 
 # The platform credential store. Declared per target so no platform pays for
 # another's stack: the Linux Secret Service client is 106 crates that a macOS

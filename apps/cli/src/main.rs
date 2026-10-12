@@ -19,6 +19,7 @@ mod render;
 mod run;
 mod schedule;
 mod secret;
+mod skill;
 mod wiring;
 
 use clap::{Parser, Subcommand};
@@ -57,6 +58,8 @@ enum Command {
     Schedule(schedule::ScheduleArgs),
     /// Speech to text with a whisper.cpp you supply.
     Dictation(dictation::DictationArgs),
+    /// Your own skills: import, list and remove them.
+    Skill(skill::SkillArgs),
     /// Store, inspect, and remove credentials in the operating system store.
     Secret(secret::SecretArgs),
     /// Run one task against the fake providers and stream its activity.
@@ -103,6 +106,7 @@ async fn execute(command: Command) -> std::process::ExitCode {
         Command::Profile(args) => profile::execute(args).await,
         Command::Schedule(args) => schedule::execute(args).await,
         Command::Dictation(args) => dictation::execute(args).await,
+        Command::Skill(args) => skill::execute(args).await,
         Command::Secret(args) => secret::execute(args).await,
         Command::Task(args) => run::execute(args).await,
         Command::Info => std::process::ExitCode::SUCCESS,

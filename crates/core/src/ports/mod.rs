@@ -19,6 +19,7 @@ mod project_sources;
 mod read_only;
 mod repository;
 mod secret;
+mod skills;
 mod tool;
 mod worker;
 
@@ -40,5 +41,6 @@ pub use repository::{
     RepositoryError, ScheduleRepository, TaskRepository,
 };
 pub use secret::{SecretResolver, SecretVault};
+pub use skills::{SkillFile, SkillLibrary};
 pub use tool::{ToolInvocation, ToolOutcome, ToolProvider, ToolTarget};
 pub use worker::{AgentProvider, WorkerHost, WorkerOutcome, WorkerRequest};

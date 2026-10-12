@@ -14,6 +14,7 @@ mod paths;
 mod profile;
 mod project_sources;
 mod secrets;
+mod skills;
 
 pub use bundle::{BundleError, MANIFEST_FILE, read_bundle, write_bundle};
 pub use clock::{SystemClock, SystemLocalClock};
@@ -24,3 +25,4 @@ pub use paths::{CanonicalRoot, PathError, canonicalize_root, contains};
 pub use profile::ProfileLease;
 pub use project_sources::ProjectFiles;
 pub use secrets::PlatformSecretVault;
+pub use skills::{FsSkillLibrary, SKILL_FILE, SkillSourceError, read_skill_source};

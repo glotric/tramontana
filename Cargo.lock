@@ -5448,6 +5448,7 @@ dependencies = [
  "apple-native-keyring-store",
  "async-trait",
  "chrono",
+ "flate2",
  "keyring",
  "serde_json",
  "tempfile",
@@ -5456,6 +5457,7 @@ dependencies = [
  "tracing",
  "tramontana-core",
  "uuid",
+ "zip",
 ]
 
 [[package]]

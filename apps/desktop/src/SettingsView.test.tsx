@@ -50,7 +50,7 @@ describe("SettingsView", () => {
     updatePersonal.mockImplementation((details: { name: string; answerStyle: string }) =>
       Promise.resolve({ ...stored, name: details.name, answerStyle: details.answerStyle }),
     );
-    render(<SettingsView />);
+    render(<SettingsView tab="general" onTab={() => undefined} customize={null} models={null} />);
 
     const name = await screen.findByLabelText("What should Tramontana call you?");
     await waitFor(() => {
@@ -83,7 +83,7 @@ describe("SettingsView", () => {
       ],
     });
     forget.mockResolvedValue({ ...stored, notes: [] });
-    render(<SettingsView />);
+    render(<SettingsView tab="general" onTab={() => undefined} customize={null} models={null} />);
 
     expect(await screen.findByText("Our site is in Koper.")).toBeInTheDocument();
     expect(screen.getByText(/does not remember anything on its own/)).toBeInTheDocument();
@@ -108,7 +108,7 @@ describe("SettingsView", () => {
       retryable: false,
       correlationId: "c",
     });
-    render(<SettingsView />);
+    render(<SettingsView tab="general" onTab={() => undefined} customize={null} models={null} />);
     const about = await screen.findByLabelText("What do you do at work?");
     await user.type(about, "Cranes.");
     await user.click(screen.getByRole("button", { name: "Save" }));

@@ -12,6 +12,7 @@ import type { ChatTurn } from "./chat.js";
 import { attachmentsOf, outcomeOf, titleFrom, withEvent } from "./chat.js";
 import { AttachButton, PendingFiles, SentFiles, useAttachments } from "./Attachments.js";
 import { DictateButton, appendDictated, useDictation } from "./Dictation.js";
+import { ChosenSkills, SlashMenu, usePersonalSkills, useSkillSlash } from "./SkillSlash.js";
 import {
   cancelTask,
   createConversation,
@@ -68,6 +69,15 @@ export function ChatView({
   const [failure, setFailure] = useState<string | undefined>();
   const [sending, setSending] = useState(false);
   const files = useAttachments();
+  // The person's own skills, chosen with `/` (ADR 0070). A chat has no
+  // project, so only theirs are offered.
+  const personalSkills = usePersonalSkills();
+  const slash = useSkillSlash({
+    draft,
+    setDraft,
+    personal: personalSkills.skills,
+    onOpen: personalSkills.refresh,
+  });
   const request = useRef(0);
   // The chat this window made for its own first message: loading it again
   // would race the turn already streaming into it.
@@ -174,6 +184,7 @@ export function ChatView({
     setSending(true);
     setFailure(undefined);
     const tokens = files.tokens();
+    const skills = slash.personalIds;
     void (async () => {
       try {
         let id = conversationId;
@@ -201,6 +212,7 @@ export function ChatView({
             browse: false,
             routingMode,
             attachments: tokens,
+            ...(skills.length === 0 ? {} : { personalSkills: skills }),
           },
         );
         setTurns((existing) =>
@@ -210,6 +222,7 @@ export function ChatView({
         );
         setDraft("");
         files.sent(tokens);
+        slash.clear();
       } catch (error: unknown) {
         setFailure(failureText(error, "Could not send the message."));
       } finally {
@@ -217,7 +230,7 @@ export function ChatView({
         input.current?.focus();
       }
     })();
-  }, [conversationId, draft, files, onCreated, onUpdate, routingMode, running]);
+  }, [conversationId, draft, files, onCreated, onUpdate, routingMode, running, slash]);
 
   const stop = useCallback(() => {
     if (latest === undefined) return;
@@ -298,6 +311,7 @@ export function ChatView({
       </div>
 
       <div className="composer-dock">
+        <SlashMenu slash={slash} hasAny={personalSkills.skills.length > 0} />
         <form
           className="composer"
           onSubmit={(submitted) => {
@@ -309,16 +323,21 @@ export function ChatView({
             Message
           </label>
           <PendingFiles files={files.files} onRemove={files.remove} />
+          <ChosenSkills slash={slash} />
           <textarea
             ref={input}
             id="chat-message"
             value={draft}
-            placeholder="Ask anything"
+            placeholder="Ask anything. Type / for your skills."
             rows={2}
             onChange={(changed) => {
               setDraft(changed.target.value);
             }}
             onKeyDown={(pressed) => {
+              if (slash.onKeyDown(pressed)) {
+                pressed.preventDefault();
+                return;
+              }
               if (
                 pressed.key === "Enter" &&
                 !pressed.shiftKey &&
@@ -383,7 +402,14 @@ export function ChatView({
             )}
           </div>
         </form>
-        <p className="composer-disclosure">{MODE_TEXT[routingMode]}</p>
+        <p className="composer-disclosure">
+          {MODE_TEXT[routingMode]}
+          {slash.chosen.length === 0
+            ? ""
+            : slash.chosen.length === 1
+              ? " It is given one skill to follow."
+              : ` It is given ${slash.chosen.length} skills to follow.`}
+        </p>
       </div>
     </div>
   );

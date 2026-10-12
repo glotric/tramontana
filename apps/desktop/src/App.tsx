@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isSchemaCompatible, SCHEMA_VERSION } from "@tramontana/shared";
-import type { ApprovalRequest, ConversationRecord, EventEnvelope } from "@tramontana/shared";
+import type {
+  ApprovalRequest,
+  ConversationRecord,
+  EventEnvelope,
+  ProjectRecord,
+} from "@tramontana/shared";
 
 import { isTerminal, projectState } from "./activity.js";
 import { AgentComposer } from "./AgentComposer.js";
 import { AgentHome } from "./AgentHome.js";
 import { ApprovalCard } from "./ApprovalCard.js";
-import { AppsView } from "./AppsView.js";
 import { useAttachments } from "./Attachments.js";
 import { BundlesPanel } from "./BundlesPanel.js";
 import { buildCards, describeHeader, MODE_LABEL } from "./cards.js";
@@ -15,6 +19,7 @@ import { ChatView } from "./ChatView.js";
 import { CheckpointPanel } from "./CheckpointPanel.js";
 import { titleFromGoal } from "./choices.js";
 import { ConversationMenu } from "./ConversationMenu.js";
+import { CustomizeSettings } from "./CustomizeSettings.js";
 import {
   cancelTask,
   createConversation,
@@ -38,10 +43,15 @@ import { ProjectsView } from "./ProjectsView.js";
 import { ScheduledView } from "./ScheduledView.js";
 import { SearchPanel } from "./SearchPanel.js";
 import { SettingsView } from "./SettingsView.js";
+import type { SettingsTab } from "./SettingsView.js";
 import { ShareDialog } from "./ShareDialog.js";
 import { Sidebar } from "./Sidebar.js";
 import type { Mode, View } from "./Sidebar.js";
 import { TaskThread } from "./TaskThread.js";
+import { CommandTerminal } from "./CommandTerminal.js";
+import { commandRuns, commandUnderway } from "./terminal.js";
+import { usePersonalSkills, useSkillSlash } from "./SkillSlash.js";
+import type { SkillOption } from "./SkillSlash.js";
 import { useComposerOptions } from "./useComposerOptions.js";
 import { useProjectSelection } from "./useProjectSelection.js";
 import { useTaskStream } from "./useTaskStream.js";
@@ -69,6 +79,12 @@ function describeCoreStatus(status: CoreStatus): string {
 function attached(tokens: readonly string[]): { readonly attachments?: readonly string[] } {
   return tokens.length === 0 ? {} : { attachments: tokens };
 }
+
+/**
+ * On macOS the window has no title bar: its traffic lights sit over the
+ * sidebar, and the sidebar and header leave room for them.
+ */
+const MAC = typeof navigator !== "undefined" && navigator.platform.includes("Mac");
 
 /** Where the window remembers which half it was last showing. */
 const MODE_KEY = "tramontana.mode";
@@ -106,6 +122,7 @@ export function App(): React.JSX.Element {
   const [revision, setRevision] = useState(0);
   // The work area, or the models and credentials the tasks run against.
   const [view, setView] = useState<View>("work");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   // Both side panels can be put away, leaving the work column on its own.
   // The details start put away, every time: the work comes first.
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -170,7 +187,31 @@ export function App(): React.JSX.Element {
     moveCount,
   } = useProjectSelection({ select: selectTask, clear: clearTask }, setFailure);
   const composer = useComposerOptions(goal, inspection?.project.projectId);
-  const { routingMode, setRoutingMode, admission, chosenWorker, chosenSkills } = composer;
+  const { routingMode, setRoutingMode, admission, chosenWorker } = composer;
+  // Skills come by `/` (ADR 0070): the person's own, and the project's.
+  const personalSkills = usePersonalSkills();
+  const projectSkillOptions = useMemo<readonly SkillOption[]>(
+    () =>
+      composer.listedSkills.map((skill) => ({
+        kind: "project",
+        id: skill.id,
+        name: skill.displayName,
+        ...(skill.description === undefined ? {} : { description: skill.description }),
+        suggested: composer.suggested.includes(skill.id),
+      })),
+    [composer.listedSkills, composer.suggested],
+  );
+  const slash = useSkillSlash({
+    draft: goal,
+    setDraft: setGoal,
+    personal: personalSkills.skills,
+    project: projectSkillOptions,
+    onOpen: personalSkills.refresh,
+  });
+  // Only the open project's own skills can reach its task.
+  const chosenSkills = slash.projectIds.filter((id) =>
+    composer.offeredSkills.some((skill) => skill.id === id),
+  );
   useEffect(() => {
     onTaskEvent.current = (event) => {
       if (event.payload.kind === "configurationResolved") {
@@ -287,6 +328,15 @@ export function App(): React.JSX.Element {
   );
   const taskState = useMemo(() => projectState(events), [events]);
   const cards = useMemo(() => buildCards(events), [events]);
+  // The commands this task ran, for the terminal (it pops up on a new one).
+  const runs = useMemo(() => commandRuns(events), [events]);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [runsSeen, setRunsSeen] = useState(0);
+  if (runs.length !== runsSeen) {
+    setRunsSeen(runs.length);
+    if (runs.length > runsSeen && commandUnderway(runs)) setTerminalOpen(true);
+    if (runs.length === 0) setTerminalOpen(false);
+  }
   const header = useMemo(() => describeHeader(events), [events]);
   const goalInput = useRef<HTMLTextAreaElement>(null);
   const agentFiles = useAttachments();
@@ -324,6 +374,24 @@ export function App(): React.JSX.Element {
   // again, or, from the home screen, create a second conversation for it.
   const [starting, setStarting] = useState(false);
 
+  /**
+   * Remove a project from Tramontana; its folder is not touched. When it was
+   * the one open, the next project opens in its place, so the composer is
+   * never left without one while others remain.
+   */
+  const removeProject = useCallback(
+    async (project: ProjectRecord): Promise<void> => {
+      await deleteProject(project.projectId);
+      const remaining = await listProjects();
+      setProjects(remaining);
+      if (inspection?.project.projectId !== project.projectId) return;
+      const next = remaining[0];
+      if (next === undefined) closeProject();
+      else await selectProject(next.projectId);
+    },
+    [closeProject, inspection?.project.projectId, selectProject, setProjects],
+  );
+
   const onStart = useCallback(() => {
     const projectId = inspection?.project.projectId;
     if (projectId === undefined) {
@@ -340,6 +408,7 @@ export function App(): React.JSX.Element {
       routingMode,
       ...(chosenWorker === undefined ? {} : { worker: chosenWorker.agentId }),
       ...(chosenSkills.length === 0 ? {} : { skills: chosenSkills }),
+      ...(slash.personalIds.length === 0 ? {} : { personalSkills: slash.personalIds }),
       ...attached(tokens),
     };
     // Where the person is now. If they choose anything else before the task
@@ -365,7 +434,7 @@ export function App(): React.JSX.Element {
         const shown = (): boolean =>
           beginning !== undefined && beginning.isCurrent() && stillHere();
         return startTask(
-          submitted,
+          submitted.trim(),
           beginning?.onUpdate ?? (() => undefined),
           conversationId,
           options,
@@ -375,6 +444,8 @@ export function App(): React.JSX.Element {
           agentFiles.sent(tokens);
           // Text typed since is the next task's, not this one's.
           setGoal((current) => (current === submitted ? "" : current));
+          // The skills went with this message, as Claude's do.
+          slash.clear();
           if (shown()) {
             adoptTask(id);
             refreshTasks(conversationId);
@@ -394,6 +465,7 @@ export function App(): React.JSX.Element {
     agentFiles,
     beginTask,
     chosenSkills,
+    slash,
     chosenWorker,
     goal,
     inspection?.project.projectId,
@@ -427,6 +499,7 @@ export function App(): React.JSX.Element {
   return (
     <div
       className="app-shell"
+      data-platform={MAC ? "mac" : "other"}
       data-sidebar={sidebarOpen ? "open" : "closed"}
       data-details={detailsOpen && view === "work" && mode === "agent" ? "open" : "closed"}
     >
@@ -500,6 +573,7 @@ export function App(): React.JSX.Element {
             goalInput.current?.focus();
           }}
           onOpenProject={onOpenProject}
+          onRemoveProject={removeProject}
           openingProject={openingProject}
           canOpenProject={status.kind === "ready"}
           personName={personName}
@@ -509,6 +583,14 @@ export function App(): React.JSX.Element {
       )}
 
       <main className="workspace">
+        {/* Without a title bar, the top of the window still moves it: a strip
+            above everything, taller on the screens with no header (ADR 0069). */}
+        <div
+          className="window-drag"
+          data-tall={view !== "work" ? "true" : undefined}
+          data-tauri-drag-region
+          aria-hidden="true"
+        />
         {/* The views without a work header (Scheduled, Projects, Settings,
             Models, Apps) still need a way back to the sidebar. */}
         {!sidebarOpen && view !== "work" && (
@@ -540,7 +622,12 @@ export function App(): React.JSX.Element {
             }}
           />
         ) : view === "settings" ? (
-          <SettingsView />
+          <SettingsView
+            tab={settingsTab}
+            onTab={setSettingsTab}
+            customize={<CustomizeSettings />}
+            models={<ModelsView />}
+          />
         ) : view === "projects" ? (
           <ProjectsView
             projects={projects}
@@ -554,30 +641,11 @@ export function App(): React.JSX.Element {
               chooseMode("agent");
               void selectProject(project.projectId);
             }}
-            onDelete={async (project) => {
-              await deleteProject(project.projectId);
-              const remaining = await listProjects();
-              setProjects(remaining);
-              // The open project was the one removed: nothing of it stays
-              // on screen.
-              if (inspection?.project.projectId === project.projectId) closeProject();
-            }}
-          />
-        ) : view === "models" ? (
-          <ModelsView
-            onClose={() => {
-              setView("work");
-            }}
-          />
-        ) : view === "apps" ? (
-          <AppsView
-            onClose={() => {
-              setView("work");
-            }}
+            onDelete={removeProject}
           />
         ) : mode === "chat" ? (
           <>
-            <header className="workspace-header">
+            <header className="workspace-header" data-tauri-drag-region>
               {!sidebarOpen && (
                 <button
                   type="button"
@@ -590,8 +658,8 @@ export function App(): React.JSX.Element {
                   <Icon name="sidebar" />
                 </button>
               )}
-              <div className="workspace-title workspace-title--row">
-                <h1>{selectedChat?.title ?? "New chat"}</h1>
+              <div className="workspace-title workspace-title--row" data-tauri-drag-region>
+                <h1 data-tauri-drag-region>{selectedChat?.title ?? "New chat"}</h1>
                 {selectedChat !== undefined && (
                   <ConversationMenu
                     key={selectedChat.conversationId}
@@ -613,7 +681,7 @@ export function App(): React.JSX.Element {
                 )}
               </div>
               <ModeSwitch mode={mode} onChange={chooseMode} />
-              <div className="workspace-header-end">
+              <div className="workspace-header-end" data-tauri-drag-region>
                 <span className="runtime-chip" data-mode={routingMode}>
                   {routingMode === "localOnly" && <Icon name="lock" size={13} strokeWidth={2.2} />}
                   {MODE_LABEL[routingMode]}
@@ -655,7 +723,7 @@ export function App(): React.JSX.Element {
           </>
         ) : (
           <>
-            <header className="workspace-header">
+            <header className="workspace-header" data-tauri-drag-region>
               {!sidebarOpen && (
                 <button
                   type="button"
@@ -668,8 +736,8 @@ export function App(): React.JSX.Element {
                   <Icon name="sidebar" />
                 </button>
               )}
-              <div className="workspace-title workspace-title--row">
-                <h1>{selectedConversation?.title ?? "New task"}</h1>
+              <div className="workspace-title workspace-title--row" data-tauri-drag-region>
+                <h1 data-tauri-drag-region>{selectedConversation?.title ?? "New task"}</h1>
                 {selectedConversation !== undefined && inspection !== undefined && (
                   <ConversationMenu
                     key={selectedConversation.conversationId}
@@ -690,7 +758,7 @@ export function App(): React.JSX.Element {
                 )}
               </div>
               <ModeSwitch mode={mode} onChange={chooseMode} />
-              <div className="workspace-header-end">
+              <div className="workspace-header-end" data-tauri-drag-region>
                 {selectedConversation !== undefined && (
                   <button
                     type="button"
@@ -701,6 +769,19 @@ export function App(): React.JSX.Element {
                   >
                     <Icon name="share" size={15} />
                     Share
+                  </button>
+                )}
+                {runs.length > 0 && !terminalOpen && (
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Terminal"
+                    title="The commands this task ran"
+                    onClick={() => {
+                      setTerminalOpen(true);
+                    }}
+                  >
+                    <Icon name="terminal" />
                   </button>
                 )}
                 {/* Only while the panel is put away: once open, it closes from
@@ -788,6 +869,15 @@ export function App(): React.JSX.Element {
               </div>
             </div>
 
+            {terminalOpen && runs.length > 0 && (
+              <CommandTerminal
+                runs={runs}
+                onClose={() => {
+                  setTerminalOpen(false);
+                }}
+              />
+            )}
+
             {!loadingProject && (
               <AgentComposer
                 goal={goal}
@@ -807,6 +897,8 @@ export function App(): React.JSX.Element {
                 starting={starting}
                 onStart={onStart}
                 onCancel={onCancel}
+                slash={slash}
+                hasSkills={personalSkills.skills.length > 0 || projectSkillOptions.length > 0}
               />
             )}
           </>

@@ -45,6 +45,11 @@ pub(crate) struct TaskArgs {
     #[arg(long = "skill-id", value_name = "ID")]
     skill_ids: Vec<String>,
 
+    /// One of your own skills to use, by id (`tramontana skill list`).
+    /// Repeat to use more, in order.
+    #[arg(long = "personal-skill", value_name = "ID")]
+    personal_skills: Vec<String>,
+
     /// Cancel the task after this many milliseconds.
     ///
     /// Exercises the cancellation path end to end without needing a terminal
@@ -338,6 +343,7 @@ async fn run(args: TaskArgs) -> ExitCode {
             worker: args.worker.clone(),
             selection: Some(selection),
             attachments,
+            personal_skills: args.personal_skills.clone(),
             ..Default::default()
         })
         .await

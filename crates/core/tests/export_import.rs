@@ -134,6 +134,7 @@ fn revealing_request() -> ExportRequest {
                 routing_mode: None,
                 attachments: Vec::new(),
                 personal: None,
+                skills: Vec::new(),
             },
             TaskEventKind::TaskCreated,
         ),

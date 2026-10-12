@@ -35,6 +35,7 @@ mod records;
 mod release;
 mod routing;
 mod schedule;
+mod skill;
 mod task;
 mod time;
 
@@ -103,6 +104,7 @@ pub use release::{
 };
 pub use routing::{RoutedModel, RoutingDecision, RoutingFallback, reason as routing_reason};
 pub use schedule::{Cadence, LocalDateTime, NewSchedule, Schedule, ScheduleView, Weekday};
+pub use skill::{PersonalSkill, TaskSkill};
 pub use task::{InvalidTransition, TaskSnapshot, TaskState};
 pub use time::Timestamp;
 

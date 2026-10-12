@@ -443,6 +443,7 @@ async fn startup_recovers_every_nonterminal_state_once_without_executing_any_wor
                     routing_mode: None,
                     attachments: Vec::new(),
                     personal: None,
+                    skills: Vec::new(),
                 },
                 TaskEventKind::TaskCreated,
                 &task,

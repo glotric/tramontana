@@ -324,7 +324,7 @@ async fn a_task_browses_only_where_it_was_allowed() {
         let after = h
             .call(&task, CLICK, json!({ "ref": numbered(&home, name) }))
             .await
-            .unwrap();
+            .unwrap_or_else(|error| panic!("clicking \"{name}\": {error:?}"));
         assert!(
             text(&after).contains("Welcome"),
             "{name}: {}",

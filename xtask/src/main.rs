@@ -25,12 +25,13 @@ use tramontana_core::contracts::{
     ExportedConfiguration, HandoffBundle, HandoffEntry, LocalDateTime, MemoryNote, ModelDescriptor,
     ModelEvent, ModelLimits, ModelRequest, NewSchedule, NormalizedMessage,
     NormalizedToolDefinition, Omission, OmissionCategory, PendingAction, PendingActionKind,
-    PersonalDetails, PersonalProfile, ProjectGrant, ProjectRecord, ReleaseAuthorization,
-    ReleaseExclusion, ReleasedCategory, ReplaySafety, ResponseFormat, ResumeEligibility,
-    ResumeMode, RiskClass, RoutedModel, RoutingDecision, RoutingFallback, RoutingMode, Schedule,
-    ScheduleView, SearchField, SearchResults, SecretRef, SecretStore, SideEffect, StopReason,
-    StreamFrame, TaskCheckpoint, TaskEventKind, TaskRecord, TaskSnapshot, TaskState, TaskUpdate,
-    ToolDescriptor, TranscriptFormat, TranscriptOptions, Usage, Visibility, Weekday,
+    PersonalDetails, PersonalProfile, PersonalSkill, ProjectGrant, ProjectRecord,
+    ReleaseAuthorization, ReleaseExclusion, ReleasedCategory, ReplaySafety, ResponseFormat,
+    ResumeEligibility, ResumeMode, RiskClass, RoutedModel, RoutingDecision, RoutingFallback,
+    RoutingMode, Schedule, ScheduleView, SearchField, SearchResults, SecretRef, SecretStore,
+    SideEffect, StopReason, StreamFrame, TaskCheckpoint, TaskEventKind, TaskRecord, TaskSkill,
+    TaskSnapshot, TaskState, TaskUpdate, ToolDescriptor, TranscriptFormat, TranscriptOptions,
+    Usage, Visibility, Weekday,
 };
 
 /// Filename of the single bundled contract schema.
@@ -142,6 +143,8 @@ fn emit_schema(dir: &Path) -> Result<PathBuf> {
     register::<NewSchedule>(&mut generator);
     register::<DictationSetup>(&mut generator);
     register::<DictationStatus>(&mut generator);
+    register::<PersonalSkill>(&mut generator);
+    register::<TaskSkill>(&mut generator);
     register::<ContextCategory>(&mut generator);
     register::<DestinationClass>(&mut generator);
     register::<ContextSource>(&mut generator);
@@ -358,6 +361,8 @@ mod tests {
             "NewSchedule",
             "DictationSetup",
             "DictationStatus",
+            "PersonalSkill",
+            "TaskSkill",
             "ContextCategory",
             "DestinationClass",
             "ContextSource",

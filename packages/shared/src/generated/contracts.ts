@@ -1040,6 +1040,12 @@ export interface EventEnvelope {
          * the profile's mode (ADR 0031).
          */
         routingMode?: "localOnly" | "automatic" | "cloudPreferred";
+        /**
+         * The person's own skills this task was given, as their redacted
+         * text when it started (ADR 0070). Absent when none were, and from
+         * every task recorded before personal skills were.
+         */
+        skills?: TaskSkill[];
       }
     | {
         /**
@@ -1353,6 +1359,12 @@ export type EventPayload =
        * the profile's mode (ADR 0031).
        */
       routingMode?: "localOnly" | "automatic" | "cloudPreferred";
+      /**
+       * The person's own skills this task was given, as their redacted
+       * text when it started (ADR 0070). Absent when none were, and from
+       * every task recorded before personal skills were.
+       */
+      skills?: TaskSkill[];
     }
   | {
       /**
@@ -2413,6 +2425,41 @@ export interface PersonalProfile {
 }
 
 /**
+ * A skill in the person's own library, as a list shows it: what it is
+ * called and what it is for, without its text.
+ */
+export interface PersonalSkill {
+  /**
+   * The length of its redacted text in bytes.
+   */
+  byteCount: number;
+  /**
+   * The content hash of its redacted text.
+   */
+  contentHash: string;
+  /**
+   * What it is for, in a line, when it says.
+   */
+  description?: string;
+  /**
+   * The name `/` finds it by: lowercase letters, digits and hyphens.
+   */
+  id: string;
+  /**
+   * Its declared name, or its id.
+   */
+  name: string;
+  /**
+   * What was removed from it as a credential, when anything was.
+   */
+  redactions?: string[];
+  /**
+   * Contract schema version.
+   */
+  schemaVersion: number;
+}
+
+/**
  * A persistent, revocable grant.
  */
 export interface ProjectGrant {
@@ -3157,6 +3204,33 @@ export interface TaskRecord {
    * When the projection was last updated.
    */
   updatedAt: string;
+}
+
+/**
+ * A personal skill a task was given, as it was when the task started: its
+ * redacted text is the guidance the model read, and a resume gives the same.
+ */
+export interface TaskSkill {
+  /**
+   * The content hash of `text`.
+   */
+  contentHash: string;
+  /**
+   * The skill's id.
+   */
+  id: string;
+  /**
+   * Its name.
+   */
+  name: string;
+  /**
+   * What was removed from it as a credential.
+   */
+  redactions?: string[];
+  /**
+   * Its redacted text.
+   */
+  text: string;
 }
 
 /**

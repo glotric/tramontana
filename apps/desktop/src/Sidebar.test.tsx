@@ -58,6 +58,7 @@ function sidebar(openProjectId: string, conversations: readonly ConversationReco
       onOpenConversation={() => undefined}
       onNewTaskIn={() => undefined}
       onOpenProject={() => undefined}
+      onRemoveProject={() => Promise.resolve()}
       openingProject={false}
       canOpenProject
       personName={undefined}
