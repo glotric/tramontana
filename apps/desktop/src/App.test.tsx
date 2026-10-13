@@ -202,7 +202,7 @@ async function openSettings(user: ReturnType<typeof userEvent.setup>, part: stri
   if (screen.queryByRole("heading", { name: "Settings", level: 1 }) === null) {
     await user.click(screen.getByRole("button", { name: /Settings/ }));
   }
-  await user.click(screen.getByRole("button", { name: part }));
+  await user.click(screen.getByRole("tab", { name: part }));
 }
 
 /**
@@ -356,15 +356,15 @@ describe("M2 durable desktop surface", () => {
       screen.queryByRole("complementary", { name: "Project inspector" }),
     ).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Agent" }));
+    await user.click(screen.getByRole("radio", { name: "Agent" }));
     // Agent opens on its home: a greeting, the project ready for a task, and
     // no conversation picked for the person.
     expect(await screen.findByRole("heading", { name: "What's up next?" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Project: Tramontana" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Agent" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("radio", { name: "Agent" })).toHaveAttribute("aria-checked", "true");
     expect(localStorage.getItem("tramontana.mode")).toBe("agent");
 
-    await user.click(screen.getByRole("button", { name: "Chat" }));
+    await user.click(screen.getByRole("radio", { name: "Chat" }));
     expect(screen.getByRole("heading", { name: "New chat", level: 1 })).toBeInTheDocument();
   });
 
@@ -603,7 +603,7 @@ describe("M2 durable desktop surface", () => {
     await screen.findByRole("button", { name: "Project: Tramontana" });
 
     for (const mode of ["Agent", "Chat"]) {
-      await user.click(screen.getByRole("button", { name: mode }));
+      await user.click(screen.getByRole("radio", { name: mode }));
       const sidebar = within(
         screen.getByRole("complementary", { name: "Projects and conversations" }),
       );
@@ -619,7 +619,7 @@ describe("M2 durable desktop surface", () => {
     await openSettings(user, "Customize");
     expect(await screen.findByRole("heading", { name: "Apps", level: 2 })).toBeInTheDocument();
     for (const part of ["General", "Customize", "Models and credentials", "Data"]) {
-      expect(screen.getByRole("button", { name: part })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: part })).toBeInTheDocument();
     }
   });
 

@@ -26,7 +26,18 @@ export function applyTheme(theme: Theme): void {
 
 /** Show `theme`, and remember it for the next time the window opens. */
 export function chooseTheme(theme: Theme): void {
-  applyTheme(theme);
+  // The whole window cross-fades where the engine can, so no part of it is
+  // seen half way between light and dark.
+  const reduced =
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (typeof document.startViewTransition === "function" && !reduced) {
+    document.startViewTransition(() => {
+      applyTheme(theme);
+    });
+  } else {
+    applyTheme(theme);
+  }
   try {
     if (theme === "system") localStorage.removeItem(KEY);
     else localStorage.setItem(KEY, theme);

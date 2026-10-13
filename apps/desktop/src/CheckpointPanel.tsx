@@ -180,8 +180,8 @@ export function CheckpointPanel({
       {escalating && chosen?.cloud === true && (
         <p className="notice" role="note">
           This one ran out of what its model could do, so a model off this device is offered first.
-          Handing it to {chosen.displayName} sends the task&rsquo;s record — its goal, what it read
-          and what it said — to that provider. Each release is still shown and approved as it
+          Handing it to {chosen.displayName} sends the task&rsquo;s record (its goal, what it read
+          and what it said) to that provider. Each release is still shown and approved as it
           happens, and nothing moves until you click.
         </p>
       )}
@@ -193,14 +193,14 @@ export function CheckpointPanel({
         <dt>Completed steps</dt>
         <dd>
           {checkpoint.completedStepIds.length === 0
-            ? "none — nothing has been done yet"
+            ? "None. Nothing has been done yet."
             : `${checkpoint.completedStepIds.length} (a resume will not repeat them)`}
         </dd>
 
         <dt>In flight</dt>
         <dd>
           {pending === undefined ? (
-            "nothing — the task stopped cleanly between steps"
+            "Nothing. The task stopped cleanly between steps."
           ) : (
             <>
               <span data-replay-safety={pending.replaySafety}>

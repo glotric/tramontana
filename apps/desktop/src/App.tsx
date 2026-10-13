@@ -36,6 +36,7 @@ import {
 } from "./core.js";
 import { appendDictated, useDictation } from "./Dictation.js";
 import { Glyph } from "./Glyph.js";
+import { Segmented } from "./Segmented.js";
 import { GrantsPanel } from "./GrantsPanel.js";
 import { Icon } from "./icons.js";
 import { ModelsView } from "./ModelsView.js";
@@ -71,7 +72,7 @@ function describeCoreStatus(status: CoreStatus): string {
     case "incompatible":
       return `Core speaks contracts v${status.reported}; this build speaks v${SCHEMA_VERSION}`;
     case "unavailable":
-      return "Core unavailable — open the desktop shell to use durable projects";
+      return "Core unavailable. Open the desktop shell to use durable projects.";
   }
 }
 
@@ -649,7 +650,7 @@ export function App(): React.JSX.Element {
               {!sidebarOpen && (
                 <button
                   type="button"
-                  className="icon-button"
+                  className="icon-button sidebar-toggle"
                   aria-label="Show sidebar"
                   onClick={() => {
                     setSidebarOpen(true);
@@ -727,7 +728,7 @@ export function App(): React.JSX.Element {
               {!sidebarOpen && (
                 <button
                   type="button"
-                  className="icon-button"
+                  className="icon-button sidebar-toggle"
                   aria-label="Show sidebar"
                   onClick={() => {
                     setSidebarOpen(true);
@@ -1018,27 +1019,32 @@ function ModeSwitch({
   readonly onChange: (mode: Mode) => void;
 }): React.JSX.Element {
   return (
-    <div className="mode-switch" role="group" aria-label="Mode">
-      <button
-        type="button"
-        aria-pressed={mode === "chat"}
-        onClick={() => {
-          onChange("chat");
-        }}
-      >
-        <Glyph icon="chat" hue="blue" size={24} />
-        Chat
-      </button>
-      <button
-        type="button"
-        aria-pressed={mode === "agent"}
-        onClick={() => {
-          onChange("agent");
-        }}
-      >
-        <Glyph icon="agent" hue="purple" size={24} />
-        Agent
-      </button>
-    </div>
+    <Segmented
+      kind="radios"
+      className="mode-switch"
+      label="Mode"
+      value={mode}
+      options={[
+        {
+          value: "chat",
+          label: (
+            <>
+              <Glyph icon="chat" hue="blue" size={24} />
+              Chat
+            </>
+          ),
+        },
+        {
+          value: "agent",
+          label: (
+            <>
+              <Glyph icon="agent" hue="purple" size={24} />
+              Agent
+            </>
+          ),
+        },
+      ]}
+      onChange={onChange}
+    />
   );
 }

@@ -265,7 +265,7 @@ export function AppsView({ onClose }: AppsViewProps): React.JSX.Element {
                   <ul aria-label={`Tools of ${app.displayName}`}>
                     {app.tools.map((tool) => (
                       <li key={tool.toolId}>
-                        <code>{tool.toolId}</code> — {tool.description}{" "}
+                        <code>{tool.toolId}</code>: {tool.description}{" "}
                         <span className="card-meta">
                           {tool.offered
                             ? "The App says it only reads, so a task that allows Apps may offer it. Not verified."

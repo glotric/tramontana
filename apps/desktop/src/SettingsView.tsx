@@ -5,6 +5,7 @@ import { asErrorEnvelope, forget, personalProfile, remember, updatePersonal } fr
 import { DictationSettings } from "./Dictation.js";
 import { EraseAllData } from "./EraseAllData.js";
 import { Glyph } from "./Glyph.js";
+import { Segmented, segmentedTabId } from "./Segmented.js";
 import { chooseTheme, rememberedTheme } from "./theme.js";
 import type { Theme } from "./theme.js";
 import type { GlyphHue, GlyphIcon } from "./Glyph.js";
@@ -60,21 +61,17 @@ function AppearanceSettings(): React.JSX.Element {
   return (
     <fieldset className="settings-section appearance">
       <legend>Appearance</legend>
-      <div className="overview-segments" role="group" aria-label="Appearance">
-        {THEMES.map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            aria-pressed={theme === value}
-            onClick={() => {
-              chooseTheme(value);
-              setTheme(value);
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <Segmented
+        kind="radios"
+        className="overview-segments"
+        label="Appearance"
+        value={theme}
+        options={THEMES.map(([value, label]) => ({ value, label }))}
+        onChange={(value) => {
+          chooseTheme(value);
+          setTheme(value);
+        }}
+      />
     </fieldset>
   );
 }
@@ -329,36 +326,39 @@ export function SettingsView({
   return (
     <section className="settings-view" aria-labelledby="settings-heading">
       <h1 id="settings-heading">Settings</h1>
-      <div className="settings-tabs overview-segments" role="group" aria-label="Settings sections">
-        {TABS.map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            aria-pressed={tab === value}
-            onClick={() => {
-              onTab(value);
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-      {tab === "general" ? (
-        <div className="settings-parts">
-          <div className="settings-card">
-            <AppearanceSettings />
+      <Segmented
+        kind="tabs"
+        className="settings-tabs overview-segments"
+        label="Settings sections"
+        idPrefix="settings"
+        panelId="settings-panel"
+        value={tab}
+        options={TABS.map(([value, label]) => ({ value, label }))}
+        onChange={onTab}
+      />
+      <div
+        className="settings-panel"
+        role="tabpanel"
+        id="settings-panel"
+        aria-labelledby={segmentedTabId("settings", tab)}
+      >
+        {tab === "general" ? (
+          <div className="settings-parts">
+            <div className="settings-card">
+              <AppearanceSettings />
+            </div>
+            <GeneralSettings />
           </div>
-          <GeneralSettings />
-        </div>
-      ) : tab === "customize" ? (
-        customize
-      ) : tab === "models" ? (
-        models
-      ) : (
-        <div className="settings-card">
-          <EraseAllData />
-        </div>
-      )}
+        ) : tab === "customize" ? (
+          customize
+        ) : tab === "models" ? (
+          models
+        ) : (
+          <div className="settings-card">
+            <EraseAllData />
+          </div>
+        )}
+      </div>
     </section>
   );
 }
