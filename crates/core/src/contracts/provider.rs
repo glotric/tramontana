@@ -197,7 +197,9 @@ pub fn is_loopback_url(base_url: &str) -> bool {
     else {
         return false;
     };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // `\` ends the authority too: a URL parser reads it as `/` in http(s),
+    // so `http://evil.test\@127.0.0.1/` is a request to `evil.test`.
+    let authority = rest.split(['/', '\\', '?', '#']).next().unwrap_or_default();
     let host_port = authority
         .rsplit_once('@')
         .map_or(authority, |(_, host)| host);
@@ -310,6 +312,8 @@ mod tests {
             "https://localhost@evil.test/",
             "https://evil.test?h=127.0.0.1",
             "https://notlocalhost",
+            "http://evil.test\\@127.0.0.1:8080/v1",
+            "http://evil.test\\@localhost/",
         ] {
             assert_eq!(openai(cloud).location(), ModelLocation::Cloud, "{cloud}");
         }
