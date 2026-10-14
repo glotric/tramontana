@@ -259,6 +259,10 @@ pub struct TaskService {
     pub(super) ids: Arc<dyn IdSource>,
     pub(super) live: LiveTasks,
     pub(super) lifecycle: tokio::sync::Mutex<()>,
+    /// Held across every read-change-save of a schedule, so the scheduler's
+    /// copy cannot overwrite a delete or a pause made while it ran one.
+    /// Taken before `lifecycle`, never after.
+    pub(super) schedule_lock: tokio::sync::Mutex<()>,
     /// The routing mode a task in this profile starts under, unless it names
     /// its own.
     ///
@@ -315,6 +319,7 @@ impl TaskService {
             ids,
             live: Arc::new(Mutex::new(HashMap::new())),
             lifecycle: tokio::sync::Mutex::new(()),
+            schedule_lock: tokio::sync::Mutex::new(()),
             // Local-first by default: work stays on the device until someone
             // chooses otherwise.
             routing_mode: Mutex::new(RoutingMode::Automatic),
@@ -856,6 +861,7 @@ impl TaskService {
     /// [`ErrorCode::NotFound`] when it does not exist, [`ErrorCode::Conflict`]
     /// while one of its tasks runs, or a persistence error.
     pub async fn delete_project(&self, project_id: &ProjectId) -> Result<(), ErrorEnvelope> {
+        let _schedules = self.schedule_lock.lock().await;
         let _lifecycle = self.lifecycle.lock().await;
         self.get_project(project_id).await?;
         let conversations = self.list_conversations(Some(project_id)).await?;

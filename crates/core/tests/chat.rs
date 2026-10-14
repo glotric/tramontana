@@ -956,6 +956,79 @@ async fn a_schedule_whose_last_run_is_still_under_way_is_not_run_again() {
     );
 }
 
+/// Schedules that, once armed, stop the next reader just after it has read.
+#[derive(Default)]
+struct PausedSchedules {
+    inner: InMemoryScheduleRepository,
+    armed: std::sync::atomic::AtomicBool,
+    listed: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
+}
+
+#[async_trait]
+impl ScheduleRepository for PausedSchedules {
+    async fn list(&self) -> Result<Vec<Schedule>, RepositoryError> {
+        let schedules = self.inner.list().await;
+        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            self.listed.notify_one();
+            self.resume.notified().await;
+        }
+        schedules
+    }
+    async fn save(&self, schedule: &Schedule) -> Result<(), RepositoryError> {
+        self.inner.save(schedule).await
+    }
+    async fn delete(&self, schedule_id: &str) -> Result<(), RepositoryError> {
+        self.inner.delete(schedule_id).await
+    }
+}
+
+#[tokio::test]
+async fn a_schedule_deleted_while_it_runs_stays_deleted() {
+    let model = Numbered::new();
+    let clock = Arc::new(FakeLocalClock::at(local(2026, 9, 28, 7, 0)));
+    let store = Arc::new(PausedSchedules::default());
+    let service = Arc::new(service(&model).with_schedules(
+        Arc::clone(&store) as Arc<dyn ScheduleRepository>,
+        Arc::clone(&clock) as Arc<dyn LocalClock>,
+    ));
+    let id = service
+        .create_schedule(&NewSchedule {
+            title: "Daily".into(),
+            goal: "Hello?".into(),
+            project_id: None,
+            cadence: Cadence::Daily { hour: 8, minute: 0 },
+            routing_mode: RoutingMode::LocalOnly,
+        })
+        .await
+        .unwrap()
+        .schedule
+        .schedule_id;
+    clock.set(local(2026, 9, 28, 8, 0));
+
+    // The scheduler reads the schedule, and is held there while it is
+    // deleted; its copy must not be written back afterwards.
+    store.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    let tick = tokio::spawn({
+        let service = Arc::clone(&service);
+        async move { service.run_due_schedules().await }
+    });
+    store.listed.notified().await;
+    let delete = tokio::spawn({
+        let service = Arc::clone(&service);
+        async move { service.delete_schedule(&id).await }
+    });
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    store.resume.notify_one();
+    let started = tick.await.unwrap().unwrap();
+    delete.await.unwrap().unwrap();
+
+    assert!(service.list_schedules().await.unwrap().is_empty());
+    settled(&service, &started[0]).await;
+}
+
 #[tokio::test]
 async fn removing_a_project_forgets_its_record_and_nothing_else() {
     let model = Numbered::new();

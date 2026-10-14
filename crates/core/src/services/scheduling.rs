@@ -112,6 +112,7 @@ impl TaskService {
         schedule_id: &str,
         enabled: bool,
     ) -> Result<Schedule, ErrorEnvelope> {
+        let _schedules = self.schedule_lock.lock().await;
         let (_, clock) = self.schedule_ports()?;
         let mut schedule = self.find_schedule(schedule_id).await?;
         if enabled && !schedule.enabled {
@@ -132,6 +133,7 @@ impl TaskService {
     ///
     /// [`ErrorCode::NotFound`], or as [`Self::list_schedules`].
     pub async fn delete_schedule(&self, schedule_id: &str) -> Result<(), ErrorEnvelope> {
+        let _schedules = self.schedule_lock.lock().await;
         let (store, _) = self.schedule_ports()?;
         store.delete(schedule_id).await.or_envelope(self)
     }
@@ -143,6 +145,7 @@ impl TaskService {
     /// [`ErrorCode::Conflict`] while its previous run is still under way,
     /// [`ErrorCode::NotFound`], or whatever starting the task reports.
     pub async fn run_schedule_now(&self, schedule_id: &str) -> Result<TaskId, ErrorEnvelope> {
+        let _schedules = self.schedule_lock.lock().await;
         let schedule = self.find_schedule(schedule_id).await?;
         if self.previous_run_open(&schedule).await {
             return Err(self.error(
@@ -166,6 +169,7 @@ impl TaskService {
     ///
     /// As [`Self::list_schedules`].
     pub async fn run_due_schedules(&self) -> Result<Vec<TaskId>, ErrorEnvelope> {
+        let _schedules = self.schedule_lock.lock().await;
         let (store, clock) = self.schedule_ports()?;
         let now = clock.local_now();
         let schedules = store.list().await.or_envelope(self)?;

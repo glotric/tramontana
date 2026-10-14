@@ -55,6 +55,7 @@ impl TaskService {
         &self,
         erasure: &ProfileErasure<'_>,
     ) -> Result<ErasureReport, ErrorEnvelope> {
+        let _schedules = self.schedule_lock.lock().await;
         let _lifecycle = self.lifecycle.lock().await;
         self.require_execution()?;
         let tasks = self.list_tasks(None).await?;
