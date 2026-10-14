@@ -293,6 +293,9 @@ pub struct TaskService {
     /// The person's own skills (ADR 0070). Without a library, tasks use
     /// only their project's skills.
     pub(super) skill_library: Option<Arc<dyn crate::ports::SkillLibrary>>,
+    /// Removes a conversation's or a project's record in one commit
+    /// (ADR 0067). Without it, removal is the ordered sequence of deletes.
+    pub(super) record_removal: Option<Arc<dyn crate::ports::RecordRemoval>>,
     pub(super) execution_allowed: bool,
     pub(super) execution_guard: Option<Arc<dyn Send + Sync>>,
 }
@@ -331,6 +334,7 @@ impl TaskService {
             schedules: None,
             dictation: None,
             skill_library: None,
+            record_removal: None,
             execution_allowed: true,
             execution_guard: None,
         }
@@ -368,6 +372,14 @@ impl TaskService {
         transcriber: Arc<dyn crate::ports::Transcriber>,
     ) -> Self {
         self.dictation = Some((store, transcriber));
+        self
+    }
+
+    /// Remove conversations and projects through `removal`, in one commit
+    /// each, and sweep events a past removal left behind (ADR 0067).
+    #[must_use]
+    pub fn with_record_removal(mut self, removal: Arc<dyn crate::ports::RecordRemoval>) -> Self {
+        self.record_removal = Some(removal);
         self
     }
 
@@ -841,6 +853,12 @@ impl TaskService {
             "Stop the conversation's running task before deleting it",
         )
         .await?;
+        if let Some(removal) = &self.record_removal {
+            return removal
+                .remove_conversation(conversation_id)
+                .await
+                .or_envelope(self);
+        }
         self.remove_tasks(&tasks).await?;
         self.repositories
             .conversations
@@ -875,6 +893,9 @@ impl TaskService {
         }));
         self.none_under_way(&tasks, "Stop the project's running task before removing it")
             .await?;
+        if let Some(removal) = &self.record_removal {
+            return removal.remove_project(project_id).await.or_envelope(self);
+        }
         if let Some((schedules, _)) = &self.schedules {
             for schedule in schedules.list().await.or_envelope(self)? {
                 if schedule.project_id.as_ref() == Some(project_id) {

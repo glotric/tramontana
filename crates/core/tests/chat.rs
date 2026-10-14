@@ -1029,6 +1029,81 @@ async fn a_schedule_deleted_while_it_runs_stays_deleted() {
     settled(&service, &started[0]).await;
 }
 
+/// A store whose one-commit removal always fails, as a full disk would.
+struct FailingRemoval;
+
+#[async_trait]
+impl RecordRemoval for FailingRemoval {
+    async fn remove_conversation(&self, _: &ConversationId) -> Result<(), RepositoryError> {
+        Err(RepositoryError::Unavailable("disk full".into()))
+    }
+    async fn remove_project(&self, _: &ProjectId) -> Result<(), RepositoryError> {
+        Err(RepositoryError::Unavailable("disk full".into()))
+    }
+    async fn remove_orphaned_events(&self) -> Result<u64, RepositoryError> {
+        Ok(0)
+    }
+}
+
+#[tokio::test]
+async fn a_failed_one_commit_removal_leaves_the_whole_project_in_place() {
+    let model = Numbered::new();
+    let clock = Arc::new(FakeLocalClock::at(local(2026, 9, 28, 7, 0)));
+    let service = service(&model)
+        .with_schedules(
+            Arc::new(InMemoryScheduleRepository::new()),
+            Arc::clone(&clock) as Arc<dyn LocalClock>,
+        )
+        .with_record_removal(Arc::new(FailingRemoval));
+    let project = service
+        .create_project("Kept", vec!["/work/kept".into()])
+        .await
+        .unwrap();
+    let conversation = service
+        .create_conversation(Some(project.project_id.clone()), "Work")
+        .await
+        .unwrap();
+    let events = ask(&service, &conversation.conversation_id, "List it.").await;
+    service
+        .create_schedule(&NewSchedule {
+            title: "Weekly".into(),
+            goal: "Summarize.".into(),
+            project_id: Some(project.project_id.clone()),
+            cadence: Cadence::Daily { hour: 8, minute: 0 },
+            routing_mode: RoutingMode::LocalOnly,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        service
+            .delete_project(&project.project_id)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PersistenceError
+    );
+    assert_eq!(
+        service
+            .delete_conversation(&conversation.conversation_id)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PersistenceError
+    );
+
+    // Nothing went step by step before the failure.
+    assert!(service.get_project(&project.project_id).await.is_ok());
+    assert!(
+        service
+            .get_conversation(&conversation.conversation_id)
+            .await
+            .is_ok()
+    );
+    assert!(service.get_task(&events[0].task_id).await.is_ok());
+    assert_eq!(service.list_schedules().await.unwrap().len(), 1);
+}
+
 #[tokio::test]
 async fn removing_a_project_forgets_its_record_and_nothing_else() {
     let model = Numbered::new();

@@ -265,6 +265,10 @@ async fn open_with(
         .with_personal(Arc::new(
             tramontana_persistence::SqlitePersonalRepository::new(database.clone()),
         ))
+        // So removing a conversation or a project is one commit (ADR 0067).
+        .with_record_removal(Arc::new(tramontana_persistence::SqliteRecordRemoval::new(
+            database.clone(),
+        )))
         // So schedules run by the computer's local time (ADR 0063).
         .with_schedules(
             Arc::new(tramontana_persistence::SqliteScheduleRepository::new(

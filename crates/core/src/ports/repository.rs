@@ -245,6 +245,41 @@ pub trait ProfileEraser: Send + Sync {
     async fn erase_everything(&self) -> Result<(), RepositoryError>;
 }
 
+/// Removing Tramontana's record of a conversation or a project in one
+/// commit: rows, events, checkpoints and schedules together, or nothing
+/// (ADR 0067). Whether removal is allowed is decided by the caller.
+#[async_trait]
+pub trait RecordRemoval: Send + Sync {
+    /// The conversation, its tasks, their events and checkpoints.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::NotFound`] when it does not exist, or
+    /// [`RepositoryError::Unavailable`]; then nothing was removed.
+    async fn remove_conversation(
+        &self,
+        id: &crate::contracts::ConversationId,
+    ) -> Result<(), RepositoryError>;
+
+    /// The project, its conversations, every task recorded against it (with
+    /// or without a conversation), their events and checkpoints, its
+    /// schedules, roots and configuration manifests.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::remove_conversation`].
+    async fn remove_project(&self, id: &crate::contracts::ProjectId)
+    -> Result<(), RepositoryError>;
+
+    /// Remove events whose task row is gone, left by a removal interrupted
+    /// before this port existed, and return how many went.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when storage failed.
+    async fn remove_orphaned_events(&self) -> Result<u64, RepositoryError>;
+}
+
 /// Where a profile keeps the model providers the user configured.
 ///
 /// Profile-scoped, not project-scoped, and deliberately so.

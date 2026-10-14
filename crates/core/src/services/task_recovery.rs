@@ -112,6 +112,14 @@ impl TaskService {
         {
             return Ok(0);
         }
+        // Before any task can start, so nothing is mid-write: task creation
+        // and import both write a task's row before its events (ADR 0067).
+        if let Some(removal) = &self.record_removal {
+            let swept = removal.remove_orphaned_events().await.or_envelope(self)?;
+            if swept > 0 {
+                tracing::info!(swept, "removed events left by an interrupted removal");
+            }
+        }
         let mut changed = self
             .repositories
             .tasks

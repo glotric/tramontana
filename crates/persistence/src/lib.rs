@@ -16,6 +16,7 @@ mod dictation;
 mod erasure;
 mod event_store;
 mod personal;
+mod removal;
 mod repositories;
 mod schedules;
 
@@ -26,6 +27,7 @@ pub use dictation::SqliteDictationRepository;
 pub use erasure::SqliteProfileEraser;
 pub use event_store::SqliteEventStore;
 pub use personal::SqlitePersonalRepository;
+pub use removal::SqliteRecordRemoval;
 pub use repositories::{
     SqliteCheckpointRepository, SqliteConfigurationRepository, SqliteConversationRepository,
     SqliteProjectRepository, SqliteProviderSettingsRepository, SqliteTaskRepository,

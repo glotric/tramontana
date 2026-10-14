@@ -38,7 +38,7 @@ pub use read_only::{ReadOnlyLimits, ReadOnlyTurn, TOOL_RUN_LIMIT, ToolAdmission}
 pub use repository::{
     AppSettingsRepository, CheckpointRepository, ConfigurationRepository, ConversationRepository,
     PersonalRepository, ProfileEraser, ProjectRepository, ProviderSettingsRepository,
-    RepositoryError, ScheduleRepository, TaskRepository,
+    RecordRemoval, RepositoryError, ScheduleRepository, TaskRepository,
 };
 pub use secret::{SecretResolver, SecretVault};
 pub use skills::{SkillFile, SkillLibrary};
