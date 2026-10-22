@@ -21,7 +21,11 @@ tracing = { workspace = true }
 yaml-rust2 = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time", "test-util"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time", "test-util", "net"] }
+# SP0-A spike only (docs/SHARED_PROJECTS_PLAN.md): a task's events over a real
+# WebSocket on loopback. The versions the browser adapter already carries.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
 [lints]
 workspace = true

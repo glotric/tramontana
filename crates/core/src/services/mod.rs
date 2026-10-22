@@ -45,6 +45,7 @@ mod task_service;
 mod tool_registry;
 mod tool_schema;
 mod transcript;
+mod watch;
 
 pub use attachments::{
     ATTACHMENT_BYTES, ATTACHMENT_TOTAL_BYTES, ATTACHMENTS, AttachmentInput, DOCUMENT_BYTES,
@@ -124,3 +125,4 @@ pub use tool_registry::{
     is_browser_tool,
 };
 pub use tool_schema::{TOOL_INPUT_BYTES, ToolInputSchema};
+pub use watch::forward_task_updates;

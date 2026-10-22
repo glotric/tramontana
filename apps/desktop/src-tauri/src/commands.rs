@@ -821,76 +821,11 @@ pub(crate) fn forward_updates<F>(
         };
         tokio::select! {
             () = stopped => {}
-            () = forward(service, task_id, after_sequence, replayed, updates, send) => {}
+            () = tramontana_core::services::forward_task_updates(
+                service, task_id, after_sequence, replayed, updates, send,
+            ) => {}
         }
     });
-}
-
-async fn forward<F>(
-    service: std::sync::Arc<tramontana_core::services::TaskService>,
-    task_id: TaskId,
-    after_sequence: u64,
-    replayed: Vec<EventEnvelope>,
-    mut updates: tokio::sync::broadcast::Receiver<TaskUpdate>,
-    mut send: F,
-) where
-    F: FnMut(TaskUpdate) -> bool + Send + 'static,
-{
-    let mut highest = after_sequence;
-    let mut terminal_replayed = false;
-    for event in replayed {
-        highest = highest.max(event.sequence);
-        terminal_replayed |= event.is_terminal_outcome();
-        if !send(TaskUpdate::Event {
-            event: Box::new(event),
-        }) {
-            return; // The window went away.
-        }
-    }
-    if terminal_replayed {
-        return;
-    }
-
-    loop {
-        match updates.recv().await {
-            Ok(TaskUpdate::Event { event }) => {
-                // Subscription precedes replay, so an event can arrive
-                // twice. Dropping the duplicate here keeps the interface
-                // from having to know that.
-                if event.sequence <= highest {
-                    continue;
-                }
-                highest = event.sequence;
-                let terminal = event.is_terminal_outcome();
-                if !send(TaskUpdate::Event { event }) || terminal {
-                    return;
-                }
-            }
-            Ok(update) => {
-                if !send(update) {
-                    return;
-                }
-            }
-            // Lagging is recoverable: durable events are in the store, so
-            // catch up rather than reporting a failure to the user.
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                let Ok((missed, _)) = service.subscribe_task_events(&task_id, highest).await else {
-                    return;
-                };
-                for event in missed {
-                    highest = highest.max(event.sequence);
-                    let terminal = event.is_terminal_outcome();
-                    if !send(TaskUpdate::Event {
-                        event: Box::new(event),
-                    }) || terminal
-                    {
-                        return;
-                    }
-                }
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-        }
-    }
 }
 
 /// Show a native dialog and wait for its answer, without holding a runtime
