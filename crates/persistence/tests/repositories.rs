@@ -162,28 +162,6 @@ async fn projectless_conversations_are_listed_separately_from_project_ones() {
 }
 
 #[tokio::test]
-async fn archiving_a_conversation_records_when_it_happened() {
-    let directory = tempfile::tempdir().unwrap();
-    let repository = SqliteConversationRepository::new(database(&directory, "archive").await);
-
-    let record = ConversationRecord::new(ConversationId::new("c1"), None, "Untitled", at(0));
-    repository.create(&record).await.unwrap();
-    repository
-        .archive(&record.conversation_id, &at(9))
-        .await
-        .unwrap();
-
-    let loaded = repository.get(&record.conversation_id).await.unwrap();
-    assert_eq!(loaded.archived_at, Some(at(9)));
-
-    let error = repository
-        .archive(&ConversationId::new("nope"), &at(9))
-        .await
-        .unwrap_err();
-    assert!(matches!(error, RepositoryError::NotFound { .. }));
-}
-
-#[tokio::test]
 async fn a_conversation_is_renamed_and_deleted_with_its_tasks_checkpoints_and_events() {
     use tramontana_core::ports::CheckpointRepository;
     use tramontana_core::testing::contract_suites::checkpoint_at;

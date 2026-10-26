@@ -289,12 +289,6 @@ impl AuthorizedModelRequest {
     pub fn plan(&self) -> &ContextReleasePlan {
         &self.plan
     }
-
-    /// The request, for a provider that needs to own it.
-    #[must_use]
-    pub fn into_request(self) -> ModelRequest {
-        self.request
-    }
 }
 
 #[cfg(test)]

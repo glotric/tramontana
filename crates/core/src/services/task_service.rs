@@ -819,22 +819,6 @@ impl TaskService {
             .or_envelope(self)
     }
 
-    /// Mark a conversation archived.
-    ///
-    /// # Errors
-    ///
-    /// [`ErrorCode::NotFound`] when it does not exist.
-    pub async fn archive_conversation(
-        &self,
-        conversation_id: &ConversationId,
-    ) -> Result<(), ErrorEnvelope> {
-        self.repositories
-            .conversations
-            .archive(conversation_id, &self.clock.now())
-            .await
-            .or_envelope(self)
-    }
-
     /// Give a conversation a new title (ADR 0059).
     ///
     /// # Errors

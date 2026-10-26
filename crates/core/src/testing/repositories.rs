@@ -135,23 +135,6 @@ impl ConversationRepository for InMemoryConversationRepository {
             .collect())
     }
 
-    async fn archive(
-        &self,
-        conversation_id: &ConversationId,
-        at: &Timestamp,
-    ) -> Result<(), RepositoryError> {
-        let mut conversations = lock(&self.conversations)?;
-        let record = conversations
-            .iter_mut()
-            .find(|record| record.conversation_id == *conversation_id)
-            .ok_or_else(|| RepositoryError::NotFound {
-                kind: "conversation",
-                id: conversation_id.to_string(),
-            })?;
-        record.archived_at = Some(at.clone());
-        Ok(())
-    }
-
     async fn rename(
         &self,
         conversation_id: &ConversationId,

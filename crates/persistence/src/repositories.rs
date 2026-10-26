@@ -320,22 +320,6 @@ impl ConversationRepository for SqliteConversationRepository {
         rows.iter().map(conversation_from_row).collect()
     }
 
-    async fn archive(
-        &self,
-        conversation_id: &ConversationId,
-        at: &Timestamp,
-    ) -> Result<(), RepositoryError> {
-        let result =
-            sqlx::query("UPDATE conversation SET archived_at = ? WHERE conversation_id = ?")
-                .bind(at.as_str())
-                .bind(conversation_id.as_str())
-                .execute(self.database.pool())
-                .await
-                .map_err(unavailable)?;
-
-        affected(&result, "conversation", conversation_id)
-    }
-
     async fn rename(
         &self,
         conversation_id: &ConversationId,

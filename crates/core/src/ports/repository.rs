@@ -107,17 +107,6 @@ pub trait ConversationRepository: Send + Sync {
         project_id: Option<&ProjectId>,
     ) -> Result<Vec<ConversationRecord>, RepositoryError>;
 
-    /// Mark a conversation archived.
-    ///
-    /// # Errors
-    ///
-    /// [`RepositoryError::NotFound`] when it does not exist.
-    async fn archive(
-        &self,
-        conversation_id: &ConversationId,
-        at: &Timestamp,
-    ) -> Result<(), RepositoryError>;
-
     /// Give a conversation a new title (ADR 0059).
     ///
     /// # Errors
