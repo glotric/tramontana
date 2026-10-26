@@ -2,26 +2,16 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use tauri::AppHandle;
-use tramontana_adapters_tools::{FilesystemTools, GitTools, RecipeTools};
-use tramontana_core::ports::EventStore;
-use tramontana_core::ports::{
-    AppSettingsRepository, ApprovalStore, Approver, ModelProvider, ProviderSettingsRepository,
-    SecretResolver, ToolProvider,
-};
-use tramontana_core::services::{Providers, Repositories, TaskService};
-use tramontana_core::testing::{FakeModelProvider, InMemoryApprovalStore, assemble_tool_plane};
+use tramontana_core::ports::{Approver, SecretResolver};
+use tramontana_core::services::TaskService;
+use tramontana_core::testing::InMemoryApprovalStore;
 
 use crate::approval::DesktopApprover;
-use tramontana_composition::{ModelPlane, Supervision, assemble_models_recording};
-use tramontana_persistence::{
-    Database, SqliteAppSettingsRepository, SqliteConfigurationRepository,
-    SqliteConversationRepository, SqliteEventStore, SqliteProjectRepository,
-    SqliteProviderSettingsRepository, SqliteTaskRepository,
-};
-use tramontana_platform::{PlatformSecretVault, SystemClock, UuidIdSource};
+use tramontana_composition::ModelPlane;
+use tramontana_persistence::{SqliteAppSettingsRepository, SqliteProviderSettingsRepository};
+use tramontana_platform::PlatformSecretVault;
 
 /// What the Tauri layer manages.
 ///
@@ -85,217 +75,33 @@ impl AppState {
         chunk_delay_ms: u64,
         approver: Arc<DesktopApprover>,
     ) -> Result<Self, String> {
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
-        }
-        let database = Database::open(path)
-            .await
-            .map_err(|error| format!("could not open {}: {error}", path.display()))?;
-        // Filesystem and Git tools, behind the permission boundary. The
-        // registry says a tool exists; only the permission manager says it may
-        // run. The CLI assembles the identical set, including the same
-        // recovery store beside the profile, so the two adapters cannot drift
-        // into offering different tools under different policy.
-        let approvals = Arc::new(InMemoryApprovalStore::new());
-        // The profile's Apps, started before the registry is built so their
-        // tools are registered beside the built-in ones and under the same
-        // permission boundary (ADR 0036). A broken App is a warning, never a
-        // reason the window cannot open.
+        // The assembly a host shares (SHARED_PROJECTS_PLAN.md SP1). What is
+        // the desktop's own: a card for approvals, and the OS credential
+        // store.
         let vault = Arc::new(PlatformSecretVault::new());
-        let resolver = Arc::clone(&vault) as Arc<dyn SecretResolver>;
-        let app_settings = Arc::new(SqliteAppSettingsRepository::new(database.clone()));
-        let configured_apps = app_settings
-            .list()
-            .await
-            .map_err(|error| format!("could not read App settings: {error}"))?;
-        let apps = tramontana_composition::start_apps(&configured_apps, &resolver, path).await;
-        for failure in &apps.failures {
-            tracing::warn!(
-                app = failure.app_id,
-                "an App did not start: {}",
-                failure.reason
-            );
-        }
-        let app_tools = apps.tool_ids();
-        let browser = tramontana_composition::browser(path);
-        let mut providers: Vec<Arc<dyn ToolProvider>> = vec![
-            Arc::new(
-                FilesystemTools::new()
-                    .with_recovery_store(tramontana_composition::recovery_store(path)),
-            ) as Arc<dyn ToolProvider>,
-            Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
-            // Registered so both adapters hold the same set; offered to a
-            // model only in a task whose person chose to allow recipes.
-            Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
-            // Likewise the browser, started only when a task that may browse
-            // first opens a page (ADR 0047).
-            Arc::clone(&browser) as Arc<dyn ToolProvider>,
-        ];
-        providers.extend(apps.providers());
-        let (registry, permissions, releases) = assemble_tool_plane(
-            providers,
-            Arc::clone(&approvals) as Arc<dyn ApprovalStore>,
+        let plane = tramontana_composition::open_service_plane(
+            path,
             Arc::clone(&approver) as Arc<dyn Approver>,
-            Arc::new(UuidIdSource::new()),
+            Arc::clone(&vault) as Arc<dyn SecretResolver>,
+            chunk_delay_ms,
         )
-        .map_err(|error| format!("could not register tools: {error}"))?;
-
-        let lease = acquire_lease(path, LEASE_PATIENCE)
-            .await
-            .map_err(|error| format!("could not acquire runtime profile lease: {error}"))?
-            .map(|lease| Arc::new(lease) as Arc<dyn Send + Sync>);
-        // Holding the lease proves any runtime recorded for this profile
-        // outlived the process that started it: stop those before starting
-        // more. Without the lease they may be in use (ADR 0030).
-        if lease.is_some() {
-            for note in tramontana_composition::reap_runtimes(path).await {
-                tracing::warn!("{note}");
-            }
-            tramontana_composition::reap_browser_profiles(path);
-        }
-        let records = lease
-            .is_some()
-            .then(|| tramontana_composition::runtime_records(path));
-        let store: Arc<dyn EventStore> = Arc::new(SqliteEventStore::new(database.clone()));
-        // The endpoints the user configured, through the same composition the
-        // CLI uses. Supervised runtimes are started here because the desktop
-        // is long-lived; the plane below owns them and stops them on close.
-        let settings = Arc::new(SqliteProviderSettingsRepository::new(database.clone()));
-        let configured = settings
-            .list()
-            .await
-            .map_err(|error| format!("could not read provider settings: {error}"))?;
-        let plane = assemble_models_recording(
-            &configured,
-            &resolver,
-            Supervision::Start,
-            records.as_deref(),
-        )
-        .await;
-        for failure in &plane.failures {
-            tracing::warn!(
-                endpoint = failure.endpoint_id,
-                "a configured model endpoint is unavailable: {}",
-                failure.error.message
-            );
-        }
-        let has_configured = configured.iter().any(|endpoint| endpoint.enabled);
-        let models: Vec<Arc<dyn ModelProvider>> = if !has_configured {
-            // Labelled explicitly in the interface, not silently substituted.
-            vec![Arc::new(FakeModelProvider::streaming_paced(
-                ["Hello", ", ", "world", " from ", "Tramontana"],
-                chunk_delay_ms,
-            ))]
-        } else {
-            plane.providers.clone()
-        };
-
-        let service = TaskService::new(
-            Repositories {
-                projects: Arc::new(SqliteProjectRepository::new(database.clone())),
-                conversations: Arc::new(SqliteConversationRepository::new(database.clone())),
-                tasks: Arc::new(SqliteTaskRepository::new(database.clone())),
-                events: store,
-                checkpoints: Arc::new(tramontana_persistence::SqliteCheckpointRepository::new(
-                    database.clone(),
-                )),
-                configuration: Arc::new(SqliteConfigurationRepository::new(database.clone())),
-            },
-            Providers {
-                models,
-                tools: Arc::clone(&registry),
-                permissions: Arc::clone(&permissions),
-                releases: Arc::clone(&releases),
-                // Same strategy and governed tool plane as the CLI. The
-                // service's own worker is read-only. A task gets a worker that
-                // may ask to write or run recipes only when the person chose
-                // that in the composer, and each one is still approved as it
-                // happens (ADRs 0021 and 0031).
-                worker: tramontana_composition::assemble_worker(
-                    has_configured,
-                    tramontana_core::ports::ToolAdmission::READ_ONLY,
-                    &[],
-                ),
-            },
-            Arc::new(SystemClock::new()),
-            Arc::new(UuidIdSource::new()),
-        );
-        // The built-in worker pinned to each configured model a task can be
-        // handed to (ADR 0048). None on a profile with no endpoint.
-        let pinnable = if has_configured {
-            tramontana_composition::pinnable_models(&plane.providers).await
-        } else {
-            Vec::new()
-        };
-        let service = service
-            .with_worker_choice(tramontana_composition::worker_choice(
-                has_configured,
-                app_tools.clone(),
-            ))
-            .with_pinned_workers(
-                pinnable,
-                tramontana_composition::pinned_worker_choice(app_tools),
-            )
-            // So a task is given the project's own instructions, read as it
-            // starts (ADR 0052).
-            .with_project_sources(Arc::new(tramontana_platform::ProjectFiles::new(Arc::new(
-                SqliteProjectRepository::new(database.clone()),
-            ))))
-            // So chats can be told what the person wrote about themselves
-            // (ADR 0061).
-            .with_personal(Arc::new(
-                tramontana_persistence::SqlitePersonalRepository::new(database.clone()),
-            ))
-            // So removing a conversation or a project is one commit (ADR 0067).
-            .with_record_removal(Arc::new(tramontana_persistence::SqliteRecordRemoval::new(
-                database.clone(),
-            )))
-            // So schedules run by the computer's local time (ADR 0063).
-            .with_schedules(
-                Arc::new(tramontana_persistence::SqliteScheduleRepository::new(
-                    database.clone(),
-                )),
-                Arc::new(tramontana_platform::SystemLocalClock::new()),
-            )
-            // So speech can be transcribed on this device (ADR 0065).
-            // The person's own skills, in a folder beside the profile (ADR 0070).
-            .with_skill_library(Arc::new(tramontana_platform::FsSkillLibrary::new(
-                skills_folder(path),
-            )))
-            .with_dictation(
-                Arc::new(tramontana_persistence::SqliteDictationRepository::new(
-                    database.clone(),
-                )),
-                Arc::new(tramontana_adapters_local::WhisperCli::new()),
-            )
-            // So PDF and Word files can be attached (ADR 0062).
-            .with_document_reader(Arc::new(tramontana_adapters_documents::Documents::new()))
-            .with_execution_guard(lease);
-        service
-            .recover()
-            .await
-            .map_err(|error| format!("recovery failed: {}", error.message))?;
+        .await?;
         Ok(Self {
-            service: Arc::new(service),
+            service: Arc::new(plane.service),
             approver,
-            approvals,
-            models: Arc::new(tokio::sync::Mutex::new(plane)),
-            apps,
-            browser,
-            app_settings,
+            approvals: plane.approvals,
+            models: Arc::new(tokio::sync::Mutex::new(plane.models)),
+            apps: plane.apps,
+            browser: plane.browser,
+            app_settings: plane.app_settings,
             staged_bundle: Arc::new(std::sync::Mutex::new(None)),
             staged_attachments: Arc::default(),
             watches: Arc::default(),
-            settings,
+            settings: plane.settings,
             vault,
-            eraser: Arc::new(tramontana_persistence::SqliteProfileEraser::new(
-                database.clone(),
-            )),
+            eraser: plane.eraser,
             profile: path.to_path_buf(),
-            skills_folder: skills_folder(path),
+            skills_folder: plane.skills_folder,
         })
     }
 
@@ -350,39 +156,6 @@ impl AppState {
     }
 }
 
-/// How long a starting window waits for the profile's previous owner to let
-/// go of it.
-///
-/// A restart starts the new process a moment before the old one has exited,
-/// so a lease still held for that moment is expected. One held for longer
-/// belongs to another window, and this one opens without running tasks.
-const LEASE_PATIENCE: Duration = Duration::from_secs(3);
-
-/// The profile's lease, waiting up to `patience` for its holder to let go.
-async fn acquire_lease(
-    path: &Path,
-    patience: Duration,
-) -> std::io::Result<Option<tramontana_platform::ProfileLease>> {
-    let deadline = tokio::time::Instant::now() + patience;
-    loop {
-        if let Some(lease) = tramontana_platform::ProfileLease::try_acquire(path)? {
-            return Ok(Some(lease));
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Ok(None);
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-/// The person's skills live in a folder beside the profile (ADR 0070).
-fn skills_folder(profile: &Path) -> std::path::PathBuf {
-    profile
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("skills")
-}
-
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -399,6 +172,7 @@ mod tests {
 
     use std::time::Duration;
 
+    use tramontana_composition::acquire_lease;
     use tramontana_core::config::ConfigurationSelection;
     use tramontana_core::contracts::TaskEventKind;
     use tramontana_core::services::StartTaskRequest;
