@@ -493,12 +493,8 @@ fn is_stopped(event: &EventEnvelope) -> bool {
 }
 
 async fn checkpoint_command(args: TaskShowArgs, operation: &str) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     let task_id = TaskId::new(args.task_id);
     match operation {
@@ -561,12 +557,8 @@ async fn resume(args: TaskResumeArgs) -> ExitCode {
 }
 
 async fn list(args: TaskListArgs) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     let conversation_id = args.conversation_id.map(ConversationId::new);
     match service.list_tasks(conversation_id.as_ref()).await {
@@ -576,12 +568,8 @@ async fn list(args: TaskListArgs) -> ExitCode {
 }
 
 async fn show(args: TaskShowArgs) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     match service.get_task_record(&TaskId::new(args.task_id)).await {
         Ok(task) => render::json(&task),
@@ -590,12 +578,8 @@ async fn show(args: TaskShowArgs) -> ExitCode {
 }
 
 async fn replay(args: TaskReplayArgs) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     match service
         .replay_task_events(&TaskId::new(args.task_id), args.after_sequence)

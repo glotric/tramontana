@@ -101,12 +101,8 @@ async fn open(args: OpenProjectArgs) -> ExitCode {
             .unwrap_or("Untitled project")
             .to_owned()
     });
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     let project = match service
         .open_project(name, vec![root.as_str().to_owned()])
@@ -136,12 +132,8 @@ async fn open(args: OpenProjectArgs) -> ExitCode {
 }
 
 async fn list(args: ProfileArgs) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     match service.list_projects().await {
         Ok(projects) => render::json(&projects),
@@ -150,12 +142,8 @@ async fn list(args: ProfileArgs) -> ExitCode {
 }
 
 async fn inspect(args: InspectProjectArgs) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     let project_id = ProjectId::new(args.project_id);
     let project = match service.get_project(&project_id).await {
@@ -179,12 +167,8 @@ async fn delete(args: DeleteProjectArgs) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     match service
         .delete_project(&tramontana_core::contracts::ProjectId::new(args.project_id))

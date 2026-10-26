@@ -58,12 +58,8 @@ pub(crate) async fn execute(args: ConfigurationArgs) -> ExitCode {
 }
 
 async fn inspect(args: InspectConfigurationArgs) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     let project_id = ProjectId::new(args.project_id);
     let selection = ConfigurationSelection {

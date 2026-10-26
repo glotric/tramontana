@@ -150,12 +150,8 @@ pub(crate) async fn execute(args: ConversationArgs) -> ExitCode {
 
 async fn export(args: ExportConversationArgs) -> ExitCode {
     use tramontana_core::contracts::{TranscriptFormat, TranscriptOptions};
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     let options = TranscriptOptions {
         format: match args.format {
@@ -187,12 +183,8 @@ async fn export(args: ExportConversationArgs) -> ExitCode {
 }
 
 async fn rename(args: RenameConversationArgs) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     match service
         .rename_conversation(&ConversationId::new(args.conversation_id), &args.title)
@@ -210,12 +202,8 @@ async fn delete(args: DeleteConversationArgs) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     match service
         .delete_conversation(&ConversationId::new(args.conversation_id))
@@ -227,12 +215,8 @@ async fn delete(args: DeleteConversationArgs) -> ExitCode {
 }
 
 async fn search(args: SearchArgs) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     match service.search(&args.query).await {
         Ok(results) => render::json(&results),
@@ -241,12 +225,8 @@ async fn search(args: SearchArgs) -> ExitCode {
 }
 
 async fn create(args: CreateConversationArgs) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     let project_id = args.project_id.map(ProjectId::new);
     match service.create_conversation(project_id, args.title).await {
@@ -256,12 +236,8 @@ async fn create(args: CreateConversationArgs) -> ExitCode {
 }
 
 async fn list(args: ListConversationArgs) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     let project_id = args.project_id.map(ProjectId::new);
     match service.list_conversations(project_id.as_ref()).await {
@@ -271,12 +247,8 @@ async fn list(args: ListConversationArgs) -> ExitCode {
 }
 
 async fn inspect(args: InspectConversationArgs) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     match service
         .get_conversation(&ConversationId::new(args.conversation_id))

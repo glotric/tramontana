@@ -75,6 +75,17 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
     .map(|(service, _plane, _apps)| service)
 }
 
+/// [`open`] the profile, or print why not; `None` means exit with failure.
+pub(crate) async fn open_or_report(profile: Option<PathBuf>) -> Option<Arc<TaskService>> {
+    match open(&profile_path(profile), 0).await {
+        Ok(service) => Some(service),
+        Err(message) => {
+            eprintln!("error: {message}");
+            None
+        }
+    }
+}
+
 /// Open a profile for a command that will actually run a model.
 ///
 /// Returns the plane as well: it owns any runtime this process started, and

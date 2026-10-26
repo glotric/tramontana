@@ -73,12 +73,8 @@ pub(crate) async fn execute(args: ProfileArgs) -> ExitCode {
     if let ProfileCommand::Erase { yes } = args.command {
         return erase(args.profile, yes).await;
     }
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     let result = match args.command {
         ProfileCommand::Show => service.personal_profile().await,

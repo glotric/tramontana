@@ -78,12 +78,8 @@ pub(crate) async fn execute(args: BundleArgs) -> ExitCode {
 }
 
 async fn export(args: ExportArgs) -> ExitCode {
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
 
     let options = ExportOptions {

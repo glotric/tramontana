@@ -108,12 +108,8 @@ pub(crate) async fn execute(args: ScheduleArgs) -> ExitCode {
         eprintln!("error: --at takes a time as HH:MM, such as 08:00");
         return ExitCode::FAILURE;
     }
-    let service = match wiring::open(&wiring::profile_path(args.profile), 0).await {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(service) = wiring::open_or_report(args.profile).await else {
+        return ExitCode::FAILURE;
     };
     let rendered = match args.command {
         ScheduleCommand::List => service.list_schedules().await.map(|all| render::json(&all)),
