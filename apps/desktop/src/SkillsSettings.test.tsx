@@ -29,9 +29,6 @@ const skill = (id: string, name: string): PersonalSkill => ({
 });
 
 beforeEach(() => {
-  for (const mock of [listPersonalSkills, importSkill, removeSkill, skillsFolder]) {
-    mock.mockReset();
-  }
   skillsFolder.mockResolvedValue("/Users/maja/Library/Application Support/app/skills");
 });
 

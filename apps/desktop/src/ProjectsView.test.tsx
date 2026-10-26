@@ -32,7 +32,6 @@ const projects = [
 ];
 
 beforeEach(() => {
-  listConversations.mockReset();
   listConversations.mockImplementation((projectId: string) =>
     Promise.resolve(projectId === "p1" ? [{}, {}, {}] : [{}]),
   );

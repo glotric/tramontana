@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type * as CoreModuleShape from "./core.js";
 
@@ -14,10 +14,6 @@ vi.mock("./core.js", async () => {
 });
 
 const { ModelGuide } = await import("./ModelGuide.js");
-
-beforeEach(() => {
-  modelSetupHints.mockReset();
-});
 
 describe("ModelGuide", () => {
   it("gives the commands for what is missing, open when no model is set up", async () => {

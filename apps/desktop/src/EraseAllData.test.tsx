@@ -18,7 +18,6 @@ vi.mock("./core.js", async () => {
 const { EraseAllData } = await import("./EraseAllData.js");
 
 beforeEach(() => {
-  for (const mock of [eraseAllData, restartApplication, restartSupported]) mock.mockReset();
   eraseAllData.mockResolvedValue({ schemaVersion: 1, credentialsRemoved: 1, credentialsAbsent: 0 });
   restartApplication.mockResolvedValue(undefined);
   restartSupported.mockResolvedValue(true);

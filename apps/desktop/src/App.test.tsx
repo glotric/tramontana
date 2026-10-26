@@ -266,32 +266,6 @@ describe("M2 durable desktop surface", () => {
     // These tests are about work in a project, which is Agent mode; the
     // window otherwise opens in Chat (ADR 0057).
     localStorage.setItem("tramontana.mode", "agent");
-    for (const mock of [
-      fetchCoreInfo,
-      openProject,
-      listProjects,
-      inspectProject,
-      createConversation,
-      listConversations,
-      listTasks,
-      replayTaskEvents,
-      startTask,
-      cancelTask,
-      listPendingApprovals,
-      onApprovalRequested,
-      resolveApproval,
-      projectChanges,
-      listConfiguredEndpoints,
-      listModelEndpoints,
-      listProjectGrants,
-      watchTask,
-      latestCheckpoint,
-      listApps,
-      deleteProject,
-      listPersonalSkills,
-    ]) {
-      mock.mockReset();
-    }
     watchTask.mockResolvedValue(() => undefined);
     latestCheckpoint.mockResolvedValue(undefined);
     listApps.mockResolvedValue([]);

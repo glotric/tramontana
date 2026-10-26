@@ -38,7 +38,6 @@ const stored: PersonalProfile = {
 };
 
 beforeEach(() => {
-  for (const mock of [personalProfile, updatePersonal, remember, forget]) mock.mockReset();
   personalProfile.mockResolvedValue(stored);
   dictationStatus.mockResolvedValue({ configured: false });
   restartSupported.mockResolvedValue(true);

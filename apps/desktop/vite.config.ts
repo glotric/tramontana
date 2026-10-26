@@ -28,6 +28,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: false,
+    // Every mock returns to its own implementation before each test.
+    mockReset: true,
     setupFiles: ["./tests/setup.ts"],
     include: ["src/**/*.test.{ts,tsx}", "tests/**/*.test.{ts,tsx}"],
   },

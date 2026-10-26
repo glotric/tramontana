@@ -95,22 +95,6 @@ function endpoint(name: string): HTMLElement {
 
 describe("the Models view", () => {
   beforeEach(() => {
-    for (const mock of [
-      listConfiguredEndpoints,
-      listModelEndpoints,
-      setEndpointEnabled,
-      setEndpointToolCalls,
-      removeEndpoint,
-      storeCredential,
-      forgetCredential,
-      restartApplication,
-      restartSupported,
-      addLlamaEndpoint,
-      trustEndpoint,
-      checkEndpointModel,
-    ]) {
-      mock.mockReset();
-    }
     restartSupported.mockResolvedValue(true);
     addLlamaEndpoint.mockResolvedValue(false);
     listConfiguredEndpoints.mockResolvedValue([llama, openai, added, off]);

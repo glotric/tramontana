@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type * as CoreModuleShape from "./core.js";
 import type * as RecorderModuleShape from "./recorder.js";
@@ -51,11 +51,6 @@ const configured = {
   modelPath: "/models/ggml-base.bin",
   language: "en",
 };
-
-beforeEach(() => {
-  for (const mock of [dictationStatus, chooseDictation, clearDictation, transcribe, startRecording])
-    mock.mockReset();
-});
 
 describe("appendDictated", () => {
   it("puts the words after what is written, with one space", () => {

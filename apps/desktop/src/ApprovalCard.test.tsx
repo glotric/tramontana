@@ -40,7 +40,6 @@ const request: ApprovalRequest = {
 
 describe("the approval card", () => {
   beforeEach(() => {
-    resolveApproval.mockReset();
     resolveApproval.mockResolvedValue(undefined);
   });
 

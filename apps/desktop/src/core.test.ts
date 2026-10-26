@@ -53,11 +53,6 @@ const {
 } = await import("./core.js");
 
 describe("approval IPC", () => {
-  beforeEach(() => {
-    invoke.mockReset();
-    listen.mockReset();
-  });
-
   it("asks for the questions still waiting and answers one by identifier", async () => {
     invoke.mockResolvedValue([]);
     await listPendingApprovals();
@@ -95,7 +90,6 @@ describe("approval IPC", () => {
 
 describe("reattaching", () => {
   beforeEach(() => {
-    invoke.mockReset();
     invoke.mockResolvedValue(undefined);
   });
 
@@ -130,10 +124,6 @@ describe("reattaching", () => {
 });
 
 describe("standing permissions", () => {
-  beforeEach(() => {
-    invoke.mockReset();
-  });
-
   it("lists a project's grants and revokes one by identifier", async () => {
     invoke.mockResolvedValue([]);
     await listProjectGrants("project-1");
@@ -147,7 +137,6 @@ describe("standing permissions", () => {
 
 describe("models and credentials", () => {
   beforeEach(() => {
-    invoke.mockReset();
     invoke.mockResolvedValue(undefined);
   });
 
@@ -229,10 +218,6 @@ describe("models and credentials", () => {
 });
 
 describe("bundles", () => {
-  beforeEach(() => {
-    invoke.mockReset();
-  });
-
   it("names what to export, and never a folder", async () => {
     invoke.mockResolvedValue(null);
     expect(
@@ -272,10 +257,6 @@ describe("bundles", () => {
 });
 
 describe("project changes", () => {
-  beforeEach(() => {
-    invoke.mockReset();
-  });
-
   it("asks the shell for the project's status and diff by project", async () => {
     invoke.mockResolvedValue({ schemaVersion: 1, status: "", diff: "", truncated: false });
     await projectChanges("project-1");
@@ -285,7 +266,6 @@ describe("project changes", () => {
 
 describe("task options", () => {
   beforeEach(() => {
-    invoke.mockReset();
     invoke.mockResolvedValue("task-1");
   });
 
@@ -340,7 +320,6 @@ describe("task options", () => {
 
 describe("core IPC client", () => {
   beforeEach(() => {
-    invoke.mockReset();
     invoke.mockResolvedValue({ schemaVersion: 1, appVersion: "0.1.0" });
   });
 
@@ -437,7 +416,6 @@ describe("core IPC client", () => {
 
 describe("apps", () => {
   beforeEach(() => {
-    invoke.mockReset();
     invoke.mockResolvedValue(undefined);
   });
 

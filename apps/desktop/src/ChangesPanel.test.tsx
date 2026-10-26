@@ -26,7 +26,6 @@ const DIFF = [
 
 describe("the Changes panel", () => {
   beforeEach(() => {
-    projectChanges.mockReset();
     projectChanges.mockResolvedValue({
       schemaVersion: 1,
       status: "## main\n?? notes.txt\n",

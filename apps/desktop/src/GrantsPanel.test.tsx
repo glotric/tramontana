@@ -30,8 +30,6 @@ const grant: ProjectGrant = {
 
 describe("standing permissions", () => {
   beforeEach(() => {
-    listProjectGrants.mockReset();
-    revokeProjectGrant.mockReset();
     listProjectGrants.mockResolvedValue([grant]);
     revokeProjectGrant.mockResolvedValue(undefined);
   });

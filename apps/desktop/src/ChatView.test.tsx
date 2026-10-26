@@ -132,18 +132,6 @@ describe("chat helpers", () => {
 
 describe("ChatView", () => {
   beforeEach(() => {
-    for (const mock of [
-      createConversation,
-      listTasks,
-      replayTaskEvents,
-      startTask,
-      cancelTask,
-      watchTask,
-      chooseAttachments,
-      discardAttachment,
-    ]) {
-      mock.mockReset();
-    }
     discardAttachment.mockResolvedValue(undefined);
     watchTask.mockResolvedValue(() => undefined);
   });

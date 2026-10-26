@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ConversationRecord, SearchResults } from "@tramontana/shared";
 
 import type * as CoreModuleShape from "./core.js";
@@ -47,12 +47,6 @@ const found: SearchResults = {
     },
   ],
 };
-
-beforeEach(() => {
-  search.mockReset();
-  renameConversation.mockReset();
-  deleteConversation.mockReset();
-});
 
 describe("SearchPanel", () => {
   it("searches as the person types, and opens what they pick", async () => {

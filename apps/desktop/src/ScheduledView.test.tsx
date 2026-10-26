@@ -53,15 +53,6 @@ const morning: ScheduleView = {
 };
 
 beforeEach(() => {
-  for (const mock of [
-    listSchedules,
-    createSchedule,
-    setScheduleEnabled,
-    deleteSchedule,
-    runScheduleNow,
-  ]) {
-    mock.mockReset();
-  }
   listSchedules.mockResolvedValue([morning]);
 });
 

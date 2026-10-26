@@ -25,8 +25,6 @@ const chat: ConversationRecord = {
 };
 
 beforeEach(() => {
-  previewTranscript.mockReset();
-  saveTranscript.mockReset();
   previewTranscript.mockImplementation(
     (_id: string, options: { format: string; includeAttachments: boolean }) =>
       Promise.resolve(

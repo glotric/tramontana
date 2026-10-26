@@ -20,14 +20,6 @@ const { AddEndpointForm } = await import("./AddEndpointForm.js");
 
 describe("adding an endpoint", () => {
   beforeEach(() => {
-    for (const mock of [
-      addOpenAiEndpoint,
-      addAnthropicEndpoint,
-      addLlamaEndpoint,
-      addMlxEndpoint,
-    ]) {
-      mock.mockReset();
-    }
     addLlamaEndpoint.mockResolvedValue(false);
     addMlxEndpoint.mockResolvedValue(false);
     addOpenAiEndpoint.mockResolvedValue(true);

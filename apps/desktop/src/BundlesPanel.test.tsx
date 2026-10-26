@@ -45,7 +45,6 @@ const counts = {
 
 describe("the Bundles panel", () => {
   beforeEach(() => {
-    for (const mock of [exportBundle, inspectBundle, importStagedBundle]) mock.mockReset();
     exportBundle.mockResolvedValue({ schemaVersion: 1, directory: "/chosen/bundle", manifest });
     inspectBundle.mockResolvedValue({
       stagingId: "bundle-1",
