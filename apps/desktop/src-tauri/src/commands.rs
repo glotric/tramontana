@@ -14,9 +14,9 @@ use tauri_plugin_dialog::DialogExt;
 use tramontana_core::config::ConfigurationSelection;
 use tramontana_core::contracts::{
     ApprovalDecisionKind, ApprovalId, ApprovalRequest, CheckpointId, ConversationId,
-    ConversationRecord, CorrelationId, EffectiveConfiguration, ErrorCode, ErrorEnvelope,
-    EventEnvelope, ExportManifest, ExportOptions, ProjectGrant, ProjectId, ProjectRecord,
-    RoutingMode, SCHEMA_VERSION, TaskCheckpoint, TaskId, TaskRecord, TaskSnapshot, TaskUpdate,
+    ConversationRecord, EffectiveConfiguration, ErrorCode, ErrorEnvelope, EventEnvelope,
+    ExportManifest, ExportOptions, ProjectGrant, ProjectId, ProjectRecord, RoutingMode,
+    SCHEMA_VERSION, TaskCheckpoint, TaskId, TaskRecord, TaskSnapshot, TaskUpdate,
 };
 use tramontana_core::services::StartTaskRequest;
 use tramontana_platform::{CanonicalRoot, canonicalize_root, discover};
@@ -28,6 +28,7 @@ use tramontana_core::ports::Clock;
 use tramontana_platform::SystemClock;
 
 use crate::bundles::{self, ExportScope};
+use crate::ipc_error;
 use crate::settings;
 use crate::state::AppState;
 
@@ -953,10 +954,9 @@ pub(crate) async fn import_staged_bundle(
     state: State<'_, AppState>,
 ) -> Result<bundles::ImportReport, ErrorEnvelope> {
     let Some(directory) = bundles::take_staged(&state.staged_bundle, &staging_id) else {
-        return Err(ErrorEnvelope::new(
+        return Err(ipc_error(
             ErrorCode::NotFound,
             "inspect the bundle again before importing it",
-            CorrelationId::new("ipc"),
         ));
     };
     bundles::import_from(&state.service, &directory).await
@@ -1048,6 +1048,23 @@ pub(crate) async fn list_configured_endpoints(
     settings::list(state.settings.as_ref(), state.vault.as_ref()).await
 }
 
+/// Save a new endpoint, stamped now.
+async fn add_endpoint(
+    state: &AppState,
+    endpoint_id: &str,
+    display_name: Option<String>,
+    endpoint: settings::NewEndpoint,
+) -> Result<bool, ErrorEnvelope> {
+    settings::add(
+        state.settings.as_ref(),
+        endpoint_id,
+        display_name,
+        endpoint,
+        SystemClock::new().now(),
+    )
+    .await
+}
+
 /// Configure an endpoint speaking the OpenAI chat-completions format.
 ///
 /// Returns whether work sent to it leaves the device. Takes effect the next
@@ -1065,8 +1082,8 @@ pub(crate) async fn add_openai_endpoint(
     credential_key: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<bool, ErrorEnvelope> {
-    settings::add(
-        state.settings.as_ref(),
+    add_endpoint(
+        &state,
         &endpoint_id,
         display_name,
         settings::NewEndpoint::OpenAiCompatible {
@@ -1074,7 +1091,6 @@ pub(crate) async fn add_openai_endpoint(
             model_id,
             credential_key: credential_key.filter(|key| !key.is_empty()),
         },
-        SystemClock::new().now(),
     )
     .await
 }
@@ -1094,8 +1110,8 @@ pub(crate) async fn add_anthropic_endpoint(
     credential_key: String,
     state: State<'_, AppState>,
 ) -> Result<bool, ErrorEnvelope> {
-    settings::add(
-        state.settings.as_ref(),
+    add_endpoint(
+        &state,
         &endpoint_id,
         display_name,
         settings::NewEndpoint::Anthropic {
@@ -1103,7 +1119,6 @@ pub(crate) async fn add_anthropic_endpoint(
             model_id,
             credential_key,
         },
-        SystemClock::new().now(),
     )
     .await
 }
@@ -1129,8 +1144,8 @@ pub(crate) async fn add_llama_endpoint(
     let Some(model_path) = pick_file(&app, "Choose the GGUF model file").await? else {
         return Ok(None);
     };
-    settings::add(
-        state.settings.as_ref(),
+    add_endpoint(
+        &state,
         &endpoint_id,
         display_name,
         settings::NewEndpoint::LlamaServer {
@@ -1138,7 +1153,6 @@ pub(crate) async fn add_llama_endpoint(
             model_path,
             model_id,
         },
-        SystemClock::new().now(),
     )
     .await
     .map(Some)
@@ -1166,8 +1180,8 @@ pub(crate) async fn add_mlx_endpoint(
     let Some(model_path) = pick_folder(&app, "Choose the MLX model folder").await? else {
         return Ok(None);
     };
-    settings::add(
-        state.settings.as_ref(),
+    add_endpoint(
+        &state,
         &endpoint_id,
         display_name,
         settings::NewEndpoint::MlxServer {
@@ -1175,7 +1189,6 @@ pub(crate) async fn add_mlx_endpoint(
             model_path,
             model_id,
         },
-        SystemClock::new().now(),
     )
     .await
     .map(Some)
@@ -1539,6 +1552,18 @@ pub(crate) struct WorkerView {
     cloud: Option<bool>,
 }
 
+impl From<tramontana_core::services::WorkerOption> for WorkerView {
+    fn from(worker: tramontana_core::services::WorkerOption) -> Self {
+        Self {
+            agent_id: worker.agent_id,
+            display_name: worker.display_name,
+            cloud: worker
+                .model
+                .map(|model| model.location == tramontana_core::contracts::ModelLocation::Cloud),
+        }
+    }
+}
+
 /// What a stopped task can be handed to, in the order to offer it (ADR 0055).
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1567,17 +1592,7 @@ pub(crate) async fn handoff_options(
 ) -> Result<HandoffOfferView, ErrorEnvelope> {
     let offer = state.service.handoff_options(&task_id).await?;
     Ok(HandoffOfferView {
-        workers: offer
-            .workers
-            .into_iter()
-            .map(|worker| WorkerView {
-                agent_id: worker.agent_id,
-                display_name: worker.display_name,
-                cloud: worker.model.map(|model| {
-                    model.location == tramontana_core::contracts::ModelLocation::Cloud
-                }),
-            })
-            .collect(),
+        workers: offer.workers.into_iter().map(WorkerView::from).collect(),
         escalating: offer.escalating,
     })
 }
@@ -1590,13 +1605,7 @@ pub(crate) fn list_workers(state: State<'_, AppState>) -> Vec<WorkerView> {
         .service
         .workers()
         .into_iter()
-        .map(|worker| WorkerView {
-            agent_id: worker.agent_id,
-            display_name: worker.display_name,
-            cloud: worker
-                .model
-                .map(|model| model.location == tramontana_core::contracts::ModelLocation::Cloud),
-        })
+        .map(WorkerView::from)
         .collect()
 }
 
@@ -1625,15 +1634,11 @@ pub(crate) async fn hand_off_task(
 
 /// Build an invalid-request error for a boundary rejection.
 fn invalid(message: impl Into<String>) -> ErrorEnvelope {
-    ErrorEnvelope::new(
-        ErrorCode::InvalidRequest,
-        message,
-        CorrelationId::new("ipc"),
-    )
+    ipc_error(ErrorCode::InvalidRequest, message)
 }
 
 fn internal(message: impl Into<String>) -> ErrorEnvelope {
-    ErrorEnvelope::new(ErrorCode::Internal, message, CorrelationId::new("ipc"))
+    ipc_error(ErrorCode::Internal, message)
 }
 
 #[cfg(test)]
@@ -1674,10 +1679,9 @@ pub(crate) fn resolve_approval(
     if state.approver.resolve(&approval_id, decision) {
         return Ok(());
     }
-    Err(ErrorEnvelope::new(
+    Err(ipc_error(
         ErrorCode::NotFound,
         "that approval is no longer waiting for an answer",
-        CorrelationId::new("ipc"),
     ))
 }
 
@@ -1767,13 +1771,7 @@ pub(crate) async fn list_project_grants(
         .approvals
         .list_grants(&project_id)
         .await
-        .map_err(|error| {
-            ErrorEnvelope::new(
-                ErrorCode::PersistenceError,
-                error.to_string(),
-                CorrelationId::new("ipc"),
-            )
-        })
+        .map_err(|error| ipc_error(ErrorCode::PersistenceError, error.to_string()))
 }
 
 /// Revoke a grant. The next invocation it would have covered is refused.
@@ -1790,22 +1788,12 @@ pub(crate) async fn revoke_project_grant(
         .approvals
         .revoke_grant(&grant_id)
         .await
-        .map_err(|error| {
-            ErrorEnvelope::new(
-                ErrorCode::PersistenceError,
-                error.to_string(),
-                CorrelationId::new("ipc"),
-            )
-        })?;
+        .map_err(|error| ipc_error(ErrorCode::PersistenceError, error.to_string()))?;
 
     if removed {
         Ok(())
     } else {
-        Err(ErrorEnvelope::new(
-            ErrorCode::NotFound,
-            "no such grant",
-            CorrelationId::new("ipc"),
-        ))
+        Err(ipc_error(ErrorCode::NotFound, "no such grant"))
     }
 }
 

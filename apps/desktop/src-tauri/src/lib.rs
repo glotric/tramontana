@@ -19,6 +19,12 @@ mod state;
 mod scenario;
 
 use tauri::Manager;
+use tramontana_core::contracts::{CorrelationId, ErrorCode, ErrorEnvelope};
+
+/// An error for the webview, tagged as coming over IPC.
+pub(crate) fn ipc_error(code: ErrorCode, message: impl Into<String>) -> ErrorEnvelope {
+    ErrorEnvelope::new(code, message, CorrelationId::new("ipc"))
+}
 
 /// Build and run the desktop application.
 ///

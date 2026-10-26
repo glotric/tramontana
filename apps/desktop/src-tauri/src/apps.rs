@@ -14,6 +14,7 @@ use tramontana_core::contracts::{
 use tramontana_core::ports::{AppSettingsRepository, ToolProvider};
 use tramontana_core::services::TaskService;
 
+use crate::ipc_error;
 use crate::state::AppState;
 
 /// The most recent decisions the history shows.
@@ -202,10 +203,9 @@ pub(crate) async fn set_enabled(
         .into_iter()
         .find(|app| app.app_id == app_id)
         .ok_or_else(|| {
-            ErrorEnvelope::new(
+            ipc_error(
                 ErrorCode::NotFound,
                 format!("no App is configured as `{app_id}`"),
-                tramontana_core::contracts::CorrelationId::new("ipc"),
             )
         })?;
     app.enabled = enabled;
@@ -321,9 +321,5 @@ pub(crate) async fn history(
 }
 
 fn failure(message: String) -> ErrorEnvelope {
-    ErrorEnvelope::new(
-        ErrorCode::PersistenceError,
-        message,
-        tramontana_core::contracts::CorrelationId::new("ipc"),
-    )
+    ipc_error(ErrorCode::PersistenceError, message)
 }

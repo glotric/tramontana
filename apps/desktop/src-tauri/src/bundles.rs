@@ -5,11 +5,12 @@
 //! export says what it withheld, inspection writes nothing, and import runs
 //! nothing a bundle contains.
 
+use crate::ipc_error;
 use std::path::{Path, PathBuf};
 
 use tramontana_core::contracts::{
-    CorrelationId, ErrorCode, ErrorEnvelope, ExportBundle, ExportManifest, ExportOptions,
-    ProjectId, SCHEMA_VERSION, TaskId,
+    ErrorCode, ErrorEnvelope, ExportBundle, ExportManifest, ExportOptions, ProjectId,
+    SCHEMA_VERSION, TaskId,
 };
 use tramontana_core::services::{ImportLimits, TaskService};
 
@@ -108,7 +109,7 @@ pub(crate) async fn export_to(
         }
     };
     tramontana_platform::write_bundle(&bundle, directory).map_err(|error| {
-        failure(
+        ipc_error(
             ErrorCode::PersistenceError,
             format!("could not write the bundle: {error}"),
         )
@@ -174,15 +175,11 @@ pub(crate) async fn import_from(
 
 fn read(directory: &Path) -> Result<ExportBundle, ErrorEnvelope> {
     tramontana_platform::read_bundle(directory).map_err(|error| {
-        failure(
+        ipc_error(
             ErrorCode::InvalidRequest,
             format!("could not read the bundle: {error}"),
         )
     })
-}
-
-fn failure(code: ErrorCode, message: String) -> ErrorEnvelope {
-    ErrorEnvelope::new(code, message, CorrelationId::new("ipc"))
 }
 
 #[cfg(test)]

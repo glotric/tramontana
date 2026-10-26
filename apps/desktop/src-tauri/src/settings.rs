@@ -10,11 +10,12 @@
 //! and swapping them under a running task would change what that task's
 //! routing decisions meant.
 
+use crate::ipc_error;
 use std::path::Path;
 
 use tramontana_core::contracts::{
-    CorrelationId, ErrorCode, ErrorEnvelope, ModelLocation, ProviderConfig, ProviderEndpoint,
-    SecretRef, SecretStore, Timestamp,
+    ErrorCode, ErrorEnvelope, ModelLocation, ProviderConfig, ProviderEndpoint, SecretRef,
+    SecretStore, Timestamp,
 };
 use tramontana_core::ports::{ProviderSettingsRepository, SecretVault};
 
@@ -133,7 +134,7 @@ pub(crate) async fn list(
     vault: &dyn SecretVault,
 ) -> Result<Vec<ConfiguredEndpoint>, ErrorEnvelope> {
     let endpoints = settings.list().await.map_err(|error| {
-        failure(
+        ipc_error(
             ErrorCode::PersistenceError,
             format!("could not read the endpoints: {error}"),
         )
@@ -270,7 +271,7 @@ pub(crate) async fn add(
     }
 
     let existing = settings.list().await.map_err(|error| {
-        failure(
+        ipc_error(
             ErrorCode::PersistenceError,
             format!("could not read the endpoints: {error}"),
         )
@@ -281,7 +282,7 @@ pub(crate) async fn add(
         .iter()
         .any(|endpoint| endpoint.endpoint_id == endpoint_id)
     {
-        return Err(failure(
+        return Err(ipc_error(
             ErrorCode::Conflict,
             format!("an endpoint named {endpoint_id} is already configured"),
         ));
@@ -371,7 +372,7 @@ async fn find(
         .list()
         .await
         .map_err(|error| {
-            failure(
+            ipc_error(
                 ErrorCode::PersistenceError,
                 format!("could not read the endpoints: {error}"),
             )
@@ -379,7 +380,7 @@ async fn find(
         .into_iter()
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
         .ok_or_else(|| {
-            failure(
+            ipc_error(
                 ErrorCode::NotFound,
                 format!("no endpoint is named {endpoint_id}"),
             )
@@ -407,7 +408,7 @@ pub(crate) async fn toggle(
     toggle: Toggle,
 ) -> Result<(), ErrorEnvelope> {
     let mut endpoints = settings.list().await.map_err(|error| {
-        failure(
+        ipc_error(
             ErrorCode::PersistenceError,
             format!("could not read the endpoints: {error}"),
         )
@@ -416,7 +417,7 @@ pub(crate) async fn toggle(
         .iter_mut()
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
         .ok_or_else(|| {
-            failure(
+            ipc_error(
                 ErrorCode::NotFound,
                 format!("no endpoint is named {endpoint_id}"),
             )
@@ -440,7 +441,7 @@ pub(crate) async fn remove(
     endpoint_id: &str,
 ) -> Result<(), ErrorEnvelope> {
     let removed = settings.delete(endpoint_id).await.map_err(|error| {
-        failure(
+        ipc_error(
             ErrorCode::PersistenceError,
             format!("could not remove the endpoint: {error}"),
         )
@@ -448,7 +449,7 @@ pub(crate) async fn remove(
     if removed {
         Ok(())
     } else {
-        Err(failure(
+        Err(ipc_error(
             ErrorCode::NotFound,
             format!("no endpoint is named {endpoint_id}"),
         ))
@@ -503,7 +504,7 @@ async fn save(
     endpoint: &ProviderEndpoint,
 ) -> Result<(), ErrorEnvelope> {
     settings.save(endpoint).await.map_err(|error| {
-        failure(
+        ipc_error(
             ErrorCode::PersistenceError,
             format!("could not save the endpoint: {error}"),
         )
@@ -566,11 +567,7 @@ fn check_folder(what: &str, path: &Path) -> Result<String, ErrorEnvelope> {
 }
 
 fn invalid(message: impl Into<String>) -> ErrorEnvelope {
-    failure(ErrorCode::InvalidRequest, message)
-}
-
-fn failure(code: ErrorCode, message: impl Into<String>) -> ErrorEnvelope {
-    ErrorEnvelope::new(code, message, CorrelationId::new("ipc"))
+    ipc_error(ErrorCode::InvalidRequest, message)
 }
 
 #[cfg(test)]
