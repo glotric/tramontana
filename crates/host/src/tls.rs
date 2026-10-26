@@ -76,6 +76,20 @@ pub async fn connect(
     address: &str,
     pin: &str,
 ) -> Result<WebSocketStream<TlsStream<TcpStream>>, ConnectError> {
+    // Bounded: a host that accepts the connection but never completes the
+    // handshake must not hold a caller, or the desktop's host table, forever.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        connect_now(address, pin),
+    )
+    .await
+    .map_err(|_| ConnectError::Unreachable("timed out".to_owned()))?
+}
+
+async fn connect_now(
+    address: &str,
+    pin: &str,
+) -> Result<WebSocketStream<TlsStream<TcpStream>>, ConnectError> {
     let unreachable = |error: &dyn std::fmt::Display| ConnectError::Unreachable(error.to_string());
     let tcp = TcpStream::connect(address)
         .await

@@ -165,14 +165,17 @@ impl RemoteApprover {
         Ok(())
     }
 
-    /// Take a question out of the queue, if it is still there, and tell every
-    /// desktop it is settled.
+    /// Take a question out of the queue and, if it was still there, tell
+    /// every desktop it is settled.
     fn withdraw(&self, approval_id: &ApprovalId) {
         let mut inner = self.lock();
+        let before = inner.pending.len();
         inner
             .pending
             .retain(|waiting| waiting.request.approval_id != *approval_id);
-        settle(&inner, approval_id);
+        if inner.pending.len() != before {
+            settle(&inner, approval_id);
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -200,6 +203,16 @@ fn refused(code: ErrorCode, message: &str) -> ErrorEnvelope {
     ErrorEnvelope::new(code, message, CorrelationId::new("host"))
 }
 
+/// Withdraws a question however `ask` ends: answered, expired, or dropped
+/// because its task was cancelled.
+struct Withdraw<'a>(&'a RemoteApprover, &'a ApprovalId);
+
+impl Drop for Withdraw<'_> {
+    fn drop(&mut self) {
+        self.0.withdraw(self.1);
+    }
+}
+
 #[async_trait]
 impl Approver for RemoteApprover {
     async fn ask(
@@ -225,13 +238,11 @@ impl Approver for RemoteApprover {
                 );
             }
         }
+        let _withdraw = Withdraw(self, &request.approval_id);
         match tokio::time::timeout(self.timeout, receiver).await {
             Ok(Ok(decision)) => Ok(decision),
             Ok(Err(_)) => Err(PermissionError::NoApprover),
-            Err(_) => {
-                self.withdraw(&request.approval_id);
-                Err(PermissionError::Expired)
-            }
+            Err(_) => Err(PermissionError::Expired),
         }
     }
 }
@@ -277,6 +288,28 @@ mod tests {
             Err(PermissionError::Expired)
         ));
         assert!(approver.pending().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_question_whose_task_was_cancelled_is_withdrawn() {
+        let approver = std::sync::Arc::new(RemoteApprover::new());
+        let asking = {
+            let approver = std::sync::Arc::clone(&approver);
+            tokio::spawn(async move { approver.ask(&question("a-1")).await })
+        };
+        while approver.pending().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        asking.abort();
+        let _ = asking.await;
+        assert!(approver.pending().is_empty());
+        assert_eq!(
+            approver
+                .resolve(&ApprovalId::new("a-1"), ApprovalDecisionKind::Deny)
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
     }
 
     #[tokio::test]

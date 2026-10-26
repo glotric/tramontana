@@ -142,6 +142,8 @@ impl Hosts {
         self.vault
             .store(&token_ref(&record.host_id), token.expose())
             .await?;
+        // A connection made with the token this one replaces is closed.
+        self.connections.lock().await.remove(&record.host_id);
         let mut records = self.records()?;
         records.retain(|known| known.host_id != record.host_id);
         records.push(record.clone());
@@ -189,13 +191,22 @@ impl Hosts {
 
         let host_id = host_id.to_owned();
         let pool = Arc::clone(&self.connections);
+        let mine = Arc::as_ptr(&client).addr();
         tokio::spawn(async move {
             while let Some(event) = events.recv().await {
                 let gone = event == HostEvent::Disconnected;
                 announce(&host_id, event);
                 if gone {
-                    // The next command reconnects.
-                    pool.lock().await.remove(&host_id);
+                    // The next command reconnects. Only this connection is
+                    // dropped: the host may have been forgotten and paired
+                    // again since, with a newer one in its place.
+                    let mut pool = pool.lock().await;
+                    if pool
+                        .get(&host_id)
+                        .is_some_and(|current| Arc::as_ptr(current).addr() == mine)
+                    {
+                        pool.remove(&host_id);
+                    }
                     break;
                 }
             }

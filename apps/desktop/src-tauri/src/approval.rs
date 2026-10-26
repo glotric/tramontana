@@ -141,6 +141,16 @@ impl DesktopApprover {
     }
 }
 
+/// Takes a question out of the queue however `ask` ends: answered, expired,
+/// refused, or dropped because its task was cancelled.
+struct Withdraw<'a>(&'a DesktopApprover, &'a ApprovalId);
+
+impl Drop for Withdraw<'_> {
+    fn drop(&mut self) {
+        self.0.take(self.1);
+    }
+}
+
 #[async_trait]
 impl Approver for DesktopApprover {
     async fn ask(
@@ -166,13 +176,13 @@ impl Approver for DesktopApprover {
                 answer: sender,
             });
         }
+        let _withdraw = Withdraw(self, &request.approval_id);
 
         // Registered before emitting, so an answer that arrives immediately
         // still finds the question waiting for it.
         if let Announce::Window(app) = &self.announce
             && app.emit(APPROVAL_REQUESTED, request).is_err()
         {
-            self.take(&request.approval_id);
             return Err(PermissionError::NoApprover);
         }
 
@@ -180,10 +190,7 @@ impl Approver for DesktopApprover {
             Ok(Ok(decision)) => Ok(decision),
             // The window went away mid-question.
             Ok(Err(_)) => Err(PermissionError::NoApprover),
-            Err(_) => {
-                self.take(&request.approval_id);
-                Err(PermissionError::Expired)
-            }
+            Err(_) => Err(PermissionError::Expired),
         }
     }
 }
@@ -289,6 +296,25 @@ mod tests {
             matches!(answer, Err(PermissionError::Expired)),
             "{answer:?}"
         );
+        assert!(approver.pending().is_empty());
+        assert!(!approver.resolve(
+            &ApprovalId::new("approval-1"),
+            ApprovalDecisionKind::AllowOnce
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_question_whose_task_was_cancelled_is_withdrawn() {
+        let approver = DesktopApprover::waiting();
+        let asking = tokio::spawn({
+            let approver = approver.clone();
+            async move { approver.ask(&question("approval-1")).await }
+        });
+        while approver.pending().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        asking.abort();
+        let _ = asking.await;
         assert!(approver.pending().is_empty());
         assert!(!approver.resolve(
             &ApprovalId::new("approval-1"),

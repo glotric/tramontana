@@ -52,7 +52,8 @@ impl PairLink {
             |value: &&str| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit());
         Some(Self {
             address: address.to_owned(),
-            fingerprint: fingerprint.filter(is_hex)?.to_owned(),
+            // The pin is compared with the lowercase hex `fingerprint` makes.
+            fingerprint: fingerprint.filter(is_hex)?.to_ascii_lowercase(),
             code: Token::new(code.filter(is_hex)?),
         })
     }
@@ -402,6 +403,12 @@ mod tests {
         assert_eq!(link.address, "nas.local:7443");
         assert_eq!(link.fingerprint, hex);
         assert_eq!(link.code.expose(), hex);
+        let upper = PairLink::parse(&format!(
+            "tramontana://pair?host=a:1&fingerprint={}&code={hex}",
+            hex.to_ascii_uppercase()
+        ))
+        .unwrap();
+        assert_eq!(upper.fingerprint, hex);
 
         for bad in [
             format!("https://pair?host=a:1&fingerprint={hex}&code={hex}"),
