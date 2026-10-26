@@ -405,19 +405,7 @@ impl BrokeredHost {
     }
 
     fn tool_message(&self, role: MessageRole, part: MessagePart) -> EventDraft {
-        let mut message = NormalizedMessage::text(
-            MessageId::new(self.journal.next_id("message")),
-            self.journal.conversation_id().cloned(),
-            role,
-            self.journal.now(),
-            "",
-        );
-        message.task_id = Some(self.journal.task_id().clone());
-        message.parts = vec![part];
-        EventDraft::user(
-            TaskEventKind::MessageCommitted,
-            EventPayload::MessageCommitted { message },
-        )
+        self.message_draft(role, "", |message| message.parts = vec![part])
     }
 
     fn tool_error(&self, code: ErrorCode) -> ErrorEnvelope {

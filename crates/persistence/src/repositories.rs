@@ -36,13 +36,6 @@ fn conflict_or_unavailable(
     }
 }
 
-fn not_found(kind: &'static str, id: impl std::fmt::Display) -> RepositoryError {
-    RepositoryError::NotFound {
-        kind,
-        id: id.to_string(),
-    }
-}
-
 /// Serialize an enum to its bare camelCase name for storage.
 pub(crate) fn scalar<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value)
@@ -63,7 +56,7 @@ fn affected(
     id: impl std::fmt::Display,
 ) -> Result<(), RepositoryError> {
     if result.rows_affected() == 0 {
-        return Err(not_found(kind, id));
+        return Err(RepositoryError::not_found(kind, id));
     }
     Ok(())
 }
@@ -164,7 +157,7 @@ impl ProjectRepository for SqliteProjectRepository {
             .fetch_optional(self.database.pool())
             .await
             .map_err(unavailable)?
-            .ok_or_else(|| not_found("project", project_id))?;
+            .ok_or_else(|| RepositoryError::not_found("project", project_id))?;
 
         let roots = self.roots_for(project_id).await?;
         Ok(ProjectRecord {
@@ -296,7 +289,7 @@ impl ConversationRepository for SqliteConversationRepository {
         .fetch_optional(self.database.pool())
         .await
         .map_err(unavailable)?
-        .ok_or_else(|| not_found("conversation", conversation_id))?;
+        .ok_or_else(|| RepositoryError::not_found("conversation", conversation_id))?;
 
         conversation_from_row(&row)
     }
@@ -387,7 +380,7 @@ impl SqliteConfigurationRepository {
         .fetch_optional(self.database.pool())
         .await
         .map_err(unavailable)?
-        .ok_or_else(|| not_found("configuration manifest", manifest_hash))?;
+        .ok_or_else(|| RepositoryError::not_found("configuration manifest", manifest_hash))?;
 
         let source_rows = sqlx::query(
             "SELECT source_id, relative_path, kind, declared_id, declared_name,
@@ -785,7 +778,7 @@ impl TaskRepository for SqliteTaskRepository {
         .fetch_optional(self.database.pool())
         .await
         .map_err(unavailable)?
-        .ok_or_else(|| not_found("task", task_id))?;
+        .ok_or_else(|| RepositoryError::not_found("task", task_id))?;
         task_from_row(&row)
     }
 
@@ -996,7 +989,7 @@ impl CheckpointRepository for SqliteCheckpointRepository {
             .fetch_optional(self.database.pool())
             .await
             .map_err(unavailable)?
-            .ok_or_else(|| not_found("checkpoint", checkpoint_id))?;
+            .ok_or_else(|| RepositoryError::not_found("checkpoint", checkpoint_id))?;
 
         Self::decode(&row)
     }

@@ -13,11 +13,7 @@ pub struct SequentialIdSource {
 }
 
 impl SequentialIdSource {
-    /// A source starting from 1.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+    default_new!("A source starting from 1.");
 }
 
 impl IdSource for SequentialIdSource {

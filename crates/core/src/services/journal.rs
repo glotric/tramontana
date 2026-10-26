@@ -25,11 +25,7 @@ pub struct JournalPorts {
     pub projection: TaskProjectionWriter,
 }
 
-impl std::fmt::Debug for JournalPorts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("JournalPorts").finish_non_exhaustive()
-    }
-}
+opaque_debug!(JournalPorts);
 
 /// Appends events for one task and publishes them to subscribers.
 ///

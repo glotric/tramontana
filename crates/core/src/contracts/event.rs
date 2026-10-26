@@ -362,6 +362,20 @@ pub enum EventPayload {
     Unsupported,
 }
 
+impl EventPayload {
+    /// The `CheckpointSaved` marker for `checkpoint`.
+    #[must_use]
+    pub fn checkpoint_saved(checkpoint: &super::TaskCheckpoint) -> Self {
+        Self::CheckpointSaved {
+            checkpoint_id: checkpoint.checkpoint_id.clone(),
+            event_sequence: checkpoint.event_sequence,
+            completed_step_count: checkpoint.completed_step_ids.len() as u64,
+            pending_action: checkpoint.pending_action.clone(),
+            resume: checkpoint.resume.clone(),
+        }
+    }
+}
+
 /// Who asked for a capability.
 ///
 /// An audit record that cannot say *who* asked is not an audit record. A

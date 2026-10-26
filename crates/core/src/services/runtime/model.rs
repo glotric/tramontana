@@ -317,15 +317,27 @@ impl BrokeredHost {
     }
 
     pub(super) fn answer_draft(&self, text: &str, status: MessageStatus) -> EventDraft {
+        self.message_draft(MessageRole::Assistant, text, |message| {
+            message.status = status
+        })
+    }
+
+    /// A `MessageCommitted` draft for a new message of this task, finished by `fill`.
+    pub(super) fn message_draft(
+        &self,
+        role: MessageRole,
+        text: &str,
+        fill: impl FnOnce(&mut NormalizedMessage),
+    ) -> EventDraft {
         let mut message = NormalizedMessage::text(
             MessageId::new(self.journal.next_id("message")),
             self.journal.conversation_id().cloned(),
-            MessageRole::Assistant,
+            role,
             self.journal.now(),
             text,
         );
         message.task_id = Some(self.journal.task_id().clone());
-        message.status = status;
+        fill(&mut message);
         EventDraft::user(
             TaskEventKind::MessageCommitted,
             EventPayload::MessageCommitted { message },

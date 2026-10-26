@@ -4,14 +4,13 @@ use super::task_service::OrEnvelope as _;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{broadcast, watch};
-use tokio_util::sync::CancellationToken;
+use tokio::sync::broadcast;
 
 use super::checkpoint::{ResumePlan, derive_checkpoint, derive_state};
 use super::journal::{JournalPorts, TaskJournal};
 use super::projection::TaskProjectionWriter;
 use super::runtime::TaskDriver;
-use super::task_service::{HandoffOffer, LiveTask, TaskService, WorkerOption};
+use super::task_service::{HandoffOffer, NewRun, TaskService, WorkerOption};
 use crate::config::ConfigurationSelection;
 use crate::contracts::{
     AgentDescriptor, CancellationOrigin, CapabilityScope, CheckpointId, CorrelationId, ErrorCode,
@@ -566,11 +565,6 @@ impl TaskService {
         } = continuation;
         let task_id = record.task_id.clone();
 
-        let cancel = CancellationToken::new();
-        let interrupt = CancellationToken::new();
-        let (finished, receiver) = watch::channel(false);
-        let (updates, _) = broadcast::channel(256);
-
         let reason = if handoff.is_some() {
             super::HANDED_OVER
         } else {
@@ -579,17 +573,12 @@ impl TaskService {
         self.append_state(&record, TaskState::Preparing, reason)
             .await?;
         let record = self.canonical_record(&task_id).await?;
-        let journal = self.journal_for(&record, updates.clone());
-        let run = receiver.clone();
-        self.lock_live()?.insert(
-            task_id.clone(),
-            LiveTask {
-                cancel: cancel.clone(),
-                interrupt: interrupt.clone(),
-                updates,
-                finished: receiver,
-            },
-        );
+        let NewRun {
+            updates,
+            interrupt,
+            run,
+        } = self.register_run(&task_id)?;
+        let journal = self.journal_for(&record, updates);
 
         // The manifest the task started under, not whatever the project holds
         // now: the validation above already refused if the configuration
@@ -641,15 +630,7 @@ impl TaskService {
                 .with_worker(worker)
                 .continuing(Some(checkpoint), plan, interrupt),
         };
-
-        let guard = self.execution_guard.clone();
-        let live = Arc::clone(&self.live);
-        tokio::spawn(async move {
-            let _guard = guard;
-            driver.run(record.goal_summary, cancel).await;
-            let _ = finished.send(true);
-            super::task_service::forget_run(&live, &task_id, &run);
-        });
+        self.spawn_run(task_id, run, driver, record.goal_summary);
         Ok(())
     }
 
@@ -741,11 +722,7 @@ impl TaskService {
             EventPayload::CheckpointSaved { checkpoint_id, .. } if checkpoint_id == &checkpoint.checkpoint_id)) {
             self.journal_for(&record, broadcast::channel(1).0).append(EventDraft::user(
                 TaskEventKind::CheckpointSaved,
-                EventPayload::CheckpointSaved {
-                    checkpoint_id: checkpoint.checkpoint_id.clone(), event_sequence: checkpoint.event_sequence,
-                    completed_step_count: checkpoint.completed_step_ids.len() as u64,
-                    pending_action: checkpoint.pending_action.clone(), resume: checkpoint.resume.clone(),
-                },
+                EventPayload::checkpoint_saved(&checkpoint),
             )).await?;
         }
         Ok(checkpoint)

@@ -85,11 +85,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// An empty registry.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+    default_new!("An empty registry.");
 
     /// Register every tool a provider offers.
     ///

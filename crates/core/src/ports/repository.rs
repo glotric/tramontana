@@ -31,6 +31,16 @@ pub enum RepositoryError {
     Unavailable(String),
 }
 
+impl RepositoryError {
+    /// `NotFound` for the record of `kind` addressed by `id`.
+    pub fn not_found(kind: &'static str, id: impl std::fmt::Display) -> Self {
+        Self::NotFound {
+            kind,
+            id: id.to_string(),
+        }
+    }
+}
+
 /// Projects and their approved roots.
 ///
 /// A root is stored in canonical form. A grant recorded as a symlink would

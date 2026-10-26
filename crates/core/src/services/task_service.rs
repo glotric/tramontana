@@ -169,11 +169,7 @@ impl<T> OrEnvelope<T> for Result<T, RepositoryError> {
 /// Without this every task stayed registered, with its update buffer, for the
 /// life of the process. A forgotten run reads exactly as a finished one: its
 /// events are durable, and a late subscriber replays them.
-pub(crate) fn forget_run(
-    live: &LiveTasks,
-    task_id: &TaskId,
-    run: &tokio::sync::watch::Receiver<bool>,
-) {
+fn forget_run(live: &LiveTasks, task_id: &TaskId, run: &tokio::sync::watch::Receiver<bool>) {
     if let Ok(mut live) = live.lock()
         && live
             .get(task_id)
@@ -203,11 +199,7 @@ pub struct Repositories {
     pub checkpoints: Arc<dyn CheckpointRepository>,
 }
 
-impl std::fmt::Debug for Repositories {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Repositories").finish_non_exhaustive()
-    }
-}
+opaque_debug!(Repositories);
 
 /// The providers a task runs against.
 #[derive(Clone)]
@@ -231,11 +223,7 @@ pub struct Providers {
     pub worker: Arc<dyn AgentProvider>,
 }
 
-impl std::fmt::Debug for Providers {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Providers").finish_non_exhaustive()
-    }
-}
+opaque_debug!(Providers);
 
 /// Builds a task's worker from what that task may offer its model.
 ///
@@ -331,11 +319,7 @@ pub struct TaskService {
     pub(super) execution_guard: Option<Arc<dyn Send + Sync>>,
 }
 
-impl std::fmt::Debug for TaskService {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TaskService").finish_non_exhaustive()
-    }
-}
+opaque_debug!(TaskService);
 
 impl TaskService {
     /// Assemble a service from its storage, providers, and platform ports.
@@ -464,12 +448,8 @@ impl TaskService {
         &self,
         details: &crate::contracts::PersonalDetails,
     ) -> Result<crate::contracts::PersonalProfile, ErrorEnvelope> {
-        let profile = super::apply_details(self.personal_profile().await?, details)?;
-        self.personal_store()?
-            .save(&profile)
+        self.with_profile(|profile| super::apply_details(profile, details))
             .await
-            .or_envelope(self)?;
-        Ok(profile)
     }
 
     /// Add a note for chats to remember. Only the person adds one; nothing
@@ -483,14 +463,12 @@ impl TaskService {
         &self,
         text: &str,
     ) -> Result<crate::contracts::PersonalProfile, ErrorEnvelope> {
-        let mut profile = self.personal_profile().await?;
-        let note = super::new_note(&profile, self.ids.next("note"), text, self.clock.now())?;
-        profile.notes.push(note);
-        self.personal_store()?
-            .save(&profile)
-            .await
-            .or_envelope(self)?;
-        Ok(profile)
+        self.with_profile(|mut profile| {
+            let note = super::new_note(&profile, self.ids.next("note"), text, self.clock.now())?;
+            profile.notes.push(note);
+            Ok(profile)
+        })
+        .await
     }
 
     /// Forget one note.
@@ -503,12 +481,25 @@ impl TaskService {
         &self,
         note_id: &str,
     ) -> Result<crate::contracts::PersonalProfile, ErrorEnvelope> {
-        let mut profile = self.personal_profile().await?;
-        let before = profile.notes.len();
-        profile.notes.retain(|note| note.note_id != note_id);
-        if profile.notes.len() == before {
-            return Err(self.error(ErrorCode::NotFound, "No note has that id"));
-        }
+        self.with_profile(|mut profile| {
+            let before = profile.notes.len();
+            profile.notes.retain(|note| note.note_id != note_id);
+            if profile.notes.len() == before {
+                return Err(self.error(ErrorCode::NotFound, "No note has that id"));
+            }
+            Ok(profile)
+        })
+        .await
+    }
+
+    /// Load the profile, `change` it, and save what that returns.
+    async fn with_profile(
+        &self,
+        change: impl FnOnce(
+            crate::contracts::PersonalProfile,
+        ) -> Result<crate::contracts::PersonalProfile, ErrorEnvelope>,
+    ) -> Result<crate::contracts::PersonalProfile, ErrorEnvelope> {
+        let profile = change(self.personal_profile().await?)?;
         self.personal_store()?
             .save(&profile)
             .await
@@ -1218,8 +1209,6 @@ impl TaskService {
 
         let task_id = TaskId::new(self.ids.next("task"));
         let correlation_id = CorrelationId::new(self.ids.next("correlation"));
-        let cancel = CancellationToken::new();
-        let (updates, _) = broadcast::channel(UPDATE_BUFFER);
 
         // Read now, not from the last inventory the project resolved: a task's
         // record must describe the instructions it actually ran under, and the
@@ -1363,18 +1352,11 @@ impl TaskService {
             .await
             .or_envelope(self)?;
 
-        let interrupt = CancellationToken::new();
-        let (finished, finish_receiver) = tokio::sync::watch::channel(false);
-        let run = finish_receiver.clone();
-        self.lock_live()?.insert(
-            task_id.clone(),
-            LiveTask {
-                cancel: cancel.clone(),
-                updates: updates.clone(),
-                interrupt: interrupt.clone(),
-                finished: finish_receiver,
-            },
-        );
+        let NewRun {
+            updates,
+            interrupt,
+            run,
+        } = self.register_run(&task_id)?;
 
         let projection = TaskProjectionWriter {
             tasks: Arc::clone(&self.repositories.tasks),
@@ -1420,17 +1402,7 @@ impl TaskService {
         .continuing(None, super::ResumePlan::default(), interrupt);
         // The redacted text, not `request.goal`. The worker, the manifest, and
         // the model payload all see the same thing the record does.
-        let goal = goal.text;
-        let execution_guard = self.execution_guard.clone();
-        let live = Arc::clone(&self.live);
-        let spawned_id = task_id.clone();
-        tokio::spawn(async move {
-            let _execution_guard = execution_guard;
-            driver.run(goal, cancel).await;
-            let _ = finished.send(true);
-            forget_run(&live, &spawned_id, &run);
-        });
-
+        self.spawn_run(task_id.clone(), run, driver, goal.text);
         Ok(task_id)
     }
 
@@ -1586,4 +1558,59 @@ impl TaskService {
             .lock()
             .map_err(|_| self.error(ErrorCode::Internal, "live task registry lock poisoned"))
     }
+
+    /// Register a fresh run of `task_id` as live, replacing any earlier one.
+    pub(super) fn register_run(&self, task_id: &TaskId) -> Result<NewRun, ErrorEnvelope> {
+        let cancel = CancellationToken::new();
+        let interrupt = CancellationToken::new();
+        let (finished, receiver) = tokio::sync::watch::channel(false);
+        let (updates, _) = broadcast::channel(UPDATE_BUFFER);
+        self.lock_live()?.insert(
+            task_id.clone(),
+            LiveTask {
+                cancel: cancel.clone(),
+                updates: updates.clone(),
+                interrupt: interrupt.clone(),
+                finished: receiver.clone(),
+            },
+        );
+        Ok(NewRun {
+            updates,
+            interrupt,
+            run: Run {
+                cancel,
+                finished,
+                receiver,
+            },
+        })
+    }
+
+    /// Drive `run` to its end on its own task, then forget it.
+    pub(super) fn spawn_run(&self, task_id: TaskId, run: Run, driver: TaskDriver, goal: String) {
+        let execution_guard = self.execution_guard.clone();
+        let live = Arc::clone(&self.live);
+        tokio::spawn(async move {
+            let _execution_guard = execution_guard;
+            driver.run(goal, run.cancel).await;
+            let _ = run.finished.send(true);
+            forget_run(&live, &task_id, &run.receiver);
+        });
+    }
+}
+
+/// A run [`TaskService::register_run`] has made live.
+pub(super) struct NewRun {
+    /// Live delivery, for the run's journal.
+    pub(super) updates: broadcast::Sender<TaskUpdate>,
+    /// Interrupts the run at its next safe point.
+    pub(super) interrupt: CancellationToken,
+    /// What [`TaskService::spawn_run`] needs.
+    pub(super) run: Run,
+}
+
+/// The handles [`TaskService::spawn_run`] ends a run with.
+pub(super) struct Run {
+    cancel: CancellationToken,
+    finished: tokio::sync::watch::Sender<bool>,
+    receiver: tokio::sync::watch::Receiver<bool>,
 }

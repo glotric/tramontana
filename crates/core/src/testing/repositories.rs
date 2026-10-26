@@ -40,11 +40,7 @@ pub struct InMemoryProjectRepository {
 }
 
 impl InMemoryProjectRepository {
-    /// An empty repository.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+    default_new!("An empty repository.");
 }
 
 #[async_trait]
@@ -54,10 +50,7 @@ impl ProjectRepository for InMemoryProjectRepository {
         let before = projects.len();
         projects.retain(|record| record.project_id != *project_id);
         if projects.len() == before {
-            return Err(RepositoryError::NotFound {
-                kind: "project",
-                id: project_id.to_string(),
-            });
+            return Err(RepositoryError::not_found("project", project_id));
         }
         Ok(())
     }
@@ -72,10 +65,7 @@ impl ProjectRepository for InMemoryProjectRepository {
             .iter()
             .find(|record| record.project_id == *project_id)
             .cloned()
-            .ok_or_else(|| RepositoryError::NotFound {
-                kind: "project",
-                id: project_id.to_string(),
-            })
+            .ok_or_else(|| RepositoryError::not_found("project", project_id))
     }
 
     async fn list(&self) -> Result<Vec<ProjectRecord>, RepositoryError> {
@@ -96,11 +86,7 @@ pub struct InMemoryConversationRepository {
 }
 
 impl InMemoryConversationRepository {
-    /// An empty repository.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+    default_new!("An empty repository.");
 }
 
 #[async_trait]
@@ -118,10 +104,7 @@ impl ConversationRepository for InMemoryConversationRepository {
             .iter()
             .find(|record| record.conversation_id == *conversation_id)
             .cloned()
-            .ok_or_else(|| RepositoryError::NotFound {
-                kind: "conversation",
-                id: conversation_id.to_string(),
-            })
+            .ok_or_else(|| RepositoryError::not_found("conversation", conversation_id))
     }
 
     async fn list(
@@ -144,10 +127,7 @@ impl ConversationRepository for InMemoryConversationRepository {
         let record = conversations
             .iter_mut()
             .find(|record| record.conversation_id == *conversation_id)
-            .ok_or_else(|| RepositoryError::NotFound {
-                kind: "conversation",
-                id: conversation_id.to_string(),
-            })?;
+            .ok_or_else(|| RepositoryError::not_found("conversation", conversation_id))?;
         title.clone_into(&mut record.title);
         Ok(())
     }
@@ -157,10 +137,7 @@ impl ConversationRepository for InMemoryConversationRepository {
         let before = conversations.len();
         conversations.retain(|record| record.conversation_id != *conversation_id);
         if conversations.len() == before {
-            return Err(RepositoryError::NotFound {
-                kind: "conversation",
-                id: conversation_id.to_string(),
-            });
+            return Err(RepositoryError::not_found("conversation", conversation_id));
         }
         Ok(())
     }
@@ -177,19 +154,10 @@ pub struct InMemoryTaskRepository {
     events: Option<std::sync::Arc<dyn EventStore>>,
 }
 
-impl std::fmt::Debug for InMemoryTaskRepository {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InMemoryTaskRepository")
-            .finish_non_exhaustive()
-    }
-}
+opaque_debug!(InMemoryTaskRepository);
 
 impl InMemoryTaskRepository {
-    /// An empty repository with no event store, so recovery is a no-op.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+    default_new!("An empty repository with no event store, so recovery is a no-op.");
 
     /// An empty repository that can rebuild projections from `events`.
     #[must_use]
@@ -208,10 +176,7 @@ impl TaskRepository for InMemoryTaskRepository {
         let before = tasks.len();
         tasks.retain(|record| record.task_id != *task_id);
         if tasks.len() == before {
-            return Err(RepositoryError::NotFound {
-                kind: "task",
-                id: task_id.to_string(),
-            });
+            return Err(RepositoryError::not_found("task", task_id));
         }
         Ok(())
     }
@@ -285,10 +250,7 @@ impl TaskRepository for InMemoryTaskRepository {
             .iter()
             .find(|record| record.task_id == *task_id)
             .cloned()
-            .ok_or_else(|| RepositoryError::NotFound {
-                kind: "task",
-                id: task_id.to_string(),
-            })
+            .ok_or_else(|| RepositoryError::not_found("task", task_id))
     }
 
     async fn list(
@@ -315,10 +277,7 @@ impl TaskRepository for InMemoryTaskRepository {
         let record = tasks
             .iter_mut()
             .find(|record| record.task_id == *task_id)
-            .ok_or_else(|| RepositoryError::NotFound {
-                kind: "task",
-                id: task_id.to_string(),
-            })?;
+            .ok_or_else(|| RepositoryError::not_found("task", task_id))?;
         record.state = state;
         record.last_sequence = last_sequence;
         record.updated_at = at.clone();
@@ -380,11 +339,7 @@ pub struct InMemoryConfigurationRepository {
 }
 
 impl InMemoryConfigurationRepository {
-    /// An empty repository.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+    default_new!("An empty repository.");
 }
 
 #[async_trait]
@@ -416,10 +371,7 @@ impl ConfigurationRepository for InMemoryConfigurationRepository {
                 stored_project == project_id && stored.manifest_hash == manifest_hash
             })
             .map(|(_, stored)| stored.clone())
-            .ok_or_else(|| RepositoryError::NotFound {
-                kind: "configuration manifest",
-                id: manifest_hash.to_owned(),
-            })
+            .ok_or_else(|| RepositoryError::not_found("configuration manifest", manifest_hash))
     }
 
     async fn latest(
@@ -446,11 +398,7 @@ pub struct InMemoryCheckpointRepository {
 }
 
 impl InMemoryCheckpointRepository {
-    /// An empty repository.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+    default_new!("An empty repository.");
 }
 
 #[async_trait]
@@ -479,10 +427,7 @@ impl CheckpointRepository for InMemoryCheckpointRepository {
             .iter()
             .find(|checkpoint| checkpoint.checkpoint_id == *checkpoint_id)
             .cloned()
-            .ok_or_else(|| RepositoryError::NotFound {
-                kind: "checkpoint",
-                id: checkpoint_id.to_string(),
-            })
+            .ok_or_else(|| RepositoryError::not_found("checkpoint", checkpoint_id))
     }
 
     async fn latest(&self, task_id: &TaskId) -> Result<Option<TaskCheckpoint>, RepositoryError> {
@@ -511,11 +456,7 @@ pub struct InMemoryPersonalRepository {
 }
 
 impl InMemoryPersonalRepository {
-    /// An empty store: loading gives the default profile.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+    default_new!("An empty store: loading gives the default profile.");
 }
 
 #[async_trait]
@@ -540,11 +481,7 @@ pub struct InMemoryScheduleRepository {
 }
 
 impl InMemoryScheduleRepository {
-    /// An empty store.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+    default_new!("An empty store.");
 }
 
 #[async_trait]
@@ -570,10 +507,7 @@ impl crate::ports::ScheduleRepository for InMemoryScheduleRepository {
         let before = schedules.len();
         schedules.retain(|kept| kept.schedule_id != schedule_id);
         if schedules.len() == before {
-            return Err(RepositoryError::NotFound {
-                kind: "schedule",
-                id: schedule_id.to_owned(),
-            });
+            return Err(RepositoryError::not_found("schedule", schedule_id));
         }
         Ok(())
     }
@@ -586,11 +520,7 @@ pub struct InMemoryDictationRepository {
 }
 
 impl InMemoryDictationRepository {
-    /// Nothing set up.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+    default_new!("Nothing set up.");
 }
 
 #[async_trait]
@@ -617,11 +547,7 @@ pub struct InMemorySkillLibrary {
 }
 
 impl InMemorySkillLibrary {
-    /// An empty library.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+    default_new!("An empty library.");
 
     /// A library holding `files`, as `(folder, SKILL.md)` pairs, without the
     /// checks an import makes: as if copied in by hand.
@@ -666,10 +592,7 @@ impl crate::ports::SkillLibrary for InMemorySkillLibrary {
         lock(&self.files)?
             .remove(folder)
             .map(|_| ())
-            .ok_or_else(|| RepositoryError::NotFound {
-                kind: "skill",
-                id: folder.to_owned(),
-            })
+            .ok_or_else(|| RepositoryError::not_found("skill", folder))
     }
 }
 

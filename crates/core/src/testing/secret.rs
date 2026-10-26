@@ -41,11 +41,7 @@ impl std::fmt::Debug for InMemorySecretVault {
 }
 
 impl InMemorySecretVault {
-    /// An empty, working store.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+    default_new!("An empty, working store.");
 
     /// A store that reports itself unreachable, as a locked one would.
     #[must_use]

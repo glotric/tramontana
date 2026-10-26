@@ -47,18 +47,9 @@ pub struct PreparedModelContext {
     pub decision: RoutingDecision,
 }
 
-impl std::fmt::Debug for ModelContextInput {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ModelContextInput").finish_non_exhaustive()
-    }
-}
+opaque_debug!(ModelContextInput);
 
-impl std::fmt::Debug for PreparedModelContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PreparedModelContext")
-            .finish_non_exhaustive()
-    }
-}
+opaque_debug!(PreparedModelContext);
 
 /// Assemble and route a turn without filesystem, provider or approval effects.
 ///

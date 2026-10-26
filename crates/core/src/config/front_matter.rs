@@ -196,15 +196,7 @@ fn parse(block: &str) -> Result<FrontMatter, FrontMatterError> {
                 })?);
             }
             "tags" => {
-                let Yaml::Array(items) = value else {
-                    return Err(FrontMatterError::WrongType {
-                        key: "tags",
-                        expected: "a list of strings",
-                    });
-                };
-                if items.len() > MAX_TAGS {
-                    return Err(FrontMatterError::TooLarge { limit: "tag count" });
-                }
+                let items = bounded_list(value, "tags", "a list of strings", "tag count")?;
                 parsed.tags = string_list(items, "tags")?;
             }
             // Documented per-kind keys that this milestone records but does not
@@ -237,17 +229,7 @@ fn parse(block: &str) -> Result<FrontMatter, FrontMatterError> {
             }
             "recipes" => parsed.recipes = recipes(value)?,
             "inputs" => {
-                let yaml_rust2::Yaml::Array(items) = value else {
-                    return Err(FrontMatterError::WrongType {
-                        key: "inputs",
-                        expected: "a list",
-                    });
-                };
-                if items.len() > MAX_TAGS {
-                    return Err(FrontMatterError::TooLarge {
-                        limit: "list length",
-                    });
-                }
+                bounded_list(value, "inputs", "a list", "list length")?;
             }
             other => parsed.unknown_keys.push(other.to_owned()),
         }
@@ -336,18 +318,26 @@ fn string_array(
     value: &yaml_rust2::Yaml,
     key: &'static str,
 ) -> Result<Vec<String>, FrontMatterError> {
+    string_list(
+        bounded_list(value, key, "a list of strings", "list length")?,
+        key,
+    )
+}
+
+/// `value` as a list of at most [`MAX_TAGS`] items.
+fn bounded_list<'a>(
+    value: &'a yaml_rust2::Yaml,
+    key: &'static str,
+    expected: &'static str,
+    limit: &'static str,
+) -> Result<&'a [yaml_rust2::Yaml], FrontMatterError> {
     let yaml_rust2::Yaml::Array(items) = value else {
-        return Err(FrontMatterError::WrongType {
-            key,
-            expected: "a list of strings",
-        });
+        return Err(FrontMatterError::WrongType { key, expected });
     };
     if items.len() > MAX_TAGS {
-        return Err(FrontMatterError::TooLarge {
-            limit: "list length",
-        });
+        return Err(FrontMatterError::TooLarge { limit });
     }
-    string_list(items, key)
+    Ok(items)
 }
 
 fn string_list(

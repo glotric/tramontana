@@ -43,11 +43,7 @@ pub struct PermissionManager {
 const SITES_PER_TASK: usize = 256;
 const TASKS_WITH_SITES: usize = 1024;
 
-impl std::fmt::Debug for PermissionManager {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PermissionManager").finish_non_exhaustive()
-    }
-}
+opaque_debug!(PermissionManager);
 
 impl PermissionManager {
     /// Assemble a manager.

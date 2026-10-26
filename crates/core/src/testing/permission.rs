@@ -30,11 +30,7 @@ struct ApprovalState {
 }
 
 impl InMemoryApprovalStore {
-    /// An empty store.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+    default_new!("An empty store.");
 
     /// Make every subsequent call report storage failure.
     pub fn break_storage(&self) {

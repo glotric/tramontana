@@ -456,15 +456,14 @@ fn glob_matches_from(
     }
 
     match pattern[pattern_index] {
-        '*' if pattern.get(pattern_index + 1) == Some(&'*')
-            && pattern.get(pattern_index + 2) == Some(&'/') =>
-        {
-            glob_matches_from(pattern, path, pattern_index + 3, path_index, seen)
-                || (path_index < path.len()
-                    && glob_matches_from(pattern, path, pattern_index, path_index + 1, seen))
-        }
         '*' if pattern.get(pattern_index + 1) == Some(&'*') => {
-            glob_matches_from(pattern, path, pattern_index + 2, path_index, seen)
+            // `**/` also matches no directory at all, so it is skipped whole.
+            let skip = if pattern.get(pattern_index + 2) == Some(&'/') {
+                3
+            } else {
+                2
+            };
+            glob_matches_from(pattern, path, pattern_index + skip, path_index, seen)
                 || (path_index < path.len()
                     && glob_matches_from(pattern, path, pattern_index, path_index + 1, seen))
         }

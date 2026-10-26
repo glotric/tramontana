@@ -481,11 +481,7 @@ pub struct Reservation {
     started: Instant,
 }
 
-impl std::fmt::Debug for Inner {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Inner").finish_non_exhaustive()
-    }
-}
+opaque_debug!(Inner);
 
 impl Drop for Reservation {
     fn drop(&mut self) {

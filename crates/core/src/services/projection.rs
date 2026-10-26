@@ -17,12 +17,7 @@ pub struct TaskProjectionWriter {
     pub tasks: Arc<dyn TaskRepository>,
 }
 
-impl std::fmt::Debug for TaskProjectionWriter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TaskProjectionWriter")
-            .finish_non_exhaustive()
-    }
-}
+opaque_debug!(TaskProjectionWriter);
 
 impl TaskProjectionWriter {
     /// Update the cached row from a freshly written event.

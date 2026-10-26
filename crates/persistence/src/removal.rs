@@ -44,10 +44,7 @@ impl SqliteRecordRemoval {
             .map_err(unavailable)?;
         if removed.rows_affected() == 0 {
             // Dropping the transaction rolls the event delete back.
-            return Err(RepositoryError::NotFound {
-                kind,
-                id: id.to_owned(),
-            });
+            return Err(RepositoryError::not_found(kind, id));
         }
         transaction.commit().await.map_err(unavailable)
     }

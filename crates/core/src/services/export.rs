@@ -96,42 +96,21 @@ struct Omissions {
 
 impl Omissions {
     fn into_manifest(self) -> Vec<Omission> {
-        let mut listed = Vec::new();
-        let mut push = |category: OmissionCategory, reason: &str, count: u64| {
-            if count > 0 {
-                listed.push(Omission {
-                    category,
-                    reason: reason.to_owned(),
-                    count,
-                });
-            }
-        };
-        push(
-            OmissionCategory::Secret,
-            "Secret references are never exported.",
-            self.secrets,
-        );
-        push(
-            OmissionCategory::AbsolutePath,
-            "Absolute device paths name a machine and often a person; export them deliberately if you need them.",
-            self.absolute_paths,
-        );
-        push(
-            OmissionCategory::RawToolOutput,
-            "Raw tool arguments and results can contain project content; they are omitted by default.",
-            self.raw_tool_output,
-        );
-        push(
-            OmissionCategory::InternalEvent,
-            "Internal audit markers are not part of the readable record.",
-            self.internal_events,
-        );
-        push(
-            OmissionCategory::WorkerPrivateState,
-            "A worker's private continuation data is never exported; canonical state is what carries the work.",
-            self.worker_private_state,
-        );
-        listed
+        [
+            (OmissionCategory::Secret, "Secret references are never exported.", self.secrets),
+            (OmissionCategory::AbsolutePath, "Absolute device paths name a machine and often a person; export them deliberately if you need them.", self.absolute_paths),
+            (OmissionCategory::RawToolOutput, "Raw tool arguments and results can contain project content; they are omitted by default.", self.raw_tool_output),
+            (OmissionCategory::InternalEvent, "Internal audit markers are not part of the readable record.", self.internal_events),
+            (OmissionCategory::WorkerPrivateState, "A worker's private continuation data is never exported; canonical state is what carries the work.", self.worker_private_state),
+        ]
+        .into_iter()
+        .filter(|&(_, _, count)| count > 0)
+        .map(|(category, reason, count)| Omission {
+            category,
+            reason: reason.to_owned(),
+            count,
+        })
+        .collect()
     }
 }
 

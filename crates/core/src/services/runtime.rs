@@ -351,19 +351,14 @@ impl TaskDriver {
             }
 
             let recorded = match state {
-                TaskState::Preparing => {
-                    match self.record_context(&goal, instructions.as_deref()).await {
-                        Ok(manifest) => {
-                            context = Some(manifest);
-                            Ok(())
-                        }
-                        Err(error) => Err(error),
-                    }
-                }
-                TaskState::Routing => match self.record_route(context.as_ref(), &cancel).await {
-                    Ok(_) => Ok(()),
-                    Err(error) => Err(error),
-                },
+                TaskState::Preparing => self
+                    .record_context(&goal, instructions.as_deref())
+                    .await
+                    .map(|manifest| context = Some(manifest)),
+                TaskState::Routing => self
+                    .record_route(context.as_ref(), &cancel)
+                    .await
+                    .map(|_| ()),
                 _ => Ok(()),
             };
             if let Err(error) = recorded {
@@ -531,13 +526,7 @@ impl TaskDriver {
             let _ = self
                 .record(EventDraft::user(
                     TaskEventKind::CheckpointSaved,
-                    EventPayload::CheckpointSaved {
-                        checkpoint_id: checkpoint.checkpoint_id.clone(),
-                        event_sequence: checkpoint.event_sequence,
-                        completed_step_count: checkpoint.completed_step_ids.len() as u64,
-                        pending_action: checkpoint.pending_action.clone(),
-                        resume: checkpoint.resume.clone(),
-                    },
+                    EventPayload::checkpoint_saved(&checkpoint),
                 ))
                 .await;
         }
@@ -887,11 +876,7 @@ pub(crate) struct ToolBroker {
     pub(crate) configuration: Option<Arc<EffectiveConfiguration>>,
 }
 
-impl std::fmt::Debug for ToolBroker {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ToolBroker").finish_non_exhaustive()
-    }
-}
+opaque_debug!(ToolBroker);
 
 #[async_trait]
 impl WorkerHost for BrokeredHost {

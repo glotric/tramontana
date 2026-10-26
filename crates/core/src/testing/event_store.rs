@@ -18,11 +18,7 @@ pub struct InMemoryEventStore {
 }
 
 impl InMemoryEventStore {
-    /// An empty store.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+    default_new!("An empty store.");
 }
 
 /// Lock the stream map, mapping a poisoned lock to a normalized error.

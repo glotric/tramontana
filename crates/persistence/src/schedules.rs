@@ -119,10 +119,7 @@ impl ScheduleRepository for SqliteScheduleRepository {
             .await
             .map_err(unavailable)?;
         if result.rows_affected() == 0 {
-            return Err(RepositoryError::NotFound {
-                kind: "schedule",
-                id: schedule_id.to_owned(),
-            });
+            return Err(RepositoryError::not_found("schedule", schedule_id));
         }
         Ok(())
     }
