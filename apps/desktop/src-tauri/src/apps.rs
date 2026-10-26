@@ -99,6 +99,7 @@ fn file_name(program: &str) -> String {
 /// Every configured App, and how each one is doing in this window.
 pub(crate) async fn list(state: &AppState) -> Result<Vec<AppView>, ErrorEnvelope> {
     let configured = state
+        .plane
         .app_settings
         .list()
         .await
@@ -112,11 +113,13 @@ pub(crate) async fn list(state: &AppState) -> Result<Vec<AppView>, ErrorEnvelope
 
 async fn view(state: &AppState, config: AppConfig) -> AppView {
     let running = state
+        .plane
         .apps
         .apps
         .iter()
         .find(|app| app.app_id() == config.app_id);
     let failed = state
+        .plane
         .apps
         .failures
         .iter()

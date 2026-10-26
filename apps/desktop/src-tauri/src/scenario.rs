@@ -578,14 +578,14 @@ async fn the_apps_screen_shows_an_app_its_tools_its_decisions_and_nothing_secret
     );
 
     // Turned off, it keeps running until the next start, and says so.
-    crate::apps::set_enabled(state.app_settings.as_ref(), "fixture", false)
+    crate::apps::set_enabled(state.plane.app_settings.as_ref(), "fixture", false)
         .await
         .unwrap();
     let apps = crate::apps::list(&state).await.unwrap();
     assert_eq!(apps[0].status, crate::apps::AppStatus::StopsOnRestart);
     assert!(!apps[0].enabled);
     assert!(
-        crate::apps::set_enabled(state.app_settings.as_ref(), "missing", true)
+        crate::apps::set_enabled(state.plane.app_settings.as_ref(), "missing", true)
             .await
             .is_err()
     );

@@ -13,14 +13,10 @@
 use crate::ipc_error;
 use std::path::Path;
 
-use tramontana_core::contracts::{
-    ErrorCode, ErrorEnvelope, ModelLocation, ProviderConfig, ProviderEndpoint, SecretRef,
-    SecretStore, Timestamp,
-};
+use tramontana_composition::endpoints::{self, credential};
+pub(crate) use tramontana_composition::endpoints::{NewEndpoint, Toggle, toggle, trust};
+use tramontana_core::contracts::{ErrorCode, ErrorEnvelope, ModelLocation, Timestamp};
 use tramontana_core::ports::{ProviderSettingsRepository, SecretVault};
-
-/// Longest endpoint identifier or credential key accepted from the window.
-const MAX_NAME_BYTES: usize = 128;
 
 /// Longest credential value accepted from the window.
 const MAX_CREDENTIAL_BYTES: usize = 16 * 1024;
@@ -93,37 +89,6 @@ pub(crate) fn describe_check(check: tramontana_composition::FileCheck) -> &'stat
     }
 }
 
-/// An endpoint to configure.
-#[derive(Debug, Clone)]
-pub(crate) enum NewEndpoint {
-    /// Anything speaking the OpenAI chat-completions format.
-    OpenAiCompatible {
-        base_url: String,
-        model_id: String,
-        credential_key: Option<String>,
-    },
-    /// Anthropic's Messages API, which needs a credential.
-    Anthropic {
-        base_url: String,
-        model_id: String,
-        credential_key: String,
-    },
-    /// A `llama-server` this application starts and stops. Both paths come
-    /// from the native picker.
-    LlamaServer {
-        binary_path: std::path::PathBuf,
-        model_path: std::path::PathBuf,
-        model_id: String,
-    },
-    /// An `mlx_lm.server` this application starts and stops (ADR 0010). The
-    /// executable and the model folder come from the native picker.
-    MlxServer {
-        binary_path: std::path::PathBuf,
-        model_path: std::path::PathBuf,
-        model_id: String,
-    },
-}
-
 /// Every configured endpoint, with whether its credential is stored.
 ///
 /// # Errors
@@ -133,12 +98,7 @@ pub(crate) async fn list(
     settings: &dyn ProviderSettingsRepository,
     vault: &dyn SecretVault,
 ) -> Result<Vec<ConfiguredEndpoint>, ErrorEnvelope> {
-    let endpoints = settings.list().await.map_err(|error| {
-        ipc_error(
-            ErrorCode::PersistenceError,
-            format!("could not read the endpoints: {error}"),
-        )
-    })?;
+    let endpoints = endpoints::list(settings).await?;
     let mut configured = Vec::with_capacity(endpoints.len());
     for endpoint in endpoints {
         let credential = match endpoint.config.credential() {
@@ -191,10 +151,7 @@ pub(crate) async fn list(
 ///
 /// # Errors
 ///
-/// [`ErrorCode::InvalidRequest`] for a malformed name, key or model, plain
-/// http to anything off this device (ADR 0009), or a path that is not a file;
-/// [`ErrorCode::Conflict`] when an endpoint by that name exists; or
-/// [`ErrorCode::PersistenceError`].
+/// As [`endpoints::add`].
 pub(crate) async fn add(
     settings: &dyn ProviderSettingsRepository,
     endpoint_id: &str,
@@ -202,231 +159,25 @@ pub(crate) async fn add(
     new: NewEndpoint,
     now: Timestamp,
 ) -> Result<bool, ErrorEnvelope> {
-    check_name("an endpoint name", endpoint_id)?;
-    let config = match new {
-        NewEndpoint::OpenAiCompatible {
-            base_url,
-            model_id,
-            credential_key,
-        } => {
-            check_model(&model_id)?;
-            let credential = credential_key.as_deref().map(reference).transpose()?;
-            ProviderConfig::OpenAiCompatible {
-                base_url: check_url(&base_url)?,
-                model_id,
-                credential,
-            }
-        }
-        NewEndpoint::Anthropic {
-            base_url,
-            model_id,
-            credential_key,
-        } => {
-            check_model(&model_id)?;
-            ProviderConfig::Anthropic {
-                base_url: check_url(&base_url)?,
-                model_id,
-                credential: reference(&credential_key)?,
-            }
-        }
-        NewEndpoint::LlamaServer {
-            binary_path,
-            model_path,
-            model_id,
-        } => {
-            check_model(&model_id)?;
-            ProviderConfig::LlamaServer {
-                binary_path: check_file("the llama-server executable", &binary_path)?,
-                model_path: check_file("the model file", &model_path)?,
-                model_id,
-                extra_args: Vec::new(),
-                provenance: None,
-            }
-        }
-        NewEndpoint::MlxServer {
-            binary_path,
-            model_path,
-            model_id,
-        } => {
-            check_model(&model_id)?;
-            ProviderConfig::MlxServer {
-                binary_path: check_file("the mlx_lm.server executable", &binary_path)?,
-                model_path: check_folder("the MLX model", &model_path)?,
-                model_id,
-                extra_args: Vec::new(),
-                provenance: None,
-            }
-        }
-    };
-    // Plain http carries whatever is sent in the clear. It is accepted only
-    // where that never leaves this device (ADR 0009).
-    if let ProviderConfig::OpenAiCompatible { base_url, .. }
-    | ProviderConfig::Anthropic { base_url, .. } = &config
-        && base_url.starts_with("http://")
-        && config.location() == ModelLocation::Cloud
-    {
-        return Err(invalid(
-            "plain http is accepted only for an endpoint on this device; use https",
-        ));
-    }
-
-    let existing = settings.list().await.map_err(|error| {
-        ipc_error(
-            ErrorCode::PersistenceError,
-            format!("could not read the endpoints: {error}"),
-        )
-    })?;
-    // Saving replaces, so a name already in use would silently overwrite
-    // someone's configuration.
-    if existing
-        .iter()
-        .any(|endpoint| endpoint.endpoint_id == endpoint_id)
-    {
-        return Err(ipc_error(
-            ErrorCode::Conflict,
-            format!("an endpoint named {endpoint_id} is already configured"),
-        ));
-    }
-
-    // A runtime Tramontana starts is recorded as it is now, so a later
-    // change to its executable is held rather than run (ADR 0043).
-    let config = match tramontana_composition::runtime_files(&config) {
-        Some((binary, model, _)) => {
-            let recorded = tramontana_composition::record_provenance(
-                Path::new(binary),
-                Path::new(model),
-                now.clone(),
-            )
-            .await
-            .map_err(invalid)?;
-            tramontana_composition::with_provenance(config.clone(), recorded)
-        }
-        None => config,
-    };
-
-    let endpoint = ProviderEndpoint::new(
-        endpoint_id,
-        display_name
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| endpoint_id.to_owned()),
-        config,
-        now,
-    );
-    save(settings, &endpoint).await?;
-    Ok(endpoint.location() == ModelLocation::Cloud)
-}
-
-/// Record a runtime's executable and model as they are now, after the person
-/// confirmed a change (ADR 0043). Takes effect the next time Tramontana
-/// opens.
-///
-/// # Errors
-///
-/// [`ErrorCode::NotFound`] when no endpoint has that name,
-/// [`ErrorCode::InvalidRequest`] when it is not a runtime Tramontana starts
-/// or its files cannot be read, or [`ErrorCode::PersistenceError`].
-pub(crate) async fn trust(
-    settings: &dyn ProviderSettingsRepository,
-    endpoint_id: &str,
-    now: Timestamp,
-) -> Result<(), ErrorEnvelope> {
-    let mut endpoint = find(settings, endpoint_id).await?;
-    let Some((binary, model, _)) = tramontana_composition::runtime_files(&endpoint.config) else {
-        return Err(invalid(format!(
-            "{endpoint_id} is not a runtime Tramontana starts"
-        )));
-    };
-    let recorded =
-        tramontana_composition::record_provenance(Path::new(binary), Path::new(model), now)
-            .await
-            .map_err(invalid)?;
-    endpoint.config = tramontana_composition::with_provenance(endpoint.config.clone(), recorded);
-    save(settings, &endpoint).await
+    endpoints::add(settings, endpoint_id, display_name, new, now)
+        .await
+        .map(|endpoint| endpoint.location() == ModelLocation::Cloud)
 }
 
 /// Whether a runtime's model is still what was recorded. Reads all of it.
 ///
 /// # Errors
 ///
-/// As [`trust`], less the persistence error.
+/// As [`endpoints::trust`], less the persistence error.
 pub(crate) async fn check_runtime_model(
     settings: &dyn ProviderSettingsRepository,
     endpoint_id: &str,
 ) -> Result<&'static str, ErrorEnvelope> {
-    let endpoint = find(settings, endpoint_id).await?;
-    let Some((_, model, recorded)) = tramontana_composition::runtime_files(&endpoint.config) else {
-        return Err(invalid(format!(
-            "{endpoint_id} is not a runtime Tramontana starts"
-        )));
-    };
+    let endpoint = endpoints::find(settings, endpoint_id).await?;
+    let (_, model, recorded) = endpoints::runtime(&endpoint)?;
     Ok(describe_check(
         tramontana_composition::check_model(Path::new(model), recorded).await,
     ))
-}
-
-async fn find(
-    settings: &dyn ProviderSettingsRepository,
-    endpoint_id: &str,
-) -> Result<ProviderEndpoint, ErrorEnvelope> {
-    settings
-        .list()
-        .await
-        .map_err(|error| {
-            ipc_error(
-                ErrorCode::PersistenceError,
-                format!("could not read the endpoints: {error}"),
-            )
-        })?
-        .into_iter()
-        .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-        .ok_or_else(|| {
-            ipc_error(
-                ErrorCode::NotFound,
-                format!("no endpoint is named {endpoint_id}"),
-            )
-        })
-}
-
-/// What to change about an endpoint.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum Toggle {
-    /// Whether the router may consider it.
-    Enabled(bool),
-    /// Whether tool-call support was verified.
-    ToolCalls(bool),
-}
-
-/// Change one switch on an endpoint, keeping the rest of its configuration.
-///
-/// # Errors
-///
-/// [`ErrorCode::NotFound`] when no endpoint has that name, or
-/// [`ErrorCode::PersistenceError`].
-pub(crate) async fn toggle(
-    settings: &dyn ProviderSettingsRepository,
-    endpoint_id: &str,
-    toggle: Toggle,
-) -> Result<(), ErrorEnvelope> {
-    let mut endpoints = settings.list().await.map_err(|error| {
-        ipc_error(
-            ErrorCode::PersistenceError,
-            format!("could not read the endpoints: {error}"),
-        )
-    })?;
-    let endpoint = endpoints
-        .iter_mut()
-        .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-        .ok_or_else(|| {
-            ipc_error(
-                ErrorCode::NotFound,
-                format!("no endpoint is named {endpoint_id}"),
-            )
-        })?;
-    match toggle {
-        Toggle::Enabled(enabled) => endpoint.enabled = enabled,
-        Toggle::ToolCalls(supported) => endpoint.supports_tool_calls = supported,
-    }
-    save(settings, endpoint).await
 }
 
 /// Remove an endpoint. Its credential, if any, stays in the store: deleting
@@ -470,7 +221,7 @@ pub(crate) async fn store_credential(
     key: &str,
     value: &str,
 ) -> Result<usize, ErrorEnvelope> {
-    let reference = reference(key)?;
+    let reference = credential(key)?;
     // A trailing newline from a paste is almost never part of the credential,
     // and a key with an invisible newline on the end fails for a reason
     // nobody can see.
@@ -496,74 +247,7 @@ pub(crate) async fn forget_credential(
     vault: &dyn SecretVault,
     key: &str,
 ) -> Result<bool, ErrorEnvelope> {
-    vault.delete(&reference(key)?).await
-}
-
-async fn save(
-    settings: &dyn ProviderSettingsRepository,
-    endpoint: &ProviderEndpoint,
-) -> Result<(), ErrorEnvelope> {
-    settings.save(endpoint).await.map_err(|error| {
-        ipc_error(
-            ErrorCode::PersistenceError,
-            format!("could not save the endpoint: {error}"),
-        )
-    })
-}
-
-/// An opaque handle to a credential in the platform store.
-fn reference(key: &str) -> Result<SecretRef, ErrorEnvelope> {
-    check_name("a credential key", key)?;
-    Ok(SecretRef {
-        key: key.to_owned(),
-        store: SecretStore::Platform,
-    })
-}
-
-fn check_name(what: &str, name: &str) -> Result<(), ErrorEnvelope> {
-    if name.is_empty()
-        || name.len() > MAX_NAME_BYTES
-        || name
-            .chars()
-            .any(|character| character.is_whitespace() || character.is_control())
-    {
-        return Err(invalid(format!(
-            "{what} must be 1 to {MAX_NAME_BYTES} characters, with no spaces"
-        )));
-    }
-    Ok(())
-}
-
-fn check_model(model_id: &str) -> Result<(), ErrorEnvelope> {
-    if model_id.trim().is_empty() || model_id.len() > MAX_NAME_BYTES {
-        return Err(invalid("a model name is needed"));
-    }
-    Ok(())
-}
-
-fn check_url(base_url: &str) -> Result<String, ErrorEnvelope> {
-    let base_url = base_url.trim();
-    if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
-        return Err(invalid("the address must start with https:// or http://"));
-    }
-    Ok(base_url.to_owned())
-}
-
-fn check_file(what: &str, path: &Path) -> Result<String, ErrorEnvelope> {
-    if !path.is_file() {
-        return Err(invalid(format!("{what} is not a file")));
-    }
-    Ok(path.display().to_string())
-}
-
-/// An MLX model is a folder of weights, tokenizer and config, not one file.
-fn check_folder(what: &str, path: &Path) -> Result<String, ErrorEnvelope> {
-    if !path.is_dir() {
-        return Err(invalid(format!(
-            "{what} is not a folder; choose the folder holding its weights and config"
-        )));
-    }
-    Ok(path.display().to_string())
+    vault.delete(&credential(key)?).await
 }
 
 fn invalid(message: impl Into<String>) -> ErrorEnvelope {

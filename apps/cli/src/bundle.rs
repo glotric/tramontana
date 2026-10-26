@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Subcommand};
 use tramontana_core::contracts::{ExportOptions, ProjectId, TaskId};
-use tramontana_core::services::ImportLimits;
+use tramontana_core::services::{ImportLimits, ImportSummary};
 
 use crate::{render, wiring};
 
@@ -120,15 +120,7 @@ async fn inspect(args: BundlePathArgs) -> ExitCode {
     match service.stage_import(&bundle, ImportLimits::default()) {
         Ok(records) => render::json(&serde_json::json!({
             "manifest": bundle.manifest,
-            "contains": {
-                "projects": records.projects.len(),
-                "conversations": records.conversations.len(),
-                "tasks": records.tasks.len(),
-                "events": records.events.values().map(Vec::len).sum::<usize>(),
-                "checkpoints": records.checkpoints.len(),
-                "configurations": records.configurations.len(),
-                "quarantined": records.quarantined.len(),
-            },
+            "contains": ImportSummary::from(&records),
             "wroteAnything": false,
         })),
         Err(error) => render::application_error(&error),
@@ -146,15 +138,7 @@ async fn import(args: BundlePathArgs) -> ExitCode {
         .await
     {
         Ok(summary) => render::json(&serde_json::json!({
-            "imported": {
-                "projects": summary.projects,
-                "conversations": summary.conversations,
-                "tasks": summary.tasks,
-                "events": summary.events,
-                "checkpoints": summary.checkpoints,
-                "configurations": summary.configurations,
-                "quarantined": summary.quarantined,
-            },
+            "imported": summary,
             // Stated rather than assumed: an imported task is a record, and
             // nothing in the bundle was executed to produce it.
             "executedAnything": false,

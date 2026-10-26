@@ -375,7 +375,7 @@ pub(crate) async fn list_personal_skills(
 /// Where the person's skills are kept, to show them.
 #[tauri::command]
 pub(crate) fn skills_folder(state: State<'_, AppState>) -> String {
-    state.skills_folder.display().to_string()
+    state.plane.skills_folder.display().to_string()
 }
 
 /// Import a skill picked in the native dialog: a skill folder when `folder`,
@@ -1045,7 +1045,7 @@ async fn pick_file(app: &AppHandle, title: &str) -> Result<Option<PathBuf>, Erro
 pub(crate) async fn list_configured_endpoints(
     state: State<'_, AppState>,
 ) -> Result<Vec<settings::ConfiguredEndpoint>, ErrorEnvelope> {
-    settings::list(state.settings.as_ref(), state.vault.as_ref()).await
+    settings::list(state.plane.settings.as_ref(), state.vault.as_ref()).await
 }
 
 /// Save a new endpoint, stamped now.
@@ -1056,7 +1056,7 @@ async fn add_endpoint(
     endpoint: settings::NewEndpoint,
 ) -> Result<bool, ErrorEnvelope> {
     settings::add(
-        state.settings.as_ref(),
+        state.plane.settings.as_ref(),
         endpoint_id,
         display_name,
         endpoint,
@@ -1207,7 +1207,7 @@ pub(crate) async fn trust_endpoint(
     state: State<'_, AppState>,
 ) -> Result<(), ErrorEnvelope> {
     settings::trust(
-        state.settings.as_ref(),
+        state.plane.settings.as_ref(),
         &endpoint_id,
         SystemClock::new().now(),
     )
@@ -1225,7 +1225,7 @@ pub(crate) async fn check_endpoint_model(
     endpoint_id: String,
     state: State<'_, AppState>,
 ) -> Result<&'static str, ErrorEnvelope> {
-    settings::check_runtime_model(state.settings.as_ref(), &endpoint_id).await
+    settings::check_runtime_model(state.plane.settings.as_ref(), &endpoint_id).await
 }
 
 /// Turn an endpoint on or off, keeping its configuration.
@@ -1240,7 +1240,7 @@ pub(crate) async fn set_endpoint_enabled(
     state: State<'_, AppState>,
 ) -> Result<(), ErrorEnvelope> {
     settings::toggle(
-        state.settings.as_ref(),
+        state.plane.settings.as_ref(),
         &endpoint_id,
         settings::Toggle::Enabled(enabled),
     )
@@ -1259,7 +1259,7 @@ pub(crate) async fn set_endpoint_tool_calls(
     state: State<'_, AppState>,
 ) -> Result<(), ErrorEnvelope> {
     settings::toggle(
-        state.settings.as_ref(),
+        state.plane.settings.as_ref(),
         &endpoint_id,
         settings::Toggle::ToolCalls(supported),
     )
@@ -1276,7 +1276,7 @@ pub(crate) async fn remove_endpoint(
     endpoint_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), ErrorEnvelope> {
-    settings::remove(state.settings.as_ref(), &endpoint_id).await
+    settings::remove(state.plane.settings.as_ref(), &endpoint_id).await
 }
 
 /// Store a credential the person typed. Returns its length, never the value.
@@ -1768,6 +1768,7 @@ pub(crate) async fn list_project_grants(
     state: State<'_, AppState>,
 ) -> Result<Vec<ProjectGrant>, ErrorEnvelope> {
     state
+        .plane
         .approvals
         .list_grants(&project_id)
         .await
@@ -1785,6 +1786,7 @@ pub(crate) async fn revoke_project_grant(
     state: State<'_, AppState>,
 ) -> Result<(), ErrorEnvelope> {
     let removed = state
+        .plane
         .approvals
         .revoke_grant(&grant_id)
         .await
@@ -1837,7 +1839,7 @@ pub(crate) struct ModelEndpointStatus {
 pub(crate) async fn list_model_endpoints(
     state: State<'_, AppState>,
 ) -> Result<Vec<ModelEndpointStatus>, ErrorEnvelope> {
-    let plane = state.models.lock().await;
+    let plane = state.plane.models.lock().await;
     let mut statuses = Vec::new();
 
     for provider in &plane.providers {
@@ -1895,7 +1897,7 @@ pub(crate) async fn set_app_enabled(
     enabled: bool,
     state: State<'_, AppState>,
 ) -> Result<(), ErrorEnvelope> {
-    crate::apps::set_enabled(state.app_settings.as_ref(), &app_id, enabled).await
+    crate::apps::set_enabled(state.plane.app_settings.as_ref(), &app_id, enabled).await
 }
 
 /// What was decided about an App's tools, newest first, from the record.

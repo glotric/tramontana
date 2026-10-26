@@ -9,14 +9,14 @@
 //! operating system store, put there by `tramontana secret set`, and only
 //! that opaque reference reaches the database (ADR 0008).
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use clap::{Args, Subcommand};
-use tramontana_core::contracts::{
-    ModelLocation, ProviderConfig, ProviderEndpoint, SecretRef, SecretStore,
-};
-use tramontana_core::ports::Clock;
-use tramontana_core::ports::ProviderSettingsRepository;
+use tramontana_composition::FileCheck;
+use tramontana_composition::endpoints::{self, NewEndpoint, Toggle};
+use tramontana_core::contracts::{ErrorEnvelope, ModelLocation};
+use tramontana_core::ports::{Clock, ProviderSettingsRepository};
 use tramontana_persistence::SqliteProviderSettingsRepository;
 use tramontana_platform::SystemClock;
 
@@ -173,63 +173,38 @@ struct RemoveArgs {
 
 /// Run a `provider` subcommand.
 pub(crate) async fn execute(args: ProviderArgs) -> ExitCode {
-    match args.command {
+    let outcome = match args.command {
         ProviderCommand::AddOpenai(args) => {
-            let credential = args.credential.as_deref().map(reference);
-            add(
-                args.profile,
-                &args.id,
-                args.name.clone(),
-                ProviderConfig::OpenAiCompatible {
-                    base_url: args.base_url.clone(),
-                    model_id: args.model.clone(),
-                    credential,
-                },
-            )
-            .await
+            let new = NewEndpoint::OpenAiCompatible {
+                base_url: args.base_url,
+                model_id: args.model,
+                credential_key: args.credential,
+            };
+            add(args.profile, &args.id, args.name, new).await
         }
         ProviderCommand::AddAnthropic(args) => {
-            add(
-                args.profile,
-                &args.id,
-                args.name.clone(),
-                ProviderConfig::Anthropic {
-                    base_url: args.base_url.clone(),
-                    model_id: args.model.clone(),
-                    credential: reference(&args.credential),
-                },
-            )
-            .await
+            let new = NewEndpoint::Anthropic {
+                base_url: args.base_url,
+                model_id: args.model,
+                credential_key: args.credential,
+            };
+            add(args.profile, &args.id, args.name, new).await
         }
         ProviderCommand::AddLlama(args) => {
-            add(
-                args.profile,
-                &args.id,
-                args.name.clone(),
-                ProviderConfig::LlamaServer {
-                    binary_path: args.binary.display().to_string(),
-                    model_path: args.model_path.display().to_string(),
-                    model_id: args.model.clone(),
-                    extra_args: Vec::new(),
-                    provenance: None,
-                },
-            )
-            .await
+            let new = NewEndpoint::LlamaServer {
+                binary_path: args.binary,
+                model_path: args.model_path,
+                model_id: args.model,
+            };
+            add(args.profile, &args.id, args.name, new).await
         }
         ProviderCommand::AddMlx(args) => {
-            add(
-                args.profile,
-                &args.id,
-                args.name.clone(),
-                ProviderConfig::MlxServer {
-                    binary_path: args.binary.display().to_string(),
-                    model_path: args.model_path.display().to_string(),
-                    model_id: args.model.clone(),
-                    extra_args: Vec::new(),
-                    provenance: None,
-                },
-            )
-            .await
+            let new = NewEndpoint::MlxServer {
+                binary_path: args.binary,
+                model_path: args.model_path,
+                model_id: args.model,
+            };
+            add(args.profile, &args.id, args.name, new).await
         }
         ProviderCommand::List(args) => list(args).await,
         ProviderCommand::Enable(args) => toggle(args, false).await,
@@ -237,14 +212,13 @@ pub(crate) async fn execute(args: ProviderArgs) -> ExitCode {
         ProviderCommand::Remove(args) => remove(args).await,
         ProviderCommand::Check(args) => check(args).await,
         ProviderCommand::Trust(args) => trust(args).await,
-    }
-}
-
-/// An opaque handle to a credential in the platform store.
-fn reference(key: &str) -> SecretRef {
-    SecretRef {
-        key: key.to_owned(),
-        store: SecretStore::Platform,
+    };
+    match outcome {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("error: {message}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -259,54 +233,27 @@ async fn settings(profile: ProfileArgs) -> Result<SqliteProviderSettingsReposito
     Ok(SqliteProviderSettingsRepository::new(database))
 }
 
+fn message(error: ErrorEnvelope) -> String {
+    error.message
+}
+
 async fn add(
     profile: ProfileArgs,
     id: &str,
     name: Option<String>,
-    config: ProviderConfig,
-) -> ExitCode {
-    let settings = match settings(profile).await {
-        Ok(settings) => settings,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    // A runtime Tramontana starts is recorded as it is now, so a later
-    // change to its executable is held rather than run (ADR 0043).
-    let config = match tramontana_composition::runtime_files(&config) {
-        Some((binary, model, _)) => {
-            match tramontana_composition::record_provenance(
-                std::path::Path::new(binary),
-                std::path::Path::new(model),
-                SystemClock::new().now(),
-            )
-            .await
-            {
-                Ok(recorded) => tramontana_composition::with_provenance(config.clone(), recorded),
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    return ExitCode::FAILURE;
-                }
-            }
-        }
-        None => config,
-    };
-
-    let endpoint = ProviderEndpoint::new(
+    new: NewEndpoint,
+) -> Result<(), String> {
+    // The same clock the durable record uses, so a settings row and an event
+    // that mention the same moment agree about what it was.
+    let endpoint = endpoints::add(
+        &settings(profile).await?,
         id,
-        name.unwrap_or_else(|| id.to_owned()),
-        config,
-        // The same clock the durable record uses, so a settings row and an
-        // event that mention the same moment agree about what it was.
+        name,
+        new,
         SystemClock::new().now(),
-    );
-
-    if let Err(error) = settings.save(&endpoint).await {
-        eprintln!("error: could not save the endpoint: {error}");
-        return ExitCode::FAILURE;
-    }
+    )
+    .await
+    .map_err(message)?;
 
     // The location is derived, and printing it is the point: a user who typed
     // a URL they thought was local should see immediately that it is not,
@@ -324,38 +271,23 @@ async fn add(
             credential.key, credential.key
         );
     }
-    ExitCode::SUCCESS
+    Ok(())
 }
 
-async fn list(args: ProfileArgs) -> ExitCode {
-    let settings = match settings(args).await {
-        Ok(settings) => settings,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let endpoints = match settings.list().await {
-        Ok(endpoints) => endpoints,
-        Err(error) => {
-            eprintln!("error: could not read endpoints: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-
+async fn list(args: ProfileArgs) -> Result<(), String> {
+    let endpoints = endpoints::list(&settings(args).await?)
+        .await
+        .map_err(message)?;
     if endpoints.is_empty() {
         println!("no model endpoints are configured; tasks will use the deterministic fake");
-        return ExitCode::SUCCESS;
+        return Ok(());
     }
 
     for endpoint in endpoints {
         let files = match tramontana_composition::runtime_files(&endpoint.config) {
             Some((binary, _, recorded)) => {
-                let check = tramontana_composition::check_executable(
-                    std::path::Path::new(binary),
-                    recorded,
-                )
-                .await;
+                let check =
+                    tramontana_composition::check_executable(Path::new(binary), recorded).await;
                 format!(" files={}", describe_executable(check))
             }
             None => String::new(),
@@ -374,44 +306,22 @@ async fn list(args: ProfileArgs) -> ExitCode {
             endpoint.supports_tool_calls,
         );
     }
-    ExitCode::SUCCESS
+    Ok(())
 }
 
-async fn toggle(args: ToggleArgs, capability: bool) -> ExitCode {
+async fn toggle(args: ToggleArgs, capability: bool) -> Result<(), String> {
     let wanted = !args.off;
-    let id = args.id.clone();
-    let settings = match settings(args.profile).await {
-        Ok(settings) => settings,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut endpoints = match settings.list().await {
-        Ok(endpoints) => endpoints,
-        Err(error) => {
-            eprintln!("error: could not read endpoints: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let Some(endpoint) = endpoints
-        .iter_mut()
-        .find(|endpoint| endpoint.endpoint_id == id)
-    else {
-        eprintln!("error: no endpoint named {id:?}");
-        return ExitCode::FAILURE;
-    };
-    if capability {
-        endpoint.supports_tool_calls = wanted;
+    let change = if capability {
+        Toggle::ToolCalls(wanted)
     } else {
-        endpoint.enabled = wanted;
-    }
-    if let Err(error) = settings.save(endpoint).await {
-        eprintln!("error: could not save the endpoint: {error}");
-        return ExitCode::FAILURE;
-    }
+        Toggle::Enabled(wanted)
+    };
+    endpoints::toggle(&settings(args.profile).await?, &args.id, change)
+        .await
+        .map_err(message)?;
     println!(
-        "{id}: {} {}",
+        "{}: {} {}",
+        args.id,
         if capability {
             "verified tool-call support"
         } else {
@@ -419,100 +329,55 @@ async fn toggle(args: ToggleArgs, capability: bool) -> ExitCode {
         },
         if wanted { "enabled" } else { "disabled" }
     );
-    ExitCode::SUCCESS
+    Ok(())
 }
 
-async fn remove(args: RemoveArgs) -> ExitCode {
-    let id = args.id.clone();
-    let settings = match settings(args.profile).await {
-        Ok(settings) => settings,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    match settings.delete(&id).await {
-        Ok(true) => {
-            println!("{id}: removed");
-            // Said explicitly. Deleting the credential too would destroy
-            // something the OS store may share with other applications, and
-            // silently leaving it would be a surprise later.
-            println!(
-                "  its credential, if any, is still in the OS store; `tramontana secret forget` removes that"
-            );
-            ExitCode::SUCCESS
-        }
-        Ok(false) => {
-            println!("{id}: nothing was configured");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("error: could not remove the endpoint: {error}");
-            ExitCode::FAILURE
-        }
+async fn remove(args: RemoveArgs) -> Result<(), String> {
+    let id = args.id;
+    let removed = settings(args.profile)
+        .await?
+        .delete(&id)
+        .await
+        .map_err(|error| format!("could not remove the endpoint: {error}"))?;
+    if removed {
+        println!("{id}: removed");
+        // Said explicitly. Deleting the credential too would destroy
+        // something the OS store may share with other applications, and
+        // silently leaving it would be a surprise later.
+        println!(
+            "  its credential, if any, is still in the OS store; `tramontana secret forget` removes that"
+        );
+    } else {
+        println!("{id}: nothing was configured");
     }
+    Ok(())
 }
 
-/// How a location reads in a listing.
-fn describe_executable(check: tramontana_composition::FileCheck) -> &'static str {
+/// How an executable check reads in a listing.
+fn describe_executable(check: FileCheck) -> &'static str {
     match check {
-        tramontana_composition::FileCheck::Unchanged => "confirmed",
-        tramontana_composition::FileCheck::Changed => "HELD(executable-changed)",
-        tramontana_composition::FileCheck::Unreadable => "HELD(executable-unreadable)",
-        tramontana_composition::FileCheck::NotRecorded => "not-recorded",
+        FileCheck::Unchanged => "confirmed",
+        FileCheck::Changed => "HELD(executable-changed)",
+        FileCheck::Unreadable => "HELD(executable-unreadable)",
+        FileCheck::NotRecorded => "not-recorded",
     }
 }
 
-/// Find one endpoint by identifier, printing why when it cannot.
-async fn find(
-    profile: ProfileArgs,
-    id: &str,
-) -> Option<(SqliteProviderSettingsRepository, ProviderEndpoint)> {
-    let settings = match settings(profile).await {
-        Ok(settings) => settings,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return None;
-        }
-    };
-    match settings.list().await {
-        Ok(endpoints) => match endpoints
-            .into_iter()
-            .find(|endpoint| endpoint.endpoint_id == id)
-        {
-            Some(endpoint) => Some((settings, endpoint)),
-            None => {
-                eprintln!("error: no endpoint named {id:?}");
-                None
-            }
-        },
-        Err(error) => {
-            eprintln!("error: could not read endpoints: {error}");
-            None
-        }
-    }
-}
-
-async fn check(args: RemoveArgs) -> ExitCode {
-    let Some((_, endpoint)) = find(args.profile, &args.id).await else {
-        return ExitCode::FAILURE;
-    };
-    let Some((binary, model, recorded)) = tramontana_composition::runtime_files(&endpoint.config)
-    else {
-        eprintln!("error: {} is not a runtime Tramontana starts", args.id);
-        return ExitCode::FAILURE;
-    };
-    let executable =
-        tramontana_composition::check_executable(std::path::Path::new(binary), recorded).await;
-    let weights = tramontana_composition::check_model(std::path::Path::new(model), recorded).await;
+async fn check(args: RemoveArgs) -> Result<(), String> {
+    let endpoint = endpoints::find(&settings(args.profile).await?, &args.id)
+        .await
+        .map_err(message)?;
+    let (binary, model, recorded) = endpoints::runtime(&endpoint).map_err(message)?;
+    let executable = tramontana_composition::check_executable(Path::new(binary), recorded).await;
+    let weights = tramontana_composition::check_model(Path::new(model), recorded).await;
     println!("executable: {}", describe_executable(executable));
     println!(
         "model: {}",
         match weights {
-            tramontana_composition::FileCheck::Unchanged => "as recorded",
-            tramontana_composition::FileCheck::Changed => "CHANGED since it was recorded",
-            tramontana_composition::FileCheck::Unreadable => "could not be read",
-            tramontana_composition::FileCheck::NotRecorded => "not recorded",
+            FileCheck::Unchanged => "as recorded",
+            FileCheck::Changed => "CHANGED since it was recorded",
+            FileCheck::Unreadable => "could not be read",
+            FileCheck::NotRecorded => "not recorded",
         }
     );
     if let Some(recorded) = recorded {
@@ -523,40 +388,22 @@ async fn check(args: RemoveArgs) -> ExitCode {
             recorded.model_bytes
         );
     }
-    ExitCode::SUCCESS
+    Ok(())
 }
 
-async fn trust(args: RemoveArgs) -> ExitCode {
-    let Some((settings, mut endpoint)) = find(args.profile, &args.id).await else {
-        return ExitCode::FAILURE;
-    };
-    let Some((binary, model, _)) = tramontana_composition::runtime_files(&endpoint.config) else {
-        eprintln!("error: {} is not a runtime Tramontana starts", args.id);
-        return ExitCode::FAILURE;
-    };
-    let recorded = match tramontana_composition::record_provenance(
-        std::path::Path::new(binary),
-        std::path::Path::new(model),
+async fn trust(args: RemoveArgs) -> Result<(), String> {
+    endpoints::trust(
+        &settings(args.profile).await?,
+        &args.id,
         SystemClock::new().now(),
     )
     .await
-    {
-        Ok(recorded) => recorded,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    endpoint.config = tramontana_composition::with_provenance(endpoint.config.clone(), recorded);
-    if let Err(error) = settings.save(&endpoint).await {
-        eprintln!("error: could not save the endpoint: {error}");
-        return ExitCode::FAILURE;
-    }
+    .map_err(message)?;
     println!(
         "{}: executable and model confirmed as they are now; takes effect the next time Tramontana starts",
         args.id
     );
-    ExitCode::SUCCESS
+    Ok(())
 }
 
 fn location_label(location: ModelLocation) -> &'static str {

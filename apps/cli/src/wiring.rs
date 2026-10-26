@@ -6,27 +6,16 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
-use tramontana_adapters_tools::{FilesystemTools, GitTools, RecipeTools};
-use tramontana_composition::{AppPlane, ModelPlane, Supervision, assemble_models_recording};
-use tramontana_core::ports::AgentProvider;
-use tramontana_core::ports::EventStore;
-use tramontana_core::ports::{
-    AppSettingsRepository, ApprovalStore, Approver, ModelProvider, ProviderSettingsRepository,
-    SecretResolver, ToolProvider,
-};
-use tramontana_core::services::{Providers, Repositories, TaskService};
-use tramontana_core::testing::{
-    FakeModelProvider, InMemoryApprovalStore, ReceivingWorker, assemble_tool_plane,
-};
+use tramontana_composition::{PlaneOptions, ServicePlane, Supervision};
+use tramontana_core::contracts::{CorrelationId, ErrorCode, ErrorEnvelope};
+use tramontana_core::ports::{AgentProvider, ToolAdmission};
+use tramontana_core::services::{ErasureReport, TaskService};
+use tramontana_core::testing::ReceivingWorker;
+use tramontana_platform::PlatformSecretVault;
 
 use crate::approval::TerminalApprover;
-use tramontana_persistence::{
-    Database, SqliteAppSettingsRepository, SqliteConfigurationRepository,
-    SqliteConversationRepository, SqliteEventStore, SqliteProjectRepository,
-    SqliteProviderSettingsRepository, SqliteTaskRepository,
-};
-use tramontana_platform::{PlatformSecretVault, SystemClock, UuidIdSource};
 
 /// Where a development profile keeps its database.
 ///
@@ -60,11 +49,6 @@ pub(crate) struct ProfileArgs {
     pub(crate) profile: Option<PathBuf>,
 }
 
-/// Open a profile and assemble the service over it.
-///
-/// # Errors
-///
-/// Returns a message describing what could not be opened.
 /// Open a profile for a command that never runs a task.
 ///
 /// Supervised runtimes are not started: listing projects must not load a
@@ -77,10 +61,10 @@ pub(crate) async fn open(path: &Path, chunk_delay_ms: u64) -> Result<Arc<TaskSer
         path,
         chunk_delay_ms,
         Supervision::Skip,
-        tramontana_core::ports::ToolAdmission::READ_ONLY,
+        ToolAdmission::READ_ONLY,
     )
     .await
-    .map(|(service, _plane, _apps)| service)
+    .map(|plane| plane.service)
 }
 
 /// [`open`] the profile, or print why not; `None` means exit with failure.
@@ -94,276 +78,116 @@ pub(crate) async fn open_or_report(profile: Option<PathBuf>) -> Option<Arc<TaskS
     }
 }
 
-/// Open a profile for a command that will actually run a model.
+/// Open a profile for a command that will actually run a model, or print
+/// why not; `None` means exit with failure.
 ///
-/// Returns the plane as well: it owns any runtime this process started, and
+/// Returns the plane: it owns any runtime this process started, and
 /// dropping it stops them. The caller has to hold it for as long as the task
 /// runs, which is why this cannot simply return the service.
 ///
 /// `admission` is what the reference worker may offer its model, and comes
 /// from the command line: writes only when the person asked for them.
-pub(crate) async fn open_running(
-    path: &Path,
+pub(crate) async fn open_running_or_report(
+    profile: Option<PathBuf>,
     chunk_delay_ms: u64,
-    admission: tramontana_core::ports::ToolAdmission,
-) -> Result<(Arc<TaskService>, ModelPlane, AppPlane), String> {
-    open_with(path, chunk_delay_ms, Supervision::Start, admission).await
+    admission: ToolAdmission,
+) -> Option<ServicePlane> {
+    open_with(
+        &profile_path(profile),
+        chunk_delay_ms,
+        Supervision::Start,
+        admission,
+    )
+    .await
+    .inspect_err(|message| eprintln!("error: {message}"))
+    .ok()
 }
 
+/// The shared service plane, with a terminal approver and the platform
+/// credential store, and what it noticed printed to stderr: this process
+/// installs no log subscriber.
 async fn open_with(
     path: &Path,
     chunk_delay_ms: u64,
     supervision: Supervision,
-    admission: tramontana_core::ports::ToolAdmission,
-) -> Result<(Arc<TaskService>, ModelPlane, AppPlane), String> {
-    let database = tramontana_composition::open_database(path).await?;
-
-    // The profile's Apps, started before the registry is built so their tools
-    // are registered beside the built-in ones and under the same permission
-    // boundary (ADR 0036). A broken App is a note, never a reason the command
-    // cannot run.
-    let resolver = Arc::new(PlatformSecretVault::new()) as Arc<dyn SecretResolver>;
-    let configured_apps = SqliteAppSettingsRepository::new(database.clone())
-        .list()
-        .await
-        .map_err(|error| format!("could not read App settings: {error}"))?;
-    let apps = tramontana_composition::start_apps(&configured_apps, &resolver, path).await;
-    for failure in &apps.failures {
-        eprintln!(
-            "warning: App {:?} ({}) did not start: {}",
-            failure.display_name, failure.app_id, failure.reason
-        );
-    }
-    let app_tools = apps.tool_ids();
-
-    // Filesystem and Git tools, behind the permission boundary. The registry
-    // says a tool exists; only the permission manager says it may run.
-    let mut providers: Vec<Arc<dyn ToolProvider>> = vec![
-        // Deleted files are kept beside the profile, so a delete can be undone.
-        Arc::new(
-            FilesystemTools::new()
-                .with_recovery_store(tramontana_composition::recovery_store(path)),
-        ) as Arc<dyn ToolProvider>,
-        Arc::new(GitTools::new()) as Arc<dyn ToolProvider>,
-        // The project's own commands, run only as the core resolved them.
-        Arc::new(RecipeTools::new()) as Arc<dyn ToolProvider>,
-        // The browser, started only when a task under `--browse` first opens
-        // a page (ADR 0047).
-        tramontana_composition::browser(path) as Arc<dyn ToolProvider>,
-    ];
-    providers.extend(apps.providers());
-    let (registry, permissions, releases) = assemble_tool_plane(
-        providers,
-        Arc::new(InMemoryApprovalStore::new()) as Arc<dyn ApprovalStore>,
+    admission: ToolAdmission,
+) -> Result<ServicePlane, String> {
+    let mut plane = tramontana_composition::open_service_plane(
+        path,
         // Prompts on a terminal, and refuses when there is no terminal to
         // prompt on. A read inside an approved project is permitted without
         // asking; a write or a recipe is asked about every time it runs, and
         // is offered to a model at all only under `--allow-writes` or
         // `--allow-recipes`.
-        Arc::new(TerminalApprover::new()) as Arc<dyn Approver>,
-        Arc::new(UuidIdSource::new()),
+        Arc::new(TerminalApprover::new()),
+        Arc::new(PlatformSecretVault::new()),
+        chunk_delay_ms,
+        // Without the lease at once, another process owns the profile: this
+        // command runs no task rather than waiting on it.
+        PlaneOptions {
+            supervision,
+            admission,
+            lease_patience: Duration::ZERO,
+        },
     )
-    .map_err(|error| format!("could not register tools: {error}"))?;
-
-    let lease = tramontana_platform::ProfileLease::try_acquire(path)
-        .map_err(|error| format!("could not acquire runtime profile lease: {error}"))?
-        .map(|lease| Arc::new(lease) as Arc<dyn Send + Sync>);
-    // Holding the lease proves any runtime recorded for this profile outlived
-    // the process that started it: stop those before starting more. Without
-    // the lease they may be in use, so nothing is stopped or recorded
-    // (ADR 0030).
-    if lease.is_some() {
-        for note in tramontana_composition::reap_runtimes(path).await {
-            eprintln!("note: {note}");
-        }
-        tramontana_composition::reap_browser_profiles(path);
+    .await?;
+    for failure in &plane.apps.failures {
+        eprintln!(
+            "warning: App {:?} ({}) did not start: {}",
+            failure.display_name, failure.app_id, failure.reason
+        );
     }
-    let records = lease
-        .is_some()
-        .then(|| tramontana_composition::runtime_records(path));
-    let events = Arc::new(SqliteEventStore::new(database.clone())) as Arc<dyn EventStore>;
-
-    // Real providers, from what the user configured. Credentials are resolved
-    // per request out of the platform store; only opaque references are in
-    // the database (ADR 0008).
-    let settings = SqliteProviderSettingsRepository::new(database.clone());
-    let configured = settings
-        .list()
-        .await
-        .map_err(|error| format!("could not read provider settings: {error}"))?;
-    let plane =
-        assemble_models_recording(&configured, &resolver, supervision, records.as_deref()).await;
-
-    for failure in &plane.failures {
+    for note in &plane.reaped {
+        eprintln!("note: {note}");
+    }
+    let models = plane.models.get_mut();
+    for failure in &models.failures {
         eprintln!(
             "warning: endpoint {:?} ({}) is unavailable: {}",
             failure.display_name, failure.endpoint_id, failure.error.message
         );
     }
-
-    // Falling back to the fake keeps the walking skeleton usable on a profile
-    // with nothing configured, and it says so every time: an interface that
-    // let a deterministic stub pass for a model would be lying about the one
-    // thing this project is built to be honest about.
-    let has_configured = configured.iter().any(|endpoint| endpoint.enabled);
-    let models: Vec<Arc<dyn ModelProvider>> = if !has_configured {
-        if !plane.skipped.is_empty() {
+    // Said every time: an interface that let a deterministic stub pass for a
+    // model would be lying about the one thing this project is built to be
+    // honest about.
+    if plane.fake_models {
+        if !models.skipped.is_empty() {
             eprintln!(
                 "note: {} supervised runtime(s) were not started for this command",
-                plane.skipped.len()
+                models.skipped.len()
             );
         }
         eprintln!(
             "note: no model endpoint is configured, so this profile is using the \
              deterministic fake. Add one with `tramontana provider add`."
         );
-        vec![Arc::new(FakeModelProvider::streaming_paced(
-            ["Hello", ", ", "world"],
-            chunk_delay_ms,
-        ))]
-    } else {
-        plane.providers.clone()
-    };
-
-    let service = TaskService::new(
-        Repositories {
-            projects: Arc::new(SqliteProjectRepository::new(database.clone())),
-            conversations: Arc::new(SqliteConversationRepository::new(database.clone())),
-            tasks: Arc::new(SqliteTaskRepository::new(database.clone())),
-            events,
-            checkpoints: Arc::new(tramontana_persistence::SqliteCheckpointRepository::new(
-                database.clone(),
-            )),
-            configuration: Arc::new(SqliteConfigurationRepository::new(database.clone())),
-        },
-        Providers {
-            models,
-            tools: Arc::clone(&registry),
-            permissions: Arc::clone(&permissions),
-            releases: Arc::clone(&releases),
-            // Shared strategy selection; both real and diagnostic work use
-            // the same permission-governed built-in tools.
-            worker: tramontana_composition::assemble_worker(has_configured, admission, &app_tools),
-        },
-        Arc::new(SystemClock::new()),
-        Arc::new(UuidIdSource::new()),
-    );
-
-    // The built-in worker pinned to each configured model, which a task can
-    // be handed to by name (ADR 0048).
-    let pinnable = if has_configured {
-        tramontana_composition::pinnable_models(&plane.providers).await
-    } else {
-        Vec::new()
-    };
-    let service = service
-        .with_worker_choice(tramontana_composition::worker_choice(
-            has_configured,
-            app_tools.clone(),
-        ))
-        .with_pinned_workers(
-            pinnable,
-            tramontana_composition::pinned_worker_choice(app_tools.clone()),
-        )
-        // So a task is given the project's own instructions, read as it starts
-        // (ADR 0052).
-        .with_project_sources(Arc::new(tramontana_platform::ProjectFiles::new(Arc::new(
-            SqliteProjectRepository::new(database.clone()),
-        ))))
-        // So chats can be told what the person wrote about themselves
-        // (ADR 0061).
-        .with_personal(Arc::new(
-            tramontana_persistence::SqlitePersonalRepository::new(database.clone()),
-        ))
-        // So removing a conversation or a project is one commit (ADR 0067).
-        .with_record_removal(Arc::new(tramontana_persistence::SqliteRecordRemoval::new(
-            database.clone(),
-        )))
-        // So schedules run by the computer's local time (ADR 0063).
-        .with_schedules(
-            Arc::new(tramontana_persistence::SqliteScheduleRepository::new(
-                database.clone(),
-            )),
-            Arc::new(tramontana_platform::SystemLocalClock::new()),
-        )
-        // So speech can be transcribed on this device (ADR 0065).
-        // The person's own skills, in a folder beside the profile (ADR 0070).
-        .with_skill_library(Arc::new(tramontana_platform::FsSkillLibrary::new(
-            path.parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .join("skills"),
-        )))
-        .with_dictation(
-            Arc::new(tramontana_persistence::SqliteDictationRepository::new(
-                database.clone(),
-            )),
-            Arc::new(tramontana_adapters_local::WhisperCli::new()),
-        )
-        // So PDF and Word files can be attached (ADR 0062).
-        .with_document_reader(Arc::new(tramontana_adapters_documents::Documents::new()))
-        .with_execution_guard(lease);
-
-    // A process that died between appending an event and updating a task's
-    // cached row leaves the two disagreeing. The events are the record, so the
-    // cache is repaired before anything reads it.
-    let repaired = service
-        .recover()
-        .await
-        .map_err(|error| format!("recovery failed: {}", error.message))?;
-    if repaired > 0 {
-        eprintln!("recovered {repaired} task projection(s) from the event stream");
     }
-
-    Ok((Arc::new(service), plane, apps))
+    if plane.recovered > 0 {
+        eprintln!(
+            "recovered {} task projection(s) from the event stream",
+            plane.recovered
+        );
+    }
+    Ok(plane)
 }
 
 /// Delete everything a profile holds (ADR 0068): its records, the
 /// credentials they name, and the folders beside its database. The same
-/// steps the desktop takes, through the same service.
+/// steps the desktop takes, through the same plane.
 ///
 /// # Errors
 ///
 /// A message when the profile cannot be opened, a task is running or
 /// another process owns the profile, or a step fails.
-pub(crate) async fn erase(
-    path: &Path,
-) -> Result<tramontana_core::services::ErasureReport, tramontana_core::contracts::ErrorEnvelope> {
-    let internal = |message: String| {
-        tramontana_core::contracts::ErrorEnvelope::new(
-            tramontana_core::contracts::ErrorCode::Internal,
-            message,
-            tramontana_core::contracts::CorrelationId::new("erase"),
-        )
-    };
-    let (service, mut plane, apps) = open_with(
-        path,
-        0,
-        Supervision::Skip,
-        tramontana_core::ports::ToolAdmission::READ_ONLY,
-    )
-    .await
-    .map_err(internal)?;
-    let database = Database::open(path)
+pub(crate) async fn erase(path: &Path) -> Result<ErasureReport, ErrorEnvelope> {
+    let plane = open_with(path, 0, Supervision::Skip, ToolAdmission::READ_ONLY)
         .await
-        .map_err(|error| internal(format!("could not open {}: {error}", path.display())))?;
-    let report = service
-        .erase_everything(&tramontana_core::services::ProfileErasure {
-            records: &tramontana_persistence::SqliteProfileEraser::new(database.clone()),
-            endpoints: &SqliteProviderSettingsRepository::new(database.clone()),
-            apps: &SqliteAppSettingsRepository::new(database.clone()),
-            vault: &PlatformSecretVault::new(),
-        })
-        .await?;
-    // They write in the folders about to go.
-    plane.shutdown().await;
-    apps.shutdown().await;
-    tramontana_composition::erase_profile_folders(path).map_err(|error| {
-        internal(format!(
-            "the records were deleted, but a folder beside them could not be: {}",
-            error.kind()
-        ))
-    })?;
-    Ok(report)
+        .map_err(|message| {
+            ErrorEnvelope::new(ErrorCode::Internal, message, CorrelationId::new("erase"))
+        })?;
+    plane
+        .erase_everything(path, &PlatformSecretVault::new())
+        .await
 }
 
 /// Workers a task can be handed to by name.
@@ -374,13 +198,9 @@ pub(crate) fn worker_named(agent_id: &str) -> Option<Arc<dyn AgentProvider>> {
     match agent_id {
         // A worker taking a task over reads: handing a task on is not a way
         // for it to gain writes nobody gave it.
-        tramontana_core::services::REFERENCE_AGENT_ID => {
-            Some(tramontana_composition::assemble_worker(
-                true,
-                tramontana_core::ports::ToolAdmission::READ_ONLY,
-                &[],
-            ))
-        }
+        tramontana_core::services::REFERENCE_AGENT_ID => Some(
+            tramontana_composition::assemble_worker(true, ToolAdmission::READ_ONLY, &[]),
+        ),
         tramontana_core::testing::RECEIVING_AGENT_ID => {
             // M4 diagnostic handoff target. Its fixed step matches the fake
             // diagnostic worker, not arbitrary model-selected reference work.

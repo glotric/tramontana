@@ -14,8 +14,9 @@ use crate::services::export::{ExportRequest, ImportLimits, build_export, validat
 use crate::services::handoff::build_handoff;
 use crate::services::task_service::TaskService;
 
-/// What an import wrote.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// How many records of each kind a bundle holds, or an import wrote.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportSummary {
     /// Projects created, without their roots.
     pub projects: usize,
@@ -31,6 +32,21 @@ pub struct ImportSummary {
     pub configurations: usize,
     /// Opaque worker state that was refused rather than restored.
     pub quarantined: usize,
+}
+
+impl From<&ImportedRecords> for ImportSummary {
+    /// What staged records would write.
+    fn from(records: &ImportedRecords) -> Self {
+        Self {
+            projects: records.projects.len(),
+            conversations: records.conversations.len(),
+            tasks: records.tasks.len(),
+            events: records.events.values().map(Vec::len).sum(),
+            checkpoints: records.checkpoints.len(),
+            configurations: records.configurations.len(),
+            quarantined: records.quarantined.len(),
+        }
+    }
 }
 
 impl TaskService {

@@ -6,11 +6,9 @@ use std::sync::Arc;
 use tauri::AppHandle;
 use tramontana_core::ports::{Approver, SecretResolver};
 use tramontana_core::services::TaskService;
-use tramontana_core::testing::InMemoryApprovalStore;
 
 use crate::approval::DesktopApprover;
-use tramontana_composition::ModelPlane;
-use tramontana_persistence::{SqliteAppSettingsRepository, SqliteProviderSettingsRepository};
+use tramontana_composition::{PlaneOptions, ServicePlane};
 use tramontana_platform::PlatformSecretVault;
 
 /// What the Tauri layer manages.
@@ -23,22 +21,15 @@ pub(crate) struct AppState {
     pub(crate) service: Arc<TaskService>,
     /// Where approval questions are raised and answered.
     pub(crate) approver: Arc<DesktopApprover>,
-    /// Where grants live, so they can be listed and revoked.
-    pub(crate) approvals: Arc<InMemoryApprovalStore>,
-    /// Runtimes this process started, held for the life of the window and
-    /// stopped by [`AppState::shut_down`] as it exits.
+    /// The shared assembly: approvals, model runtimes, Apps, browser and
+    /// the profile's settings. Held for the life of the window and stopped by
+    /// [`AppState::shut_down`] as it exits.
     ///
     /// Tauri ends the process without dropping managed state, so the
     /// runtimes' own drop is only a backstop for a panic: a model runtime
     /// that outlived the application would hold gigabytes until something
     /// next opened the profile.
-    pub(crate) models: Arc<tokio::sync::Mutex<ModelPlane>>,
-    /// The Apps this process started, stopped with it (ADR 0036).
-    pub(crate) apps: tramontana_composition::AppPlane,
-    /// The built-in browser, stopped with the application (ADR 0047).
-    pub(crate) browser: Arc<tramontana_composition::BrowserProvider>,
-    /// The profile's App settings, which the Apps screen changes.
-    pub(crate) app_settings: Arc<SqliteAppSettingsRepository>,
+    pub(crate) plane: ServicePlane,
     /// The bundle folder the person last inspected, waiting for them to
     /// confirm the import.
     pub(crate) staged_bundle: Arc<crate::bundles::StagedSlot>,
@@ -46,14 +37,8 @@ pub(crate) struct AppState {
     pub(crate) staged_attachments: Arc<crate::attachments::StagedAttachments>,
     /// The task streams windows are watching, so one can be stopped.
     pub(crate) watches: Arc<crate::commands::Watches>,
-    /// The profile's configured endpoints, which the settings view changes.
-    pub(crate) settings: Arc<SqliteProviderSettingsRepository>,
     /// The operating system's credential store.
     pub(crate) vault: Arc<PlatformSecretVault>,
-    /// Where the person's own skills are kept (ADR 0070).
-    pub(crate) skills_folder: std::path::PathBuf,
-    /// Empties the profile's records, for "Delete all my data" (ADR 0068).
-    pub(crate) eraser: Arc<tramontana_persistence::SqliteProfileEraser>,
     /// Where the profile's database is; its folders sit beside it.
     pub(crate) profile: std::path::PathBuf,
     /// Hosts this desktop is paired with, and their connections (SP1).
@@ -86,6 +71,7 @@ impl AppState {
             Arc::clone(&approver) as Arc<dyn Approver>,
             Arc::clone(&vault) as Arc<dyn SecretResolver>,
             chunk_delay_ms,
+            PlaneOptions::default(),
         )
         .await?;
         let hosts = Arc::new(crate::hosts::Hosts::new(
@@ -93,21 +79,14 @@ impl AppState {
             Arc::clone(&vault) as Arc<dyn tramontana_core::ports::SecretVault>,
         ));
         Ok(Self {
-            service: Arc::new(plane.service),
+            service: Arc::clone(&plane.service),
             approver,
-            approvals: plane.approvals,
-            models: Arc::new(tokio::sync::Mutex::new(plane.models)),
-            apps: plane.apps,
-            browser: plane.browser,
-            app_settings: plane.app_settings,
+            plane,
             staged_bundle: Arc::new(std::sync::Mutex::new(None)),
             staged_attachments: Arc::default(),
             watches: Arc::default(),
-            settings: plane.settings,
             vault,
-            eraser: plane.eraser,
             profile: path.to_path_buf(),
-            skills_folder: plane.skills_folder,
             hosts,
         })
     }
@@ -122,34 +101,14 @@ impl AppState {
     ///
     /// # Errors
     ///
-    /// Whatever the service reports, or [`ErrorCode::Internal`] naming a
-    /// folder that could not be removed.
+    /// As [`ServicePlane::erase_everything`].
     pub(crate) async fn erase_everything(
         &self,
     ) -> Result<tramontana_core::services::ErasureReport, tramontana_core::contracts::ErrorEnvelope>
     {
-        let report = self
-            .service
-            .erase_everything(&tramontana_core::services::ProfileErasure {
-                records: &*self.eraser,
-                endpoints: &*self.settings,
-                apps: &*self.app_settings,
-                vault: &*self.vault,
-            })
-            .await?;
-        // They write in the folders about to go.
-        self.shut_down().await;
-        tramontana_composition::erase_profile_folders(&self.profile).map_err(|error| {
-            tramontana_core::contracts::ErrorEnvelope::new(
-                tramontana_core::contracts::ErrorCode::Internal,
-                format!(
-                    "the records were deleted, but a folder beside them could not be: {}",
-                    error.kind()
-                ),
-                tramontana_core::contracts::CorrelationId::new("erase"),
-            )
-        })?;
-        Ok(report)
+        self.plane
+            .erase_everything(&self.profile, &*self.vault)
+            .await
     }
 
     /// Stop the model runtimes this process started.
@@ -157,9 +116,7 @@ impl AppState {
     /// Called as the application exits, whether by quitting or by "Restart
     /// now". Waits for each runtime to stop, up to its grace period.
     pub(crate) async fn shut_down(&self) {
-        self.models.lock().await.shutdown().await;
-        self.apps.shutdown().await;
-        self.browser.shutdown().await;
+        self.plane.shutdown().await;
     }
 }
 

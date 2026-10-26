@@ -21,12 +21,13 @@
 //! did not, rather than refusing to start.
 
 mod apps;
+pub mod endpoints;
 mod plane;
 
 use std::sync::Arc;
 
 pub use apps::{AppFailure, AppPlane, app_folder, app_folders, offerable, start_app, start_apps};
-pub use plane::{ServicePlane, acquire_lease, open_database, open_service_plane};
+pub use plane::{PlaneOptions, ServicePlane, acquire_lease, open_database, open_service_plane};
 // Signing in to a remote App (ADR 0056). Re-exported rather than reimplemented:
 // this crate is the one place that knows the MCP adapter exists, and an
 // application composes the person's part of the flow around it.

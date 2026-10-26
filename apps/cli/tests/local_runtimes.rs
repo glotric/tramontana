@@ -131,7 +131,7 @@ fn a_runtime_whose_files_cannot_be_read_is_not_added() {
         .unwrap();
     assert!(!out.status.success());
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("could not read the executable"),
+        String::from_utf8_lossy(&out.stderr).contains("the llama-server executable is not a file"),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );

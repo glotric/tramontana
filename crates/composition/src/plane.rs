@@ -14,11 +14,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tramontana_adapters_tools::{FilesystemTools, GitTools, RecipeTools};
+use tramontana_core::contracts::{CorrelationId, ErrorCode, ErrorEnvelope};
 use tramontana_core::ports::{
     AppSettingsRepository, ApprovalStore, Approver, EventStore, ModelProvider,
-    ProviderSettingsRepository, SecretResolver, ToolAdmission, ToolProvider,
+    ProviderSettingsRepository, SecretResolver, SecretVault, ToolAdmission, ToolProvider,
 };
-use tramontana_core::services::{Providers, Repositories, TaskService};
+use tramontana_core::services::{
+    ErasureReport, ProfileErasure, Providers, Repositories, TaskService,
+};
 use tramontana_core::testing::{FakeModelProvider, InMemoryApprovalStore, assemble_tool_plane};
 use tramontana_persistence::{
     Database, SqliteAppSettingsRepository, SqliteCheckpointRepository,
@@ -40,11 +43,11 @@ use crate::{
 /// Everything an application holds once the profile is open.
 pub struct ServicePlane {
     /// The application service every command delegates to.
-    pub service: TaskService,
+    pub service: Arc<TaskService>,
     /// Where grants live, so they can be listed and revoked.
     pub approvals: Arc<InMemoryApprovalStore>,
     /// Runtimes this process started; the application stops them on exit.
-    pub models: ModelPlane,
+    pub models: tokio::sync::Mutex<ModelPlane>,
     /// The Apps this process started, stopped with it (ADR 0036).
     pub apps: AppPlane,
     /// The built-in browser, stopped with the application (ADR 0047).
@@ -57,6 +60,12 @@ pub struct ServicePlane {
     pub eraser: Arc<SqliteProfileEraser>,
     /// Where the person's own skills are kept (ADR 0070).
     pub skills_folder: PathBuf,
+    /// No endpoint is enabled, so the deterministic fake stands in.
+    pub fake_models: bool,
+    /// Runtimes left by a process that died, stopped as this one opened.
+    pub reaped: Vec<String>,
+    /// Task projections repaired from the event stream as this one opened.
+    pub recovered: usize,
 }
 
 impl std::fmt::Debug for ServicePlane {
@@ -68,13 +77,78 @@ impl std::fmt::Debug for ServicePlane {
     }
 }
 
-/// How long a starting application waits for the profile's previous owner
-/// to let go of it.
-///
-/// A restart starts the new process a moment before the old one has exited,
-/// so a lease still held for that moment is expected. One held for longer
-/// belongs to another process, and this one opens without running tasks.
-const LEASE_PATIENCE: Duration = Duration::from_secs(3);
+impl ServicePlane {
+    /// Stop the model runtimes, Apps and browser this process started.
+    pub async fn shutdown(&self) {
+        self.models.lock().await.shutdown().await;
+        self.apps.shutdown().await;
+        self.browser.shutdown().await;
+    }
+
+    /// Delete everything the profile at `path` holds (ADR 0068): its
+    /// records, the credentials they name in `vault`, and the folders beside
+    /// its database. Project folders are never touched. Once it succeeds this
+    /// plane has been shut down.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the service reports, or [`ErrorCode::Internal`] naming a
+    /// folder that could not be removed.
+    pub async fn erase_everything(
+        &self,
+        path: &Path,
+        vault: &dyn SecretVault,
+    ) -> Result<ErasureReport, ErrorEnvelope> {
+        let report = self
+            .service
+            .erase_everything(&ProfileErasure {
+                records: &*self.eraser,
+                endpoints: &*self.settings,
+                apps: &*self.app_settings,
+                vault,
+            })
+            .await?;
+        // They write in the folders about to go.
+        self.shutdown().await;
+        crate::erase_profile_folders(path).map_err(|error| {
+            ErrorEnvelope::new(
+                ErrorCode::Internal,
+                format!(
+                    "the records were deleted, but a folder beside them could not be: {}",
+                    error.kind()
+                ),
+                CorrelationId::new("erase"),
+            )
+        })?;
+        Ok(report)
+    }
+}
+
+/// How [`open_service_plane`] opens a profile.
+#[derive(Debug, Clone, Copy)]
+pub struct PlaneOptions {
+    /// Whether supervised runtimes are started.
+    pub supervision: Supervision,
+    /// What the service's own worker may offer its model.
+    pub admission: ToolAdmission,
+    /// How long to wait for the profile's previous owner to let go of it.
+    /// Zero tries once.
+    pub lease_patience: Duration,
+}
+
+impl Default for PlaneOptions {
+    /// A long-lived application: runtimes started, reads only, and three
+    /// seconds' patience, because a restart starts the new process a moment
+    /// before the old one has exited. A lease held for longer belongs to
+    /// another process, and this one opens without running tasks.
+    fn default() -> Self {
+        Self {
+            supervision: Supervision::Start,
+            admission: ToolAdmission::READ_ONLY,
+            lease_patience: Duration::from_secs(3),
+        }
+    }
+}
 
 /// Open (and migrate) the profile database, creating its folder first.
 ///
@@ -108,6 +182,7 @@ pub async fn open_service_plane(
     approver: Arc<dyn Approver>,
     resolver: Arc<dyn SecretResolver>,
     chunk_delay_ms: u64,
+    options: PlaneOptions,
 ) -> Result<ServicePlane, String> {
     let database = open_database(path).await?;
     // Filesystem and Git tools, behind the permission boundary. The registry
@@ -155,24 +230,25 @@ pub async fn open_service_plane(
     )
     .map_err(|error| format!("could not register tools: {error}"))?;
 
-    let lease = acquire_lease(path, LEASE_PATIENCE)
+    let lease = acquire_lease(path, options.lease_patience)
         .await
         .map_err(|error| format!("could not acquire runtime profile lease: {error}"))?
         .map(|lease| Arc::new(lease) as Arc<dyn Send + Sync>);
     // Holding the lease proves any runtime recorded for this profile outlived
     // the process that started it: stop those before starting more. Without
     // the lease they may be in use (ADR 0030).
+    let mut reaped = Vec::new();
     if lease.is_some() {
-        for note in reap_runtimes(path).await {
+        reaped = reap_runtimes(path).await;
+        for note in &reaped {
             tracing::warn!("{note}");
         }
         reap_browser_profiles(path);
     }
     let records = lease.is_some().then(|| runtime_records(path));
     let store: Arc<dyn EventStore> = Arc::new(SqliteEventStore::new(database.clone()));
-    // The endpoints the person configured. Supervised runtimes are started
-    // here because the application is long-lived; the plane owns them and
-    // stops them on close.
+    // The endpoints the person configured. The plane owns any runtime it
+    // starts and stops them on close.
     let settings = Arc::new(SqliteProviderSettingsRepository::new(database.clone()));
     let configured = settings
         .list()
@@ -181,7 +257,7 @@ pub async fn open_service_plane(
     let models_plane = assemble_models_recording(
         &configured,
         &resolver,
-        Supervision::Start,
+        options.supervision,
         records.as_deref(),
     )
     .await;
@@ -217,12 +293,12 @@ pub async fn open_service_plane(
             tools: Arc::clone(&registry),
             permissions: Arc::clone(&permissions),
             releases: Arc::clone(&releases),
-            // Same strategy and governed tool plane as the CLI. The service's
-            // own worker is read-only. A task gets a worker that may ask to
-            // write or run recipes only when the person chose that in the
-            // composer, and each one is still approved as it happens (ADRs
-            // 0021 and 0031).
-            worker: assemble_worker(has_configured, ToolAdmission::READ_ONLY, &[]),
+            // The service's own worker is offered what the caller admitted:
+            // reads only for an application, whose tasks each choose more in
+            // the composer; what the person passed for one CLI command. Each
+            // write or recipe is still approved as it happens (ADRs 0021 and
+            // 0031).
+            worker: assemble_worker(has_configured, options.admission, &app_tools),
         },
         Arc::new(SystemClock::new()),
         Arc::new(UuidIdSource::new()),
@@ -262,20 +338,26 @@ pub async fn open_service_plane(
         // So PDF and Word files can be attached (ADR 0062).
         .with_document_reader(Arc::new(tramontana_adapters_documents::Documents::new()))
         .with_execution_guard(lease);
-    service
+    // A process that died between appending an event and updating a task's
+    // cached row leaves the two disagreeing. The events are the record, so
+    // the cache is repaired before anything reads it.
+    let recovered = service
         .recover()
         .await
         .map_err(|error| format!("recovery failed: {}", error.message))?;
     Ok(ServicePlane {
-        service,
+        service: Arc::new(service),
         approvals,
-        models: models_plane,
+        models: tokio::sync::Mutex::new(models_plane),
         apps,
         browser,
         app_settings,
         settings,
         eraser: Arc::new(SqliteProfileEraser::new(database)),
         skills_folder: skills_folder(path),
+        fake_models: !has_configured,
+        reaped,
+        recovered,
     })
 }
 

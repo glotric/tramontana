@@ -12,7 +12,7 @@ use tramontana_core::contracts::{
     ErrorCode, ErrorEnvelope, ExportBundle, ExportManifest, ExportOptions, ProjectId,
     SCHEMA_VERSION, TaskId,
 };
-use tramontana_core::services::{ImportLimits, TaskService};
+use tramontana_core::services::{ImportLimits, ImportSummary, TaskService};
 
 /// What to export.
 #[derive(Debug, Clone)]
@@ -55,20 +55,6 @@ pub(crate) fn take_staged(slot: &StagedSlot, id: &str) -> Option<PathBuf> {
         .map(|staged| staged.directory)
 }
 
-/// How many records of each kind a bundle holds, or an import wrote.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct BundleCounts {
-    pub projects: usize,
-    pub conversations: usize,
-    pub tasks: usize,
-    pub events: usize,
-    pub checkpoints: usize,
-    pub configurations: usize,
-    /// Opaque worker state that is refused rather than restored.
-    pub quarantined: usize,
-}
-
 /// What a bundle holds, read without writing anything.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,7 +62,7 @@ pub(crate) struct BundleInspection {
     pub schema_version: u32,
     /// Its table of contents, including what the export left out.
     pub manifest: ExportManifest,
-    pub contains: BundleCounts,
+    pub contains: ImportSummary,
 }
 
 /// What an import wrote.
@@ -84,7 +70,7 @@ pub(crate) struct BundleInspection {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportReport {
     pub schema_version: u32,
-    pub imported: BundleCounts,
+    pub imported: ImportSummary,
     /// Always false, and stated rather than assumed: an imported task is a
     /// record, and nothing in the bundle was run to produce it.
     pub executed_anything: bool,
@@ -131,15 +117,7 @@ pub(crate) fn inspect(
     let records = service.stage_import(&bundle, ImportLimits::default())?;
     Ok(BundleInspection {
         schema_version: SCHEMA_VERSION,
-        contains: BundleCounts {
-            projects: records.projects.len(),
-            conversations: records.conversations.len(),
-            tasks: records.tasks.len(),
-            events: records.events.values().map(Vec::len).sum(),
-            checkpoints: records.checkpoints.len(),
-            configurations: records.configurations.len(),
-            quarantined: records.quarantined.len(),
-        },
+        contains: ImportSummary::from(&records),
         manifest: bundle.manifest,
     })
 }
@@ -160,15 +138,7 @@ pub(crate) async fn import_from(
         .await?;
     Ok(ImportReport {
         schema_version: SCHEMA_VERSION,
-        imported: BundleCounts {
-            projects: summary.projects,
-            conversations: summary.conversations,
-            tasks: summary.tasks,
-            events: summary.events,
-            checkpoints: summary.checkpoints,
-            configurations: summary.configurations,
-            quarantined: summary.quarantined,
-        },
+        imported: summary,
         executed_anything: false,
     })
 }

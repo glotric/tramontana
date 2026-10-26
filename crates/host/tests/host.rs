@@ -79,17 +79,13 @@ async fn start(queue: usize) -> Option<Running> {
         Arc::clone(&approvals) as Arc<dyn Approver>,
         Arc::new(InMemorySecretVault::new()) as Arc<dyn SecretResolver>,
         0,
+        tramontana_composition::PlaneOptions::default(),
     )
     .await
     .unwrap();
     let devices = Arc::new(Devices::open(dir.path().join("devices.json")).unwrap());
     let host = Arc::new(
-        Host::new(
-            Arc::new(plane.service),
-            Arc::clone(&devices),
-            Arc::clone(&approvals),
-        )
-        .with_queue(queue),
+        Host::new(plane.service, Arc::clone(&devices), Arc::clone(&approvals)).with_queue(queue),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap().to_string();

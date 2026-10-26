@@ -145,6 +145,7 @@ async fn serve(
         Arc::clone(&approvals) as Arc<dyn Approver>,
         resolver,
         0,
+        tramontana_composition::PlaneOptions::default(),
     )
     .await?;
     let devices = Arc::new(open_devices(data)?);
@@ -162,12 +163,9 @@ async fn serve(
         .await
         .map_err(|error| format!("could not listen on {listen}: {error}"))?;
     println!("Listening on {listen}.");
-    let host = Arc::new(Host::new(Arc::new(plane.service), devices, approvals));
+    let host = Arc::new(Host::new(Arc::clone(&plane.service), devices, approvals));
     let served = host.serve(listener, acceptor).await;
-    let mut models = plane.models;
-    models.shutdown().await;
-    plane.apps.shutdown().await;
-    plane.browser.shutdown().await;
+    plane.shutdown().await;
     served.map_err(|error| format!("stopped listening: {error}"))
 }
 

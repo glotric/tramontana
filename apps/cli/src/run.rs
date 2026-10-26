@@ -57,41 +57,8 @@ pub(crate) struct TaskArgs {
     #[arg(long, value_name = "MS")]
     cancel_after_ms: Option<u64>,
 
-    /// Let the reference worker create and patch files in the project.
-    ///
-    /// Each write is still asked about on the terminal as it happens, and is
-    /// refused when there is no terminal to ask on. Without this flag the
-    /// model is never offered a write at all.
-    #[arg(long)]
-    allow_writes: bool,
-
-    /// Let the reference worker ask to run the project's recipes, the
-    /// commands `.tramontana/project.md` declares under `recipes:`.
-    ///
-    /// The model can only name a recipe. Every run is asked about on the
-    /// terminal, showing the exact command, and is refused when there is no
-    /// terminal to ask on. Without this flag the model is never offered one.
-    #[arg(long)]
-    allow_recipes: bool,
-
-    /// Offer the model the tools of the profile's enabled Apps that say they
-    /// only read.
-    ///
-    /// Every call is still asked about on the terminal: what an App says
-    /// about its own tool decides what may be offered, never what may run
-    /// (ADRs 0035 and 0036).
-    #[arg(long)]
-    apps: bool,
-
-    /// Let the reference worker browse the web in a window of your installed
-    /// Chrome, Edge or Chromium, with a throwaway profile of its own.
-    ///
-    /// The first visit to each site is asked about on the terminal, showing
-    /// the address; after that the task may read, click and type there.
-    /// Submitting a form is asked about every time. Local Only does not
-    /// cover the browser: it governs where models run (ADR 0047).
-    #[arg(long)]
-    browse: bool,
+    #[command(flatten)]
+    admission: AdmissionArgs,
 
     /// Where this task's models may run. Recorded with the task and kept if
     /// it is resumed. Without it the task routes under the default mode,
@@ -139,6 +106,10 @@ enum TaskCommand {
     /// Show the durable record and latest checkpoint, including replay safety.
     Inspect(TaskShowArgs),
     /// Explicitly resume the latest inspected checkpoint with the same worker.
+    ///
+    /// `--allow-writes`, `--allow-recipes`, `--apps` and `--browse` must match
+    /// how the task was started: a resume cannot add or drop what the model
+    /// may be offered.
     Resume(TaskResumeArgs),
     /// Discard interrupted continuation without deleting history or undoing effects.
     Discard(TaskShowArgs),
@@ -178,20 +149,8 @@ struct TaskResumeArgs {
     /// Exact checkpoint ID shown by task inspect.
     #[arg(long)]
     checkpoint_id: String,
-    /// Resume with writes allowed. Must match how the task was started: a
-    /// resume cannot add or drop what the model may be offered.
-    #[arg(long)]
-    allow_writes: bool,
-    /// Resume with recipes allowed. Must match how the task was started.
-    #[arg(long)]
-    allow_recipes: bool,
-    /// Resume with the profile's Apps allowed. Must match how the task was
-    /// started.
-    #[arg(long)]
-    apps: bool,
-    /// Resume with the browser allowed. Must match how the task was started.
-    #[arg(long)]
-    browse: bool,
+    #[command(flatten)]
+    admission: AdmissionArgs,
     #[arg(long)]
     json: bool,
     #[arg(long, default_value_t = 120)]
@@ -270,43 +229,66 @@ impl From<ModeArg> for tramontana_core::contracts::RoutingMode {
     }
 }
 
-/// What the reference worker may offer its model, from `--allow-writes`,
-/// `--allow-recipes`, `--apps` and `--browse`: separate choices, none
+/// What the reference worker may offer its model: separate choices, none
 /// implying another.
-fn admission(
+#[derive(Debug, Args)]
+struct AdmissionArgs {
+    /// Let the reference worker create and patch files in the project.
+    ///
+    /// Each write is still asked about on the terminal as it happens, and is
+    /// refused when there is no terminal to ask on. Without this flag the
+    /// model is never offered a write at all.
+    #[arg(long)]
     allow_writes: bool,
+
+    /// Let the reference worker ask to run the project's recipes, the
+    /// commands `.tramontana/project.md` declares under `recipes:`.
+    ///
+    /// The model can only name a recipe. Every run is asked about on the
+    /// terminal, showing the exact command, and is refused when there is no
+    /// terminal to ask on. Without this flag the model is never offered one.
+    #[arg(long)]
     allow_recipes: bool,
+
+    /// Offer the model the tools of the profile's enabled Apps that say they
+    /// only read.
+    ///
+    /// Every call is still asked about on the terminal: what an App says
+    /// about its own tool decides what may be offered, never what may run
+    /// (ADRs 0035 and 0036).
+    #[arg(long)]
     apps: bool,
+
+    /// Let the reference worker browse the web in a window of your installed
+    /// Chrome, Edge or Chromium, with a throwaway profile of its own.
+    ///
+    /// The first visit to each site is asked about on the terminal, showing
+    /// the address; after that the task may read, click and type there.
+    /// Submitting a form is asked about every time. Local Only does not
+    /// cover the browser: it governs where models run (ADR 0047).
+    #[arg(long)]
     browse: bool,
-) -> tramontana_core::ports::ToolAdmission {
-    tramontana_core::ports::ToolAdmission {
-        writes: allow_writes,
-        recipes: allow_recipes,
-        apps,
-        browse,
+}
+
+impl From<&AdmissionArgs> for tramontana_core::ports::ToolAdmission {
+    fn from(args: &AdmissionArgs) -> Self {
+        Self {
+            writes: args.allow_writes,
+            recipes: args.allow_recipes,
+            apps: args.apps,
+            browse: args.browse,
+        }
     }
 }
 
 async fn run(args: TaskArgs) -> ExitCode {
-    let profile = wiring::profile_path(args.profile);
-    let (service, mut models, apps) = match wiring::open_running(
-        &profile,
-        args.chunk_delay_ms,
-        admission(
-            args.allow_writes,
-            args.allow_recipes,
-            args.apps,
-            args.browse,
-        ),
-    )
-    .await
-    {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(plane) =
+        wiring::open_running_or_report(args.profile, args.chunk_delay_ms, (&args.admission).into())
+            .await
+    else {
+        return ExitCode::FAILURE;
     };
+    let service = Arc::clone(&plane.service);
 
     let conversation_id = args.conversation_id.map(ConversationId::new);
     // The task carries its own selection rather than resolving the project
@@ -366,8 +348,7 @@ async fn run(args: TaskArgs) -> ExitCode {
     // The graceful path. Every early return above drops the plane instead,
     // which stops the same runtimes without the grace period — correct, and
     // the reason cleanup lives in `Drop` as well as in a method.
-    models.shutdown().await;
-    apps.shutdown().await;
+    plane.shutdown().await;
     outcome
 }
 
@@ -379,7 +360,7 @@ async fn stream_task(
     after_sequence: u64,
 ) -> ExitCode {
     // Subscribe before replay so nothing between start/resume and here is missed.
-    let (replayed, mut updates) = match service
+    let (replayed, updates) = match service
         .subscribe_task_events(&task_id, after_sequence)
         .await
     {
@@ -399,60 +380,31 @@ async fn stream_task(
         });
     }
 
-    let mut highest_rendered = after_sequence;
-    let mut terminal_rendered = false;
-    for event in replayed {
-        highest_rendered = highest_rendered.max(event.sequence);
-        terminal_rendered |= is_stopped(&event);
-        emit_event(&event, json);
-    }
-
-    while !terminal_rendered {
-        match updates.recv().await {
-            Ok(TaskUpdate::Event { event }) => {
-                // Subscription precedes replay, so an event can arrive twice.
-                // De-duplicating on sequence is cheaper than risking a gap.
-                if event.sequence <= highest_rendered {
-                    continue;
-                }
-                highest_rendered = event.sequence;
-                let terminal = is_stopped(&event);
+    // Each event once, in order, catching up from the store after a lag;
+    // stopped at an interruption too, which leaves the task for `resume`.
+    tramontana_core::services::forward_task_updates(
+        Arc::clone(&service),
+        task_id.clone(),
+        after_sequence,
+        replayed,
+        updates,
+        move |update| match update {
+            TaskUpdate::Event { event } => {
                 emit_event(&event, json);
-                if terminal {
-                    terminal_rendered = true;
-                }
+                !is_stopped(&event)
             }
-            Ok(TaskUpdate::Frame { frame }) => {
+            TaskUpdate::Frame { frame } => {
                 if !json {
                     println!("{}", frame_line(&frame));
                 }
+                true
             }
-            // Lagging is recoverable: the durable events are in the store, so
-            // catch up by replaying rather than reporting a failure.
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                match service
-                    .subscribe_task_events(&task_id, highest_rendered)
-                    .await
-                {
-                    Ok((missed, _)) => {
-                        for event in missed {
-                            highest_rendered = highest_rendered.max(event.sequence);
-                            terminal_rendered |= is_stopped(&event);
-                            emit_event(&event, json);
-                        }
-                    }
-                    Err(error) => {
-                        eprintln!("warning: could not replay after lag: {}", error.message);
-                    }
-                }
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            // `TaskUpdate` is non-exhaustive: a newer core may deliver a kind
-            // this build has never seen, and ignoring it is correct — the
-            // durable events still arrive as `Event`.
-            Ok(_) => {}
-        }
-    }
+            // `TaskUpdate` is non-exhaustive: a kind this build has never
+            // seen is ignored, and the durable events still arrive.
+            _ => true,
+        },
+    )
+    .await;
 
     match service.get_task(&task_id).await {
         Ok(snapshot) => {
@@ -518,24 +470,13 @@ async fn checkpoint_command(args: TaskShowArgs, operation: &str) -> ExitCode {
 async fn resume(args: TaskResumeArgs) -> ExitCode {
     // Held for the whole command: dropping it stops any runtime this process
     // started, and dropping it early would stop the model mid-answer.
-    let (service, _models, _apps) = match wiring::open_running(
-        &wiring::profile_path(args.profile),
-        args.chunk_delay_ms,
-        admission(
-            args.allow_writes,
-            args.allow_recipes,
-            args.apps,
-            args.browse,
-        ),
-    )
-    .await
-    {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    let Some(plane) =
+        wiring::open_running_or_report(args.profile, args.chunk_delay_ms, (&args.admission).into())
+            .await
+    else {
+        return ExitCode::FAILURE;
     };
+    let service = Arc::clone(&plane.service);
     let task_id = TaskId::new(args.task_id);
     let sequence = match service.get_task(&task_id).await {
         Ok(snapshot) => snapshot.last_sequence,
@@ -598,19 +539,16 @@ fn emit_event(event: &tramontana_core::contracts::EventEnvelope, json: bool) {
 async fn handoff(args: HandoffArgs) -> ExitCode {
     // Held for the whole command: dropping it stops any runtime this process
     // started, and dropping it early would stop the model mid-answer.
-    let (service, _models, _apps) = match wiring::open_running(
-        &wiring::profile_path(args.profile),
+    let Some(plane) = wiring::open_running_or_report(
+        args.profile,
         args.chunk_delay_ms,
         tramontana_core::ports::ToolAdmission::READ_ONLY,
     )
     .await
-    {
-        Ok(service) => service,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+    else {
+        return ExitCode::FAILURE;
     };
+    let service = Arc::clone(&plane.service);
     let task_id = TaskId::new(args.task_id);
 
     let Some(checkpoint_id) = args.checkpoint_id else {
