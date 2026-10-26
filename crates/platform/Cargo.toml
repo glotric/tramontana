@@ -21,6 +21,14 @@ tokio = { workspace = true, features = ["rt", "sync", "net", "io-util", "time"] 
 zip = { workspace = true }
 flate2 = { workspace = true }
 
+# SP0-B spike (docs/SHARED_PROJECTS_PLAN.md): credentials in an encrypted file
+# for a host with no credential store. Off by default, so no shipping build
+# compiles it; nothing in the desktop or the CLI turns it on.
+chacha20poly1305 = { version = "=0.10.1", optional = true }
+
+[features]
+file-vault = ["dep:chacha20poly1305"]
+
 # The platform credential store. Declared per target so no platform pays for
 # another's stack: the Linux Secret Service client is 106 crates that a macOS
 # or Windows build never compiles. See `docs/decisions/0008-platform-credential-store.md`.

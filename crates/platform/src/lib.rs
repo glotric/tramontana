@@ -8,6 +8,8 @@
 mod bundle;
 mod clock;
 mod discovery;
+#[cfg(feature = "file-vault")]
+mod file_secrets;
 mod ids;
 mod loopback;
 mod paths;
@@ -19,6 +21,8 @@ mod skills;
 pub use bundle::{BundleError, MANIFEST_FILE, read_bundle, write_bundle};
 pub use clock::{SystemClock, SystemLocalClock};
 pub use discovery::discover;
+#[cfg(feature = "file-vault")]
+pub use file_secrets::FileSecretVault;
 pub use ids::UuidIdSource;
 pub use loopback::{Redirect, RedirectError};
 pub use paths::{CanonicalRoot, PathError, canonicalize_root, contains};
