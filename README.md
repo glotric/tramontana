@@ -1,8 +1,26 @@
 # Tramontana
 
-Tramontana is the portable operating layer for AI work: a local-first, cross-platform desktop environment that keeps projects, instructions, skills, permissions, task history, and execution records understandable and under the user's control while models and specialist agents remain replaceable.
+Tramontana is AI for work whose data can't leave the building. It is a
+desktop application for macOS, Windows and Linux that runs AI models and
+agents on your own computer, so people in industries where privacy is
+critical — pharma, healthcare, legal, finance and others — can use AI on
+confidential documents and systems.
 
-The first product promise is not merely “chat with local models.” It is: **open the same project, use any capable model or agent, and keep the work portable, inspectable, and policy-governed.**
+- **The model runs where the data is.** A project marked Local Only never
+  reaches a cloud model. When a cloud model is allowed, Tramontana shows
+  exactly what would be sent before anything leaves.
+- **Nothing happens without approval.** Every file change, command and tool
+  call is asked about before it runs, as is the first visit to each website
+  and every form the agent would submit.
+- **Everything is recorded.** Each task keeps a record of what was read,
+  which model answered, what changed and what was approved. The record survives
+  a crash, can be resumed, and can be exported in an open format.
+- **Models are replaceable.** Use a model on this computer, or Claude or an
+  OpenAI-compatible model when policy allows, and hand a task from one to
+  another without losing the work.
+
+Tramontana is pre-release and built from source; see [Status](#status) for
+what works today and what does not.
 
 ## Phase 1
 
