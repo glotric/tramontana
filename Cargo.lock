@@ -5510,6 +5510,7 @@ dependencies = [
  "tramontana-adapters-tools",
  "tramontana-composition",
  "tramontana-core",
+ "tramontana-host",
  "tramontana-persistence",
  "tramontana-platform",
 ]

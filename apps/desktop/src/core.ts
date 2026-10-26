@@ -573,6 +573,55 @@ export async function onApprovalRequested(
   });
 }
 
+/** A host this desktop is paired with (SP1). Holds no secret. */
+export interface HostRecord {
+  hostId: string;
+  address: string;
+  fingerprint: string;
+  principal: string;
+}
+
+/** Pair with a host from its invite link. The token stays in the OS keychain. */
+export async function pairHost(link: string, deviceName: string): Promise<HostRecord> {
+  return invoke<HostRecord>("pair_host", { link, deviceName });
+}
+
+/** The hosts this desktop is paired with. */
+export async function listHosts(): Promise<HostRecord[]> {
+  return invoke<HostRecord[]>("list_hosts");
+}
+
+/** Forget a host and its token. Resolves with whether it was known. */
+export async function forgetHost(hostId: string): Promise<boolean> {
+  return invoke<boolean>("forget_host", { hostId });
+}
+
+/** Run one of this module's commands on a host instead of locally. */
+export async function hostCall<T>(hostId: string, name: string, args?: object): Promise<T> {
+  return invoke<T>("host_call", { hostId, name, args: args ?? null });
+}
+
+/** Follow a task on a host, as `watchTask` follows a local one. */
+export async function watchHostTask(
+  hostId: string,
+  taskId: string,
+  afterSequence: number,
+  onUpdate: (update: TaskUpdate) => void,
+): Promise<() => void> {
+  const channel = new Channel<TaskUpdate>();
+  channel.onmessage = onUpdate;
+  const watchId = await invoke<number>("watch_host_task", {
+    hostId,
+    taskId,
+    afterSequence,
+    channel,
+  });
+  return () => {
+    channel.onmessage = () => undefined;
+    void hostCall(hostId, "unwatch_task", { watchId }).catch(() => undefined);
+  };
+}
+
 /** Discard interrupted work. History is kept and no effect is undone. */
 export async function discardCheckpoint(taskId: string): Promise<void> {
   return invoke("discard_checkpoint", { taskId });

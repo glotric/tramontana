@@ -56,6 +56,8 @@ pub(crate) struct AppState {
     pub(crate) eraser: Arc<tramontana_persistence::SqliteProfileEraser>,
     /// Where the profile's database is; its folders sit beside it.
     pub(crate) profile: std::path::PathBuf,
+    /// Hosts this desktop is paired with, and their connections (SP1).
+    pub(crate) hosts: Arc<crate::hosts::Hosts>,
 }
 
 impl AppState {
@@ -86,6 +88,10 @@ impl AppState {
             chunk_delay_ms,
         )
         .await?;
+        let hosts = Arc::new(crate::hosts::Hosts::new(
+            path.with_file_name("hosts.json"),
+            Arc::clone(&vault) as Arc<dyn tramontana_core::ports::SecretVault>,
+        ));
         Ok(Self {
             service: Arc::new(plane.service),
             approver,
@@ -102,6 +108,7 @@ impl AppState {
             eraser: plane.eraser,
             profile: path.to_path_buf(),
             skills_folder: plane.skills_folder,
+            hosts,
         })
     }
 

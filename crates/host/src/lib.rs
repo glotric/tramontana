@@ -15,6 +15,7 @@
 //! belongs in `crates/core`.
 
 mod approvals;
+mod client;
 mod devices;
 mod dispatch;
 mod protocol;
@@ -22,6 +23,7 @@ mod server;
 mod tls;
 
 pub use approvals::RemoteApprover;
+pub use client::{ClientError, HostClient, HostEvent, PairLink, pair};
 pub use devices::{Devices, PairError, Token};
 pub use protocol::{ClientFrame, ServerFrame};
 pub use server::Host;

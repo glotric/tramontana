@@ -11,6 +11,7 @@ mod apps;
 mod attachments;
 mod bundles;
 mod commands;
+mod hosts;
 mod model_hints;
 mod settings;
 mod state;
@@ -96,6 +97,11 @@ pub fn run() {
             commands::hand_off_task,
             commands::resolve_approval,
             commands::pending_approvals,
+            hosts::pair_host,
+            hosts::list_hosts,
+            hosts::forget_host,
+            hosts::host_call,
+            hosts::watch_host_task,
             commands::project_changes,
             commands::export_bundle,
             commands::choose_attachments,

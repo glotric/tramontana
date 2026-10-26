@@ -538,3 +538,115 @@ async fn a_desktop_that_connects_later_is_asked_what_is_still_waiting() {
     .unwrap();
     assert_eq!(asking.await.unwrap().unwrap(), ApprovalDecisionKind::Deny);
 }
+
+fn link(running: &Running) -> tramontana_host::PairLink {
+    let code = running.devices.invite("owner", now()).unwrap();
+    tramontana_host::PairLink::parse(&format!(
+        "tramontana://pair?host={}&fingerprint={}&code={}",
+        running.address,
+        running.pin,
+        code.expose()
+    ))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_desktop_pairs_from_a_link_and_drives_a_task_through_the_client() {
+    use tramontana_host::{HostClient, HostEvent};
+
+    let Some(running) = start(1_024).await else {
+        return;
+    };
+    let (principal, token) = tramontana_host::pair(&link(&running), "laptop")
+        .await
+        .unwrap();
+    assert_eq!(principal, "owner");
+    let (client, mut events) = HostClient::connect(&running.address, &running.pin, &token)
+        .await
+        .unwrap();
+    assert_eq!(client.principal(), "owner");
+    assert_eq!(
+        client.call("list_projects", Value::Null).await,
+        Ok(json!([]))
+    );
+
+    let task_id = client
+        .call("start_task", json!({ "goal": "say hello" }))
+        .await
+        .unwrap();
+    let task_id: tramontana_core::contracts::TaskId = serde_json::from_value(task_id).unwrap();
+    let (updates, mut received) = tokio::sync::mpsc::unbounded_channel();
+    client
+        .watch(&task_id, 0, move |update| updates.send(update).is_ok())
+        .await
+        .unwrap();
+
+    // Updates arrive through the watch; questions arrive as events and are
+    // answered as the card would answer them.
+    let mut sequences = Vec::new();
+    loop {
+        tokio::select! {
+            update = received.recv() => {
+                if let Some(TaskUpdate::Event { event }) = update {
+                    sequences.push(event.sequence);
+                    if event.is_terminal_outcome() {
+                        break;
+                    }
+                }
+            }
+            event = events.recv() => match event.unwrap() {
+                HostEvent::ApprovalRequested(request) => {
+                    client
+                        .call(
+                            "resolve_approval",
+                            json!({ "approvalId": request.approval_id, "decision": "deny" }),
+                        )
+                        .await
+                        .unwrap();
+                }
+                HostEvent::ApprovalSettled(_) => {}
+                HostEvent::Disconnected => panic!("disconnected before the task ended"),
+            },
+        }
+    }
+    assert_eq!(
+        sequences,
+        (1..=*sequences.last().unwrap()).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn an_unknown_device_is_refused_and_a_call_after_the_host_is_gone_fails() {
+    use tramontana_host::{ClientError, HostClient, HostEvent};
+
+    let Some(running) = start(2).await else {
+        return;
+    };
+    assert!(matches!(
+        HostClient::connect(&running.address, &running.pin, &Token::new("guessed")).await,
+        Err(ClientError::Refused(_))
+    ));
+
+    // A queue of two: watching a task overflows it and the host cuts this
+    // desktop off. A command made afterwards fails instead of waiting.
+    let (_, token) = tramontana_host::pair(&link(&running), "laptop")
+        .await
+        .unwrap();
+    let (client, mut events) = HostClient::connect(&running.address, &running.pin, &token)
+        .await
+        .unwrap();
+    let task_id = client
+        .call("start_task", json!({ "goal": "say hello" }))
+        .await
+        .unwrap();
+    let task_id: tramontana_core::contracts::TaskId = serde_json::from_value(task_id).unwrap();
+    let _ = client.watch(&task_id, 0, |_| true).await;
+    while events.recv().await != Some(HostEvent::Disconnected) {}
+    let after = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.call("list_projects", Value::Null),
+    )
+    .await
+    .expect("a call after disconnection waited instead of failing");
+    assert_eq!(after.unwrap_err().code, ErrorCode::ProviderUnavailable);
+}
