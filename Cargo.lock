@@ -5338,6 +5338,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tramontana-adapters-compute"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tramontana-adapters-model",
+ "tramontana-core",
+ "uuid",
+]
+
+[[package]]
 name = "tramontana-adapters-documents"
 version = "0.1.0"
 dependencies = [

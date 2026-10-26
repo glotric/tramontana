@@ -1,0 +1,31 @@
+[package]
+name = "tramontana-adapters-compute"
+description = "Rented-compute adapters (ADR 0072). Talks to a provider's control API; owns no spending policy."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+tramontana-core = { workspace = true }
+async-trait = { workspace = true }
+# The same client, version and platform TLS as `adapters-model` (ADRs 0007
+# and 0009); no second HTTP stack.
+reqwest = { version = "0.13.4", default-features = false, features = [
+  "json",
+  "native-tls",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+# The lease's endpoint is served by the existing chat-completions adapter.
+tramontana-adapters-model = { workspace = true }
+tokio-util = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }
+
+[lints]
+workspace = true
