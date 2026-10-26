@@ -165,14 +165,7 @@ fn service(model: Arc<Model>, approval: Arc<Approval>, work: Work) -> TaskServic
     )
     .unwrap();
     TaskService::new(
-        Repositories {
-            projects: Arc::new(InMemoryProjectRepository::new()),
-            conversations: Arc::new(InMemoryConversationRepository::new()),
-            tasks: Arc::new(InMemoryTaskRepository::with_events(events.clone())),
-            events,
-            configuration: Arc::new(InMemoryConfigurationRepository::new()),
-            checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
-        },
+        in_memory_repositories(events),
         Providers {
             models: vec![model],
             tools,

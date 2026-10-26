@@ -571,14 +571,7 @@ async fn a_credential_pasted_into_a_goal_reaches_nothing() {
     .unwrap();
 
     let service = TaskService::new(
-        Repositories {
-            projects: Arc::new(InMemoryProjectRepository::new()),
-            conversations: Arc::new(InMemoryConversationRepository::new()),
-            tasks: Arc::new(InMemoryTaskRepository::with_events(events.clone())),
-            events,
-            configuration: Arc::new(InMemoryConfigurationRepository::new()),
-            checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
-        },
+        in_memory_repositories(events),
         Providers {
             models: vec![endpoint.clone()],
             tools,
@@ -733,14 +726,7 @@ async fn run_to_completion(
     .unwrap();
 
     let service = TaskService::new(
-        Repositories {
-            projects: Arc::new(InMemoryProjectRepository::new()),
-            conversations: Arc::new(InMemoryConversationRepository::new()),
-            tasks: Arc::new(InMemoryTaskRepository::with_events(events.clone())),
-            events,
-            configuration: Arc::new(InMemoryConfigurationRepository::new()),
-            checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
-        },
+        in_memory_repositories(events),
         Providers {
             models: vec![endpoint],
             tools,

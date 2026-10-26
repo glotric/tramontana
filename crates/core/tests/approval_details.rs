@@ -107,14 +107,7 @@ async fn a_writes_approval_names_the_files_and_not_their_content() {
     )
     .unwrap();
     let service = TaskService::new(
-        Repositories {
-            projects: Arc::new(InMemoryProjectRepository::new()),
-            conversations: Arc::new(InMemoryConversationRepository::new()),
-            tasks: Arc::new(InMemoryTaskRepository::with_events(events.clone())),
-            events,
-            configuration: Arc::new(InMemoryConfigurationRepository::new()),
-            checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
-        },
+        in_memory_repositories(events),
         Providers {
             models: vec![Arc::new(FakeModelProvider::streaming(["answer"]))],
             tools,

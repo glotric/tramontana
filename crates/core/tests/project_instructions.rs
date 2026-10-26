@@ -154,14 +154,7 @@ fn service(model: &Arc<Recording>, files: Option<Arc<Files>>) -> TaskService {
     )
     .unwrap();
     let service = TaskService::new(
-        Repositories {
-            projects: Arc::new(InMemoryProjectRepository::new()),
-            conversations: Arc::new(InMemoryConversationRepository::new()),
-            tasks: Arc::new(InMemoryTaskRepository::with_events(events.clone())),
-            events,
-            configuration: Arc::new(InMemoryConfigurationRepository::new()),
-            checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
-        },
+        in_memory_repositories(events),
         Providers {
             models: vec![Arc::clone(model) as Arc<dyn ModelProvider>],
             tools,

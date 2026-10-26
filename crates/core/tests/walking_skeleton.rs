@@ -21,12 +21,11 @@ use tramontana_core::contracts::{
     TaskId, TaskState, TaskUpdate,
 };
 use tramontana_core::ports::{ApprovalStore, Approver, EventStore, ToolProvider};
-use tramontana_core::services::{Providers, Repositories, StartTaskRequest, TaskService};
+use tramontana_core::services::{Providers, StartTaskRequest, TaskService};
 use tramontana_core::testing::{
     FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryApprovalStore,
-    InMemoryConfigurationRepository, InMemoryConversationRepository, InMemoryEventStore,
-    InMemoryProjectRepository, InMemoryTaskRepository, ScriptedApprover, SequentialIdSource,
-    assemble_tool_plane,
+    InMemoryEventStore, ScriptedApprover, SequentialIdSource, assemble_tool_plane,
+    in_memory_repositories,
 };
 
 /// Assemble a service over an event store the test can also inspect.
@@ -42,14 +41,7 @@ fn service_with_store() -> (Arc<TaskService>, Arc<InMemoryEventStore>) {
     let store = Arc::new(InMemoryEventStore::new());
     let events = Arc::clone(&store) as Arc<dyn EventStore>;
     let service = TaskService::new(
-        Repositories {
-            projects: Arc::new(InMemoryProjectRepository::new()),
-            conversations: Arc::new(InMemoryConversationRepository::new()),
-            tasks: Arc::new(InMemoryTaskRepository::with_events(Arc::clone(&events))),
-            events,
-            configuration: Arc::new(InMemoryConfigurationRepository::new()),
-            checkpoints: Arc::new(tramontana_core::testing::InMemoryCheckpointRepository::new()),
-        },
+        in_memory_repositories(events),
         Providers {
             models: vec![Arc::new(FakeModelProvider::streaming([
                 "Hello", ", ", "world",

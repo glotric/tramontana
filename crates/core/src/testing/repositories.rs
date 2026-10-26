@@ -11,6 +11,21 @@ use crate::ports::{
     ProjectRepository, RepositoryError, TaskRepository,
 };
 
+/// The full in-memory repository set, with tasks projected from `events`.
+pub fn in_memory_repositories(
+    events: std::sync::Arc<dyn EventStore>,
+) -> crate::services::Repositories {
+    use std::sync::Arc;
+    crate::services::Repositories {
+        projects: Arc::new(InMemoryProjectRepository::new()),
+        conversations: Arc::new(InMemoryConversationRepository::new()),
+        tasks: Arc::new(InMemoryTaskRepository::with_events(events.clone())),
+        events,
+        configuration: Arc::new(InMemoryConfigurationRepository::new()),
+        checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
+    }
+}
+
 /// Lock a map, mapping a poisoned lock to a normalized error.
 fn lock<T>(value: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, RepositoryError> {
     value

@@ -188,14 +188,7 @@ impl Profile {
     fn new(uses_tool: bool) -> Self {
         let events: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
         Self {
-            repositories: Repositories {
-                projects: Arc::new(InMemoryProjectRepository::new()),
-                conversations: Arc::new(InMemoryConversationRepository::new()),
-                tasks: Arc::new(InMemoryTaskRepository::with_events(events.clone())),
-                events,
-                configuration: Arc::new(InMemoryConfigurationRepository::new()),
-                checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
-            },
+            repositories: in_memory_repositories(events),
             ids: Arc::new(SequentialIdSource::new()),
             cloud: Endpoint::new("cloud", "remote", ModelLocation::Cloud),
             local: Endpoint::new("local", "on-device", ModelLocation::Local),

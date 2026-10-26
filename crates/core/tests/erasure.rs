@@ -21,13 +21,12 @@ use tramontana_core::ports::{
     ProviderSettingsRepository, RepositoryError, SecretVault, ToolProvider,
 };
 use tramontana_core::services::{
-    ErasureReport, ProfileErasure, Providers, Repositories, StartTaskRequest, TaskService,
+    ErasureReport, ProfileErasure, Providers, StartTaskRequest, TaskService,
 };
 use tramontana_core::testing::{
     FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryApprovalStore,
-    InMemoryCheckpointRepository, InMemoryConfigurationRepository, InMemoryConversationRepository,
-    InMemoryEventStore, InMemoryProjectRepository, InMemorySecretVault, InMemoryTaskRepository,
-    ScriptedApprover, SequentialIdSource, assemble_tool_plane,
+    InMemoryEventStore, InMemorySecretVault, ScriptedApprover, SequentialIdSource,
+    assemble_tool_plane, in_memory_repositories,
 };
 
 fn secret(key: &str) -> SecretRef {
@@ -127,14 +126,7 @@ fn service(chunk_delay_ms: u64) -> Arc<TaskService> {
     let events = Arc::new(InMemoryEventStore::new()) as Arc<dyn EventStore>;
     Arc::new(
         TaskService::new(
-            Repositories {
-                projects: Arc::new(InMemoryProjectRepository::new()),
-                conversations: Arc::new(InMemoryConversationRepository::new()),
-                tasks: Arc::new(InMemoryTaskRepository::with_events(Arc::clone(&events))),
-                events,
-                configuration: Arc::new(InMemoryConfigurationRepository::new()),
-                checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
-            },
+            in_memory_repositories(events),
             Providers {
                 models: vec![Arc::new(FakeModelProvider::streaming_paced(
                     ["one ", "two ", "three"],

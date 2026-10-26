@@ -120,14 +120,7 @@ fn service(scenario: Scenario) -> (TaskService, Arc<InMemoryEventStore>) {
     .unwrap();
     (
         TaskService::new(
-            Repositories {
-                projects: Arc::new(InMemoryProjectRepository::new()),
-                conversations: Arc::new(InMemoryConversationRepository::new()),
-                tasks: Arc::new(InMemoryTaskRepository::with_events(events.clone())),
-                events: events.clone(),
-                configuration: Arc::new(InMemoryConfigurationRepository::new()),
-                checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
-            },
+            in_memory_repositories(events.clone()),
             Providers {
                 models: vec![Arc::new(ScriptedModel(scenario))],
                 tools,

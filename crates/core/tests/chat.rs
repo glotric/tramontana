@@ -151,14 +151,7 @@ fn service(model: &Arc<Numbered>) -> TaskService {
     )
     .unwrap();
     TaskService::new(
-        Repositories {
-            projects: Arc::new(InMemoryProjectRepository::new()),
-            conversations: Arc::new(InMemoryConversationRepository::new()),
-            tasks: Arc::new(InMemoryTaskRepository::with_events(events.clone())),
-            events,
-            configuration: Arc::new(InMemoryConfigurationRepository::new()),
-            checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
-        },
+        in_memory_repositories(events),
         Providers {
             models: vec![Arc::clone(model) as Arc<dyn ModelProvider>],
             tools,
@@ -645,14 +638,7 @@ async fn a_chat_is_answered_by_a_model_that_cannot_call_tools() {
     )
     .unwrap();
     let service = TaskService::new(
-        Repositories {
-            projects: Arc::new(InMemoryProjectRepository::new()),
-            conversations: Arc::new(InMemoryConversationRepository::new()),
-            tasks: Arc::new(InMemoryTaskRepository::with_events(events.clone())),
-            events,
-            configuration: Arc::new(InMemoryConfigurationRepository::new()),
-            checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
-        },
+        in_memory_repositories(events),
         Providers {
             models: vec![
                 Arc::new(FakeModelProvider::streaming(["Plainly."])) as Arc<dyn ModelProvider>

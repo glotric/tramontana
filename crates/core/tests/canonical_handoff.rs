@@ -130,14 +130,7 @@ struct Harness {
 impl Harness {
     fn new(support: CheckpointSupport, first_step_value: &str) -> Self {
         let events: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
-        let repos = Repositories {
-            projects: Arc::new(InMemoryProjectRepository::new()),
-            conversations: Arc::new(InMemoryConversationRepository::new()),
-            tasks: Arc::new(InMemoryTaskRepository::with_events(events.clone())),
-            events,
-            configuration: Arc::new(InMemoryConfigurationRepository::new()),
-            checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
-        };
+        let repos = in_memory_repositories(events);
         let ids = Arc::new(SequentialIdSource::new());
         let tool = Arc::new(BlockingTool::default());
         let (tools, permissions, releases) = assemble_tool_plane(

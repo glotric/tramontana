@@ -284,14 +284,7 @@ impl Harness {
         )
         .unwrap();
         Self {
-            repositories: Repositories {
-                projects: Arc::new(InMemoryProjectRepository::new()),
-                conversations: Arc::new(InMemoryConversationRepository::new()),
-                tasks: Arc::new(InMemoryTaskRepository::with_events(events.clone())),
-                events,
-                configuration: Arc::new(InMemoryConfigurationRepository::new()),
-                checkpoints: Arc::new(InMemoryCheckpointRepository::new()),
-            },
+            repositories: in_memory_repositories(events),
             providers: Providers {
                 models: vec![model],
                 tools,
