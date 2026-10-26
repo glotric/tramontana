@@ -36,27 +36,25 @@ impl AppSettingsRepository for SqliteAppSettingsRepository {
         )
         .fetch_all(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         let mut apps = Vec::with_capacity(rows.len());
         for row in rows {
-            let config: String = row.try_get("config").map_err(|e| unavailable(&e))?;
-            let schema_version: i64 = row.try_get("schema_version").map_err(|e| unavailable(&e))?;
+            let config: String = row.try_get("config").map_err(unavailable)?;
+            let schema_version: i64 = row.try_get("schema_version").map_err(unavailable)?;
             // A remote App's column holds `{"remote": ...}` (ADR 0050); any
             // other holds the launch settings, as every row did before.
             let stored: Stored = parse_json(&config, "App configuration")?;
             apps.push(AppConfig {
                 schema_version: u32::try_from(schema_version).unwrap_or(SCHEMA_VERSION),
-                app_id: row.try_get("app_id").map_err(|e| unavailable(&e))?,
-                display_name: row.try_get("display_name").map_err(|e| unavailable(&e))?,
-                enabled: row
-                    .try_get::<bool, _>("enabled")
-                    .map_err(|e| unavailable(&e))?,
+                app_id: row.try_get("app_id").map_err(unavailable)?,
+                display_name: row.try_get("display_name").map_err(unavailable)?,
+                enabled: row.try_get::<bool, _>("enabled").map_err(unavailable)?,
                 launch: stored.launch,
                 remote: stored.remote,
                 created_at: Timestamp::new(
                     row.try_get::<String, _>("created_at")
-                        .map_err(|e| unavailable(&e))?,
+                        .map_err(unavailable)?,
                 ),
             });
         }
@@ -89,7 +87,7 @@ impl AppSettingsRepository for SqliteAppSettingsRepository {
         .bind(i64::from(app.schema_version))
         .execute(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
         Ok(())
     }
 
@@ -98,7 +96,7 @@ impl AppSettingsRepository for SqliteAppSettingsRepository {
             .bind(app_id)
             .execute(self.database.pool())
             .await
-            .map_err(|error| unavailable(&error))?;
+            .map_err(unavailable)?;
         Ok(result.rows_affected() > 0)
     }
 }

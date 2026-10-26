@@ -35,16 +35,14 @@ impl ScheduleRepository for SqliteScheduleRepository {
         )
         .fetch_all(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
         rows.iter()
             .map(|row| {
                 let get = |column: &str| -> Result<String, RepositoryError> {
-                    row.try_get(column).map_err(|e| unavailable(&e))
+                    row.try_get(column).map_err(unavailable)
                 };
-                let last_run: Option<String> =
-                    row.try_get("last_run").map_err(|e| unavailable(&e))?;
-                let schema_version: i64 =
-                    row.try_get("schema_version").map_err(|e| unavailable(&e))?;
+                let last_run: Option<String> = row.try_get("last_run").map_err(unavailable)?;
+                let schema_version: i64 = row.try_get("schema_version").map_err(unavailable)?;
                 Ok(Schedule {
                     schema_version: u32::try_from(schema_version).unwrap_or(SCHEMA_VERSION),
                     schedule_id: get("schedule_id")?,
@@ -52,14 +50,12 @@ impl ScheduleRepository for SqliteScheduleRepository {
                     goal: get("goal")?,
                     project_id: row
                         .try_get::<Option<String>, _>("project_id")
-                        .map_err(|e| unavailable(&e))?
+                        .map_err(unavailable)?
                         .map(ProjectId::new),
                     conversation_id: ConversationId::new(get("conversation_id")?),
                     cadence: parse_json(&get("cadence")?, "schedule cadence")?,
                     routing_mode: parse_json(&get("routing_mode")?, "schedule routing mode")?,
-                    enabled: row
-                        .try_get::<bool, _>("enabled")
-                        .map_err(|e| unavailable(&e))?,
+                    enabled: row.try_get::<bool, _>("enabled").map_err(unavailable)?,
                     created_at: Timestamp::new(get("created_at")?),
                     created_local: parse_json(&get("created_local")?, "schedule creation time")?,
                     last_run: last_run
@@ -67,7 +63,7 @@ impl ScheduleRepository for SqliteScheduleRepository {
                         .transpose()?,
                     last_task_id: row
                         .try_get::<Option<String>, _>("last_task_id")
-                        .map_err(|e| unavailable(&e))?
+                        .map_err(unavailable)?
                         .map(TaskId::new),
                 })
             })
@@ -112,7 +108,7 @@ impl ScheduleRepository for SqliteScheduleRepository {
         .bind(i64::from(schedule.schema_version))
         .execute(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))
+        .map_err(unavailable)
         .map(|_| ())
     }
 
@@ -121,7 +117,7 @@ impl ScheduleRepository for SqliteScheduleRepository {
             .bind(schedule_id)
             .execute(self.database.pool())
             .await
-            .map_err(|error| unavailable(&error))?;
+            .map_err(unavailable)?;
         if result.rows_affected() == 0 {
             return Err(RepositoryError::NotFound {
                 kind: "schedule",

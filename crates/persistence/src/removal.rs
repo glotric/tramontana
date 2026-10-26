@@ -5,6 +5,7 @@ use tramontana_core::contracts::{ConversationId, ProjectId};
 use tramontana_core::ports::{RecordRemoval, RepositoryError};
 
 use crate::database::Database;
+use crate::repositories::unavailable;
 
 /// Conversations and projects, each removed with everything under it at once.
 #[derive(Debug, Clone)]
@@ -30,22 +31,17 @@ impl SqliteRecordRemoval {
         id: &str,
         kind: &'static str,
     ) -> Result<(), RepositoryError> {
-        let mut transaction = self
-            .database
-            .pool()
-            .begin()
-            .await
-            .map_err(|error| unavailable(&error))?;
+        let mut transaction = self.database.pool().begin().await.map_err(unavailable)?;
         sqlx::query(events)
             .bind(id)
             .execute(&mut *transaction)
             .await
-            .map_err(|error| unavailable(&error))?;
+            .map_err(unavailable)?;
         let removed = sqlx::query(parent)
             .bind(id)
             .execute(&mut *transaction)
             .await
-            .map_err(|error| unavailable(&error))?;
+            .map_err(unavailable)?;
         if removed.rows_affected() == 0 {
             // Dropping the transaction rolls the event delete back.
             return Err(RepositoryError::NotFound {
@@ -53,15 +49,8 @@ impl SqliteRecordRemoval {
                 id: id.to_owned(),
             });
         }
-        transaction
-            .commit()
-            .await
-            .map_err(|error| unavailable(&error))
+        transaction.commit().await.map_err(unavailable)
     }
-}
-
-fn unavailable(error: &sqlx::Error) -> RepositoryError {
-    RepositoryError::Unavailable(error.to_string())
 }
 
 #[async_trait]
@@ -96,6 +85,6 @@ impl RecordRemoval for SqliteRecordRemoval {
             .execute(self.database.pool())
             .await
             .map(|result| result.rows_affected())
-            .map_err(|error| unavailable(&error))
+            .map_err(unavailable)
     }
 }

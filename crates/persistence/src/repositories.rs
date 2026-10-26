@@ -14,7 +14,7 @@ use tramontana_core::ports::{
 use crate::Database;
 
 /// Map a database failure to the port's error type.
-pub(crate) fn unavailable(error: &sqlx::Error) -> RepositoryError {
+pub(crate) fn unavailable(error: impl std::fmt::Display) -> RepositoryError {
     RepositoryError::Unavailable(error.to_string())
 }
 
@@ -44,7 +44,7 @@ fn not_found(kind: &'static str, id: impl std::fmt::Display) -> RepositoryError 
 }
 
 /// Serialize an enum to its bare camelCase name for storage.
-fn scalar<T: serde::Serialize>(value: &T) -> String {
+pub(crate) fn scalar<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value)
         .unwrap_or_default()
         .trim_matches('"')
@@ -52,8 +52,48 @@ fn scalar<T: serde::Serialize>(value: &T) -> String {
 }
 
 /// Parse a bare enum value stored without its JSON quotes.
-fn parse_scalar<T: serde::de::DeserializeOwned>(value: &str) -> Option<T> {
+pub(crate) fn parse_scalar<T: serde::de::DeserializeOwned>(value: &str) -> Option<T> {
     serde_json::from_str(&format!("\"{value}\"")).ok()
+}
+
+/// Map an UPDATE or DELETE that touched no row to `NotFound`.
+fn affected(
+    result: &sqlx::sqlite::SqliteQueryResult,
+    kind: &'static str,
+    id: impl std::fmt::Display,
+) -> Result<(), RepositoryError> {
+    if result.rows_affected() == 0 {
+        return Err(not_found(kind, id));
+    }
+    Ok(())
+}
+
+/// Insert one journal row; each caller maps the error to its own port.
+pub(crate) async fn insert_event(
+    connection: &mut sqlx::SqliteConnection,
+    event: &EventEnvelope,
+    payload: String,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO task_event (
+             task_id, sequence, event_id, conversation_id, occurred_at,
+             kind, visibility, correlation_id, causation_id, schema_version, payload
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(event.task_id.as_str())
+    .bind(i64::try_from(event.sequence).unwrap_or(i64::MAX))
+    .bind(event.event_id.as_str())
+    .bind(event.conversation_id.as_ref().map(ConversationId::as_str))
+    .bind(event.occurred_at.as_str())
+    .bind(scalar(&event.kind))
+    .bind(scalar(&event.visibility))
+    .bind(event.correlation_id.as_str())
+    .bind(event.causation_id.as_deref())
+    .bind(i64::from(event.schema_version))
+    .bind(payload)
+    .execute(connection)
+    .await
+    .map(|_| ())
 }
 
 /// Projects and their approved roots.
@@ -80,22 +120,14 @@ impl ProjectRepository for SqliteProjectRepository {
             .bind(project_id.as_str())
             .execute(self.database.pool())
             .await
-            .map_err(|error| unavailable(&error))?;
-        if result.rows_affected() == 0 {
-            return Err(not_found("project", project_id));
-        }
-        Ok(())
+            .map_err(unavailable)?;
+        affected(&result, "project", project_id)
     }
 
     async fn create(&self, record: &ProjectRecord) -> Result<(), RepositoryError> {
         // Project and roots land together: a project whose roots half-committed
         // would grant access nobody approved, or none at all.
-        let mut transaction = self
-            .database
-            .pool()
-            .begin()
-            .await
-            .map_err(|error| unavailable(&error))?;
+        let mut transaction = self.database.pool().begin().await.map_err(unavailable)?;
 
         // A project that already exists is a conflict, like a conversation or
         // a task that does: importing the same bundle twice is refused as
@@ -120,13 +152,10 @@ impl ProjectRepository for SqliteProjectRepository {
             .bind(record.created_at.as_str())
             .execute(&mut *transaction)
             .await
-            .map_err(|error| unavailable(&error))?;
+            .map_err(unavailable)?;
         }
 
-        transaction
-            .commit()
-            .await
-            .map_err(|error| unavailable(&error))
+        transaction.commit().await.map_err(unavailable)
     }
 
     async fn get(&self, project_id: &ProjectId) -> Result<ProjectRecord, RepositoryError> {
@@ -134,18 +163,18 @@ impl ProjectRepository for SqliteProjectRepository {
             .bind(project_id.as_str())
             .fetch_optional(self.database.pool())
             .await
-            .map_err(|error| unavailable(&error))?
+            .map_err(unavailable)?
             .ok_or_else(|| not_found("project", project_id))?;
 
         let roots = self.roots_for(project_id).await?;
         Ok(ProjectRecord {
             schema_version: tramontana_core::SCHEMA_VERSION,
             project_id: project_id.clone(),
-            name: row.try_get("name").map_err(|e| unavailable(&e))?,
+            name: row.try_get("name").map_err(unavailable)?,
             roots,
             created_at: Timestamp::new(
                 row.try_get::<String, _>("created_at")
-                    .map_err(|e| unavailable(&e))?,
+                    .map_err(unavailable)?,
             ),
         })
     }
@@ -156,23 +185,23 @@ impl ProjectRepository for SqliteProjectRepository {
         )
         .fetch_all(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         let mut projects = Vec::with_capacity(rows.len());
         for row in rows {
             let project_id = ProjectId::new(
                 row.try_get::<String, _>("project_id")
-                    .map_err(|e| unavailable(&e))?,
+                    .map_err(unavailable)?,
             );
             let roots = self.roots_for(&project_id).await?;
             projects.push(ProjectRecord {
                 schema_version: tramontana_core::SCHEMA_VERSION,
                 project_id,
-                name: row.try_get("name").map_err(|e| unavailable(&e))?,
+                name: row.try_get("name").map_err(unavailable)?,
                 roots,
                 created_at: Timestamp::new(
                     row.try_get::<String, _>("created_at")
-                        .map_err(|e| unavailable(&e))?,
+                        .map_err(unavailable)?,
                 ),
             });
         }
@@ -188,10 +217,10 @@ impl SqliteProjectRepository {
         .bind(project_id.as_str())
         .fetch_all(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         rows.into_iter()
-            .map(|row| row.try_get("canonical_path").map_err(|e| unavailable(&e)))
+            .map(|row| row.try_get("canonical_path").map_err(unavailable))
             .collect()
     }
 }
@@ -217,20 +246,20 @@ fn conversation_from_row(
         schema_version: tramontana_core::SCHEMA_VERSION,
         conversation_id: ConversationId::new(
             row.try_get::<String, _>("conversation_id")
-                .map_err(|e| unavailable(&e))?,
+                .map_err(unavailable)?,
         ),
         project_id: row
             .try_get::<Option<String>, _>("project_id")
-            .map_err(|e| unavailable(&e))?
+            .map_err(unavailable)?
             .map(ProjectId::new),
-        title: row.try_get("title").map_err(|e| unavailable(&e))?,
+        title: row.try_get("title").map_err(unavailable)?,
         created_at: Timestamp::new(
             row.try_get::<String, _>("created_at")
-                .map_err(|e| unavailable(&e))?,
+                .map_err(unavailable)?,
         ),
         archived_at: row
             .try_get::<Option<String>, _>("archived_at")
-            .map_err(|e| unavailable(&e))?
+            .map_err(unavailable)?
             .map(Timestamp::new),
     })
 }
@@ -266,7 +295,7 @@ impl ConversationRepository for SqliteConversationRepository {
         .bind(conversation_id.as_str())
         .fetch_optional(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?
+        .map_err(unavailable)?
         .ok_or_else(|| not_found("conversation", conversation_id))?;
 
         conversation_from_row(&row)
@@ -286,7 +315,7 @@ impl ConversationRepository for SqliteConversationRepository {
         .bind(project_id.map(ProjectId::as_str))
         .fetch_all(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         rows.iter().map(conversation_from_row).collect()
     }
@@ -302,12 +331,9 @@ impl ConversationRepository for SqliteConversationRepository {
                 .bind(conversation_id.as_str())
                 .execute(self.database.pool())
                 .await
-                .map_err(|error| unavailable(&error))?;
+                .map_err(unavailable)?;
 
-        if result.rows_affected() == 0 {
-            return Err(not_found("conversation", conversation_id));
-        }
-        Ok(())
+        affected(&result, "conversation", conversation_id)
     }
 
     async fn rename(
@@ -320,11 +346,8 @@ impl ConversationRepository for SqliteConversationRepository {
             .bind(conversation_id.as_str())
             .execute(self.database.pool())
             .await
-            .map_err(|error| unavailable(&error))?;
-        if result.rows_affected() == 0 {
-            return Err(not_found("conversation", conversation_id));
-        }
-        Ok(())
+            .map_err(unavailable)?;
+        affected(&result, "conversation", conversation_id)
     }
 
     async fn delete(&self, conversation_id: &ConversationId) -> Result<(), RepositoryError> {
@@ -334,11 +357,8 @@ impl ConversationRepository for SqliteConversationRepository {
             .bind(conversation_id.as_str())
             .execute(self.database.pool())
             .await
-            .map_err(|error| unavailable(&error))?;
-        if result.rows_affected() == 0 {
-            return Err(not_found("conversation", conversation_id));
-        }
-        Ok(())
+            .map_err(unavailable)?;
+        affected(&result, "conversation", conversation_id)
     }
 }
 
@@ -382,7 +402,7 @@ impl SqliteConfigurationRepository {
         .bind(manifest_hash)
         .fetch_optional(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?
+        .map_err(unavailable)?
         .ok_or_else(|| not_found("configuration manifest", manifest_hash))?;
 
         let source_rows = sqlx::query(
@@ -398,35 +418,30 @@ impl SqliteConfigurationRepository {
         .bind(manifest_hash)
         .fetch_all(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         let mut sources = Vec::with_capacity(source_rows.len());
         for row in source_rows {
-            let kind: String = row.try_get("kind").map_err(|e| unavailable(&e))?;
-            let scopes: String = row.try_get("scopes").map_err(|e| unavailable(&e))?;
-            let suggest_when: String = row.try_get("suggest_when").map_err(|e| unavailable(&e))?;
-            let requested: String = row
-                .try_get("requested_capabilities")
-                .map_err(|e| unavailable(&e))?;
-            let unknown: String = row.try_get("unknown_keys").map_err(|e| unavailable(&e))?;
-            let redactions: String = row.try_get("redactions").map_err(|e| unavailable(&e))?;
-            let recipes: String = row.try_get("recipes").map_err(|e| unavailable(&e))?;
-            let priority: Option<i64> = row.try_get("priority").map_err(|e| unavailable(&e))?;
-            let selection_order: Option<i64> = row
-                .try_get("selection_order")
-                .map_err(|e| unavailable(&e))?;
-            let precedence: i64 = row.try_get("precedence").map_err(|e| unavailable(&e))?;
-            let byte_count: i64 = row.try_get("byte_count").map_err(|e| unavailable(&e))?;
+            let kind: String = row.try_get("kind").map_err(unavailable)?;
+            let scopes: String = row.try_get("scopes").map_err(unavailable)?;
+            let suggest_when: String = row.try_get("suggest_when").map_err(unavailable)?;
+            let requested: String = row.try_get("requested_capabilities").map_err(unavailable)?;
+            let unknown: String = row.try_get("unknown_keys").map_err(unavailable)?;
+            let redactions: String = row.try_get("redactions").map_err(unavailable)?;
+            let recipes: String = row.try_get("recipes").map_err(unavailable)?;
+            let priority: Option<i64> = row.try_get("priority").map_err(unavailable)?;
+            let selection_order: Option<i64> =
+                row.try_get("selection_order").map_err(unavailable)?;
+            let precedence: i64 = row.try_get("precedence").map_err(unavailable)?;
+            let byte_count: i64 = row.try_get("byte_count").map_err(unavailable)?;
 
             sources.push(ConfigurationSource {
-                source_id: row.try_get("source_id").map_err(|e| unavailable(&e))?,
-                relative_path: row.try_get("relative_path").map_err(|e| unavailable(&e))?,
+                source_id: row.try_get("source_id").map_err(unavailable)?,
+                relative_path: row.try_get("relative_path").map_err(unavailable)?,
                 kind: parse_scalar(&kind).unwrap_or(ConfigurationKind::Unsupported),
-                declared_id: row.try_get("declared_id").map_err(|e| unavailable(&e))?,
-                declared_name: row.try_get("declared_name").map_err(|e| unavailable(&e))?,
-                declared_description: row
-                    .try_get("declared_description")
-                    .map_err(|e| unavailable(&e))?,
+                declared_id: row.try_get("declared_id").map_err(unavailable)?,
+                declared_name: row.try_get("declared_name").map_err(unavailable)?,
+                declared_description: row.try_get("declared_description").map_err(unavailable)?,
                 suggest_when: parse_json(&suggest_when, "configuration suggestion keywords")?,
                 scopes: parse_json(&scopes, "configuration scopes")?,
                 requested_capabilities: parse_json(
@@ -435,14 +450,10 @@ impl SqliteConfigurationRepository {
                 )?,
                 priority,
                 selection_order: selection_order.and_then(|value| u32::try_from(value).ok()),
-                enabled: row
-                    .try_get::<bool, _>("enabled")
-                    .map_err(|e| unavailable(&e))?,
-                active: row
-                    .try_get::<bool, _>("active")
-                    .map_err(|e| unavailable(&e))?,
+                enabled: row.try_get::<bool, _>("enabled").map_err(unavailable)?,
+                active: row.try_get::<bool, _>("active").map_err(unavailable)?,
                 precedence: u32::try_from(precedence).unwrap_or(u32::MAX),
-                content_hash: row.try_get("content_hash").map_err(|e| unavailable(&e))?,
+                content_hash: row.try_get("content_hash").map_err(unavailable)?,
                 byte_count: u64::try_from(byte_count).unwrap_or(0),
                 redactions: parse_json(&redactions, "configuration redactions")?,
                 unknown_keys: parse_json(&unknown, "configuration unknown keys")?,
@@ -460,14 +471,14 @@ impl SqliteConfigurationRepository {
         .bind(manifest_hash)
         .fetch_all(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
         let mut diagnostics = Vec::with_capacity(diagnostic_rows.len());
         for row in diagnostic_rows {
-            let severity: String = row.try_get("severity").map_err(|e| unavailable(&e))?;
+            let severity: String = row.try_get("severity").map_err(unavailable)?;
             diagnostics.push(ConfigurationDiagnostic {
                 severity: parse_scalar(&severity).unwrap_or(DiagnosticSeverity::Warning),
-                relative_path: row.try_get("relative_path").map_err(|e| unavailable(&e))?,
-                message: row.try_get("message").map_err(|e| unavailable(&e))?,
+                relative_path: row.try_get("relative_path").map_err(unavailable)?,
+                message: row.try_get("message").map_err(unavailable)?,
             });
         }
 
@@ -475,7 +486,7 @@ impl SqliteConfigurationRepository {
             schema_version: u32::try_from(
                 manifest
                     .try_get::<i64, _>("schema_version")
-                    .map_err(|e| unavailable(&e))?,
+                    .map_err(unavailable)?,
             )
             .unwrap_or(0),
             sources,
@@ -484,7 +495,7 @@ impl SqliteConfigurationRepository {
             resolved_at: Timestamp::new(
                 manifest
                     .try_get::<String, _>("resolved_at")
-                    .map_err(|e| unavailable(&e))?,
+                    .map_err(unavailable)?,
             ),
         })
     }
@@ -497,12 +508,7 @@ impl ConfigurationRepository for SqliteConfigurationRepository {
         project_id: &ProjectId,
         configuration: &EffectiveConfiguration,
     ) -> Result<(), RepositoryError> {
-        let mut transaction = self
-            .database
-            .pool()
-            .begin()
-            .await
-            .map_err(|error| unavailable(&error))?;
+        let mut transaction = self.database.pool().begin().await.map_err(unavailable)?;
 
         sqlx::query(
             "INSERT INTO configuration_manifest
@@ -518,14 +524,14 @@ impl ConfigurationRepository for SqliteConfigurationRepository {
         .bind(i64::from(configuration.schema_version))
         .execute(&mut *transaction)
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         sqlx::query("DELETE FROM configuration_source WHERE project_id = ? AND manifest_hash = ?")
             .bind(project_id.as_str())
             .bind(&configuration.manifest_hash)
             .execute(&mut *transaction)
             .await
-            .map_err(|error| unavailable(&error))?;
+            .map_err(unavailable)?;
         sqlx::query(
             "DELETE FROM configuration_diagnostic WHERE project_id = ? AND manifest_hash = ?",
         )
@@ -533,7 +539,7 @@ impl ConfigurationRepository for SqliteConfigurationRepository {
         .bind(&configuration.manifest_hash)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         for (position, source) in configuration.sources.iter().enumerate() {
             sqlx::query(
@@ -575,7 +581,7 @@ impl ConfigurationRepository for SqliteConfigurationRepository {
             .bind(to_json(&source.recipes, "configuration recipes")?)
             .execute(&mut *transaction)
             .await
-            .map_err(|error| unavailable(&error))?;
+            .map_err(unavailable)?;
         }
 
         for (position, diagnostic) in configuration.diagnostics.iter().enumerate() {
@@ -592,13 +598,10 @@ impl ConfigurationRepository for SqliteConfigurationRepository {
             .bind(&diagnostic.message)
             .execute(&mut *transaction)
             .await
-            .map_err(|error| unavailable(&error))?;
+            .map_err(unavailable)?;
         }
 
-        transaction
-            .commit()
-            .await
-            .map_err(|error| unavailable(&error))
+        transaction.commit().await.map_err(unavailable)
     }
 
     async fn get(
@@ -622,7 +625,7 @@ impl ConfigurationRepository for SqliteConfigurationRepository {
         .bind(project_id.as_str())
         .fetch_optional(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         match hash {
             Some(hash) => self.read(project_id, &hash).await.map(Some),
@@ -649,26 +652,23 @@ pub(crate) fn parse_json<T: serde::de::DeserializeOwned>(
 }
 
 fn task_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<TaskRecord, RepositoryError> {
-    let state: String = row.try_get("state").map_err(|e| unavailable(&e))?;
-    let last_sequence: i64 = row.try_get("last_sequence").map_err(|e| unavailable(&e))?;
+    let state: String = row.try_get("state").map_err(unavailable)?;
+    let last_sequence: i64 = row.try_get("last_sequence").map_err(unavailable)?;
     Ok(TaskRecord {
         schema_version: tramontana_core::SCHEMA_VERSION,
-        task_id: TaskId::new(
-            row.try_get::<String, _>("task_id")
-                .map_err(|e| unavailable(&e))?,
-        ),
+        task_id: TaskId::new(row.try_get::<String, _>("task_id").map_err(unavailable)?),
         conversation_id: row
             .try_get::<Option<String>, _>("conversation_id")
-            .map_err(|e| unavailable(&e))?
+            .map_err(unavailable)?
             .map(ConversationId::new),
         project_id: row
             .try_get::<Option<String>, _>("project_id")
-            .map_err(|e| unavailable(&e))?
+            .map_err(unavailable)?
             .map(ProjectId::new),
-        goal_summary: row.try_get("goal_summary").map_err(|e| unavailable(&e))?,
+        goal_summary: row.try_get("goal_summary").map_err(unavailable)?,
         configuration_manifest_hash: row
             .try_get("configuration_manifest_hash")
-            .map_err(|e| unavailable(&e))?,
+            .map_err(unavailable)?,
         // An unrecognized state from a newer build is read as interrupted
         // rather than failing the load: the task needs a human decision, which
         // is exactly what `interrupted` means.
@@ -676,11 +676,11 @@ fn task_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<TaskRecord, Repository
         last_sequence: u64::try_from(last_sequence).unwrap_or(0),
         created_at: Timestamp::new(
             row.try_get::<String, _>("created_at")
-                .map_err(|e| unavailable(&e))?,
+                .map_err(unavailable)?,
         ),
         updated_at: Timestamp::new(
             row.try_get::<String, _>("updated_at")
-                .map_err(|e| unavailable(&e))?,
+                .map_err(unavailable)?,
         ),
     })
 }
@@ -697,11 +697,8 @@ impl TaskRepository for SqliteTaskRepository {
             .bind(task_id.as_str())
             .execute(self.database.pool())
             .await
-            .map_err(|error| unavailable(&error))?;
-        if result.rows_affected() == 0 {
-            return Err(not_found("task", task_id));
-        }
-        Ok(())
+            .map_err(unavailable)?;
+        affected(&result, "task", task_id)
     }
 
     async fn create(&self, record: &TaskRecord) -> Result<(), RepositoryError> {
@@ -759,12 +756,7 @@ impl TaskRepository for SqliteTaskRepository {
             RepositoryError::Unavailable("initial task event batch is empty".to_owned())
         })?;
 
-        let mut transaction = self
-            .database
-            .pool()
-            .begin()
-            .await
-            .map_err(|error| unavailable(&error))?;
+        let mut transaction = self.database.pool().begin().await.map_err(unavailable)?;
 
         sqlx::query(
             "INSERT INTO task (task_id, conversation_id, project_id, goal_summary, state,
@@ -788,34 +780,14 @@ impl TaskRepository for SqliteTaskRepository {
             let payload = serde_json::to_string(&event.payload).map_err(|error| {
                 RepositoryError::Unavailable(format!("could not serialize initial event: {error}"))
             })?;
-            sqlx::query(
-                "INSERT INTO task_event (
-                     task_id, sequence, event_id, conversation_id, occurred_at,
-                     kind, visibility, correlation_id, causation_id, schema_version, payload
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(event.task_id.as_str())
-            .bind(i64::try_from(event.sequence).unwrap_or(i64::MAX))
-            .bind(event.event_id.as_str())
-            .bind(event.conversation_id.as_ref().map(ConversationId::as_str))
-            .bind(event.occurred_at.as_str())
-            .bind(scalar(&event.kind))
-            .bind(scalar(&event.visibility))
-            .bind(event.correlation_id.as_str())
-            .bind(event.causation_id.as_deref())
-            .bind(i64::from(event.schema_version))
-            .bind(payload)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| {
-                conflict_or_unavailable(&error, "event", event.event_id.to_string())
-            })?;
+            insert_event(&mut transaction, event, payload)
+                .await
+                .map_err(|error| {
+                    conflict_or_unavailable(&error, "event", event.event_id.to_string())
+                })?;
         }
 
-        transaction
-            .commit()
-            .await
-            .map_err(|error| unavailable(&error))
+        transaction.commit().await.map_err(unavailable)
     }
 
     async fn get(&self, task_id: &TaskId) -> Result<TaskRecord, RepositoryError> {
@@ -828,7 +800,7 @@ impl TaskRepository for SqliteTaskRepository {
         .bind(task_id.as_str())
         .fetch_optional(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?
+        .map_err(unavailable)?
         .ok_or_else(|| not_found("task", task_id))?;
         task_from_row(&row)
     }
@@ -861,7 +833,7 @@ impl TaskRepository for SqliteTaskRepository {
                 .await
             }
         }
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         rows.iter().map(task_from_row).collect()
     }
@@ -882,12 +854,9 @@ impl TaskRepository for SqliteTaskRepository {
         .bind(task_id.as_str())
         .execute(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
-        if result.rows_affected() == 0 {
-            return Err(not_found("task", task_id));
-        }
-        Ok(())
+        affected(&result, "task", task_id)
     }
 
     async fn rebuild_from_events(&self) -> Result<usize, RepositoryError> {
@@ -913,24 +882,18 @@ impl TaskRepository for SqliteTaskRepository {
         )
         .fetch_all(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         let mut corrected = 0;
         for row in rows {
-            let task_id: String = row.try_get("task_id").map_err(|e| unavailable(&e))?;
-            let cached_sequence: i64 = row
-                .try_get("cached_sequence")
-                .map_err(|e| unavailable(&e))?;
-            let actual_sequence: i64 = row
-                .try_get("actual_sequence")
-                .map_err(|e| unavailable(&e))?;
-            let cached_state: String = row.try_get("cached_state").map_err(|e| unavailable(&e))?;
-            let cached_updated_at: String = row
-                .try_get("cached_updated_at")
-                .map_err(|e| unavailable(&e))?;
-            let actual_updated_at: String = row
-                .try_get("actual_updated_at")
-                .map_err(|e| unavailable(&e))?;
+            let task_id: String = row.try_get("task_id").map_err(unavailable)?;
+            let cached_sequence: i64 = row.try_get("cached_sequence").map_err(unavailable)?;
+            let actual_sequence: i64 = row.try_get("actual_sequence").map_err(unavailable)?;
+            let cached_state: String = row.try_get("cached_state").map_err(unavailable)?;
+            let cached_updated_at: String =
+                row.try_get("cached_updated_at").map_err(unavailable)?;
+            let actual_updated_at: String =
+                row.try_get("actual_updated_at").map_err(unavailable)?;
 
             let actual_state = self.state_from_events(&task_id).await?;
             let actual_name =
@@ -952,7 +915,7 @@ impl TaskRepository for SqliteTaskRepository {
             .bind(&task_id)
             .execute(self.database.pool())
             .await
-            .map_err(|error| unavailable(&error))?;
+            .map_err(unavailable)?;
             corrected += 1;
         }
 
@@ -971,10 +934,10 @@ impl SqliteTaskRepository {
         .bind(task_id)
         .fetch_optional(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         let Some(row) = row else { return Ok(None) };
-        let payload: String = row.try_get("payload").map_err(|e| unavailable(&e))?;
+        let payload: String = row.try_get("payload").map_err(unavailable)?;
         let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap_or_default();
         Ok(parsed
             .get("current")
@@ -1048,7 +1011,7 @@ impl CheckpointRepository for SqliteCheckpointRepository {
             .bind(checkpoint_id.as_str())
             .fetch_optional(self.database.pool())
             .await
-            .map_err(|error| unavailable(&error))?
+            .map_err(unavailable)?
             .ok_or_else(|| not_found("checkpoint", checkpoint_id))?;
 
         Self::decode(&row)
@@ -1064,7 +1027,7 @@ impl CheckpointRepository for SqliteCheckpointRepository {
         .bind(task_id.as_str())
         .fetch_optional(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         row.as_ref().map(Self::decode).transpose()
     }
@@ -1078,7 +1041,7 @@ impl CheckpointRepository for SqliteCheckpointRepository {
         .bind(task_id.as_str())
         .fetch_all(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?
+        .map_err(unavailable)?
         .iter()
         .map(Self::decode)
         .collect()
@@ -1109,26 +1072,24 @@ impl ProviderSettingsRepository for SqliteProviderSettingsRepository {
         )
         .fetch_all(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         let mut endpoints = Vec::with_capacity(rows.len());
         for row in rows {
-            let config: String = row.try_get("config").map_err(|e| unavailable(&e))?;
-            let schema_version: i64 = row.try_get("schema_version").map_err(|e| unavailable(&e))?;
+            let config: String = row.try_get("config").map_err(unavailable)?;
+            let schema_version: i64 = row.try_get("schema_version").map_err(unavailable)?;
             endpoints.push(ProviderEndpoint {
                 supports_tool_calls: row
                     .try_get::<bool, _>("supports_tool_calls")
-                    .map_err(|e| unavailable(&e))?,
+                    .map_err(unavailable)?,
                 schema_version: u32::try_from(schema_version).unwrap_or(SCHEMA_VERSION),
-                endpoint_id: row.try_get("endpoint_id").map_err(|e| unavailable(&e))?,
-                display_name: row.try_get("display_name").map_err(|e| unavailable(&e))?,
-                enabled: row
-                    .try_get::<bool, _>("enabled")
-                    .map_err(|e| unavailable(&e))?,
+                endpoint_id: row.try_get("endpoint_id").map_err(unavailable)?,
+                display_name: row.try_get("display_name").map_err(unavailable)?,
+                enabled: row.try_get::<bool, _>("enabled").map_err(unavailable)?,
                 config: parse_json(&config, "provider configuration")?,
                 created_at: Timestamp::new(
                     row.try_get::<String, _>("created_at")
-                        .map_err(|e| unavailable(&e))?,
+                        .map_err(unavailable)?,
                 ),
             });
         }
@@ -1160,7 +1121,7 @@ impl ProviderSettingsRepository for SqliteProviderSettingsRepository {
         .bind(endpoint.supports_tool_calls)
         .execute(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
         Ok(())
     }
 
@@ -1169,7 +1130,7 @@ impl ProviderSettingsRepository for SqliteProviderSettingsRepository {
             .bind(endpoint_id)
             .execute(self.database.pool())
             .await
-            .map_err(|error| unavailable(&error))?;
+            .map_err(unavailable)?;
         Ok(result.rows_affected() > 0)
     }
 }

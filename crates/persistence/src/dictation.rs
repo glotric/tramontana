@@ -28,7 +28,7 @@ impl DictationRepository for SqliteDictationRepository {
             sqlx::query_scalar("SELECT setup FROM dictation_setup WHERE setup_id = 1")
                 .fetch_optional(self.database.pool())
                 .await
-                .map_err(|error| unavailable(&error))?;
+                .map_err(unavailable)?;
         stored
             .map(|setup| parse_json(&setup, "dictation setup"))
             .transpose()
@@ -42,7 +42,7 @@ impl DictationRepository for SqliteDictationRepository {
         .bind(to_json(setup, "dictation setup")?)
         .execute(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))
+        .map_err(unavailable)
         .map(|_| ())
     }
 
@@ -50,7 +50,7 @@ impl DictationRepository for SqliteDictationRepository {
         sqlx::query("DELETE FROM dictation_setup")
             .execute(self.database.pool())
             .await
-            .map_err(|error| unavailable(&error))
+            .map_err(unavailable)
             .map(|_| ())
     }
 }

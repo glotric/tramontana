@@ -52,7 +52,7 @@ impl PersonalRepository for SqlitePersonalRepository {
         )
         .fetch_optional(pool)
         .await
-        .map_err(|error| unavailable(&error))?
+        .map_err(unavailable)?
         else {
             return Ok(PersonalProfile::default());
         };
@@ -61,30 +61,30 @@ impl PersonalRepository for SqlitePersonalRepository {
         )
         .fetch_all(pool)
         .await
-        .map_err(|error| unavailable(&error))?
+        .map_err(unavailable)?
         .iter()
         .map(|note| {
             Ok(MemoryNote {
-                note_id: note.try_get("note_id").map_err(|e| unavailable(&e))?,
-                text: note.try_get("text").map_err(|e| unavailable(&e))?,
+                note_id: note.try_get("note_id").map_err(unavailable)?,
+                text: note.try_get("text").map_err(unavailable)?,
                 created_at: Timestamp::new(
                     note.try_get::<String, _>("created_at")
-                        .map_err(|e| unavailable(&e))?,
+                        .map_err(unavailable)?,
                 ),
             })
         })
         .collect::<Result<Vec<_>, RepositoryError>>()?;
         Ok(PersonalProfile {
             schema_version: SCHEMA_VERSION,
-            name: row.try_get("name").map_err(|e| unavailable(&e))?,
-            about: row.try_get("about").map_err(|e| unavailable(&e))?,
+            name: row.try_get("name").map_err(unavailable)?,
+            about: row.try_get("about").map_err(unavailable)?,
             answer_style: style_from(
                 &row.try_get::<String, _>("answer_style")
-                    .map_err(|e| unavailable(&e))?,
+                    .map_err(unavailable)?,
             ),
             memory_enabled: row
                 .try_get::<bool, _>("memory_enabled")
-                .map_err(|e| unavailable(&e))?,
+                .map_err(unavailable)?,
             notes,
         })
     }
@@ -92,12 +92,7 @@ impl PersonalRepository for SqlitePersonalRepository {
     async fn save(&self, profile: &PersonalProfile) -> Result<(), RepositoryError> {
         // One transaction: the notes and the details are one profile, and a
         // reader never sees half of an edit.
-        let mut transaction = self
-            .database
-            .pool()
-            .begin()
-            .await
-            .map_err(|error| unavailable(&error))?;
+        let mut transaction = self.database.pool().begin().await.map_err(unavailable)?;
         sqlx::query(
             "INSERT INTO personal_profile
                  (profile_id, name, about, answer_style, memory_enabled, schema_version)
@@ -116,11 +111,11 @@ impl PersonalRepository for SqlitePersonalRepository {
         .bind(i64::from(profile.schema_version))
         .execute(&mut *transaction)
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
         sqlx::query("DELETE FROM memory_note")
             .execute(&mut *transaction)
             .await
-            .map_err(|error| unavailable(&error))?;
+            .map_err(unavailable)?;
         for (position, note) in profile.notes.iter().enumerate() {
             sqlx::query(
                 "INSERT INTO memory_note (note_id, text, created_at, position)
@@ -132,11 +127,8 @@ impl PersonalRepository for SqlitePersonalRepository {
             .bind(i64::try_from(position).unwrap_or(i64::MAX))
             .execute(&mut *transaction)
             .await
-            .map_err(|error| unavailable(&error))?;
+            .map_err(unavailable)?;
         }
-        transaction
-            .commit()
-            .await
-            .map_err(|error| unavailable(&error))
+        transaction.commit().await.map_err(unavailable)
     }
 }

@@ -7,6 +7,7 @@ use tramontana_core::contracts::{
 use tramontana_core::ports::{EventStore, EventStoreError};
 
 use crate::Database;
+use crate::repositories::{insert_event, parse_scalar};
 
 /// The durable event journal.
 ///
@@ -29,7 +30,7 @@ impl SqliteEventStore {
 }
 
 /// Map a database failure to the port's error type.
-fn unavailable(error: &sqlx::Error) -> EventStoreError {
+fn unavailable(error: impl std::fmt::Display) -> EventStoreError {
     EventStoreError::Unavailable(error.to_string())
 }
 
@@ -55,12 +56,7 @@ impl EventStore for SqliteEventStore {
 
         // One transaction covers the check and the writes. Without it, two
         // writers could both read the same `actual` and both believe they won.
-        let mut transaction = self
-            .database
-            .pool()
-            .begin()
-            .await
-            .map_err(|error| unavailable(&error))?;
+        let mut transaction = self.database.pool().begin().await.map_err(unavailable)?;
 
         let actual: i64 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(sequence), 0) FROM task_event WHERE task_id = ?",
@@ -68,7 +64,7 @@ impl EventStore for SqliteEventStore {
         .bind(task_id.as_str())
         .fetch_one(&mut *transaction)
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         let actual = u64::try_from(actual).unwrap_or(0);
         if actual != expected_sequence {
@@ -85,42 +81,14 @@ impl EventStore for SqliteEventStore {
                 EventStoreError::Unavailable(format!("could not serialize payload: {error}"))
             })?;
 
-            sqlx::query(
-                "INSERT INTO task_event (
-                     task_id, sequence, event_id, conversation_id, occurred_at,
-                     kind, visibility, correlation_id, causation_id, schema_version, payload
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(event.task_id.as_str())
-            .bind(i64::try_from(event.sequence).unwrap_or(i64::MAX))
-            .bind(event.event_id.as_str())
-            .bind(event.conversation_id.as_ref().map(ConversationId::as_str))
-            .bind(event.occurred_at.as_str())
-            .bind(
-                serde_json::to_string(&event.kind)
-                    .unwrap_or_default()
-                    .trim_matches('"'),
-            )
-            .bind(
-                serde_json::to_string(&event.visibility)
-                    .unwrap_or_default()
-                    .trim_matches('"'),
-            )
-            .bind(event.correlation_id.as_str())
-            .bind(event.causation_id.as_deref())
-            .bind(i64::from(event.schema_version))
-            .bind(payload)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| unavailable(&error))?;
+            insert_event(&mut transaction, event, payload)
+                .await
+                .map_err(unavailable)?;
 
             last = event.sequence;
         }
 
-        transaction
-            .commit()
-            .await
-            .map_err(|error| unavailable(&error))?;
+        transaction.commit().await.map_err(unavailable)?;
 
         Ok(last)
     }
@@ -141,43 +109,40 @@ impl EventStore for SqliteEventStore {
         .bind(i64::try_from(after_sequence).unwrap_or(i64::MAX))
         .fetch_all(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         rows.into_iter()
             .map(|row| {
-                let sequence: i64 = row.try_get("sequence").map_err(|e| unavailable(&e))?;
-                let kind: String = row.try_get("kind").map_err(|e| unavailable(&e))?;
-                let visibility: String = row.try_get("visibility").map_err(|e| unavailable(&e))?;
-                let payload: String = row.try_get("payload").map_err(|e| unavailable(&e))?;
-                let conversation_id: Option<String> = row
-                    .try_get("conversation_id")
-                    .map_err(|e| unavailable(&e))?;
-                let schema_version: i64 =
-                    row.try_get("schema_version").map_err(|e| unavailable(&e))?;
+                let sequence: i64 = row.try_get("sequence").map_err(unavailable)?;
+                let kind: String = row.try_get("kind").map_err(unavailable)?;
+                let visibility: String = row.try_get("visibility").map_err(unavailable)?;
+                let payload: String = row.try_get("payload").map_err(unavailable)?;
+                let conversation_id: Option<String> =
+                    row.try_get("conversation_id").map_err(unavailable)?;
+                let schema_version: i64 = row.try_get("schema_version").map_err(unavailable)?;
 
                 Ok(EventEnvelope {
                     schema_version: u32::try_from(schema_version).unwrap_or(0),
                     event_id: EventId::new(
-                        row.try_get::<String, _>("event_id")
-                            .map_err(|e| unavailable(&e))?,
+                        row.try_get::<String, _>("event_id").map_err(unavailable)?,
                     ),
                     task_id: task_id.clone(),
                     conversation_id: conversation_id.map(ConversationId::new),
                     sequence: u64::try_from(sequence).unwrap_or(0),
                     occurred_at: Timestamp::new(
                         row.try_get::<String, _>("occurred_at")
-                            .map_err(|e| unavailable(&e))?,
+                            .map_err(unavailable)?,
                     ),
                     // An unknown kind or payload from a newer build is read as
                     // unsupported rather than failing the replay
                     // (`CORE_CONTRACTS.md` §2).
-                    kind: parse_json_scalar(&kind).unwrap_or(TaskEventKind::DiagnosticRecorded),
-                    visibility: parse_json_scalar(&visibility).unwrap_or(Visibility::Diagnostic),
+                    kind: parse_scalar(&kind).unwrap_or(TaskEventKind::DiagnosticRecorded),
+                    visibility: parse_scalar(&visibility).unwrap_or(Visibility::Diagnostic),
                     correlation_id: CorrelationId::new(
                         row.try_get::<String, _>("correlation_id")
-                            .map_err(|e| unavailable(&e))?,
+                            .map_err(unavailable)?,
                     ),
-                    causation_id: row.try_get("causation_id").map_err(|e| unavailable(&e))?,
+                    causation_id: row.try_get("causation_id").map_err(unavailable)?,
                     payload: serde_json::from_str::<EventPayload>(&payload)
                         .unwrap_or(EventPayload::Unsupported),
                 })
@@ -192,7 +157,7 @@ impl EventStore for SqliteEventStore {
         .bind(task_id.as_str())
         .fetch_one(self.database.pool())
         .await
-        .map_err(|error| unavailable(&error))?;
+        .map_err(unavailable)?;
 
         Ok(u64::try_from(sequence).unwrap_or(0))
     }
@@ -202,12 +167,7 @@ impl EventStore for SqliteEventStore {
             .bind(task_id.as_str())
             .execute(self.database.pool())
             .await
-            .map_err(|error| unavailable(&error))
+            .map_err(unavailable)
             .map(|_| ())
     }
-}
-
-/// Parse a bare enum value that was stored without its JSON quotes.
-fn parse_json_scalar<T: serde::de::DeserializeOwned>(value: &str) -> Option<T> {
-    serde_json::from_str(&format!("\"{value}\"")).ok()
 }
