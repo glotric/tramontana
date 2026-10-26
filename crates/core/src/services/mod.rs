@@ -11,6 +11,7 @@
 
 mod attachments;
 mod checkpoint;
+mod compute;
 mod dictation;
 mod earlier_turns;
 mod erasure;
@@ -55,6 +56,7 @@ pub use attachments::{
 pub use checkpoint::{
     DerivedState, ResumePlan, derive_checkpoint, derive_state, reason as checkpoint_reason,
 };
+pub use compute::{ComputeLeases, LeasePolicy, LeasedModel, ReadyLease, Reservation};
 pub use dictation::{DICTATION_AUDIO_BYTES, is_language_code, is_wav};
 pub use earlier_turns::{
     EARLIER_TURN_BYTES, EARLIER_TURNS, EarlierTurn, EarlierTurns, answer_source_id, goal_source_id,

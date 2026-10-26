@@ -17,6 +17,7 @@
 mod app;
 mod artifact;
 mod checkpoint;
+mod compute;
 mod configuration;
 mod context;
 mod descriptor;
@@ -50,6 +51,10 @@ pub use checkpoint::{
     CheckpointWorker, PendingAction, PendingActionKind, ReplaySafety, ResumeEligibility,
     ResumeMode, TaskCheckpoint,
 };
+pub use compute::{
+    ComputeLease, ComputeLeaseEvent, ComputeSpec, LeaseCost, LeaseStatus, LeaseStopReason,
+    cost_of_millis,
+};
 pub(crate) use configuration::hex as configuration_hex;
 pub use configuration::{
     ConfigurationDiagnostic, ConfigurationKind, ConfigurationSource, DiagnosticSeverity,
@@ -76,7 +81,8 @@ pub use export::{
 };
 pub use ids::{
     AgentId, AgentProviderId, ApprovalId, ArtifactId, CheckpointId, ConversationId, CorrelationId,
-    EventId, InvocationId, MessageId, ModelId, ProjectId, ProviderId, TaskId, WorkerSessionId,
+    EventId, InvocationId, LeaseId, MessageId, ModelId, ProjectId, ProviderId, TaskId,
+    WorkerSessionId,
 };
 pub use message::{MessagePart, MessageRole, MessageStatus, NormalizedMessage};
 pub use model::{

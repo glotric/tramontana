@@ -5,10 +5,12 @@
 //! runtime, worker, database, or platform API can be replaced without the
 //! interface or the durable record changing.
 //!
-//! M1 defines the ports the walking skeleton exercises. `ComputeProvider` and
+//! M1 defines the ports the walking skeleton exercises; `ComputeProvisioner`
+//! is the first non-local compute target (ADR 0072). `ComputeProvider` and
 //! `ContextProvider` arrive with the milestones that need them.
 
 mod clock;
+mod compute;
 mod dictation;
 mod document;
 mod event_store;
@@ -24,6 +26,7 @@ mod tool;
 mod worker;
 
 pub use clock::{Clock, LocalClock};
+pub use compute::{ComputeLeaseJournal, ComputeProvisioner};
 pub use dictation::{DictationRepository, Transcriber};
 pub use document::{DocumentError, DocumentReader};
 pub use event_store::{EventStore, EventStoreError};
