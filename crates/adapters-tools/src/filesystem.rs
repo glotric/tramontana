@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use tramontana_core::contracts::{
     AuthorizedToolRequest, CorrelationId, ErrorCode, ErrorEnvelope, FileChange, FileChangeKind,
-    InvocationId, ProviderId, ReplaySafety, RiskClass, SideEffect, ToolDescriptor, content_hash,
+    InvocationId, ProviderId, RiskClass, SideEffect, ToolDescriptor, content_hash,
     content_hash_bytes,
 };
 use tramontana_core::ports::{ToolOutcome, ToolProvider};
@@ -149,18 +149,14 @@ fn descriptor(
     description: &str,
     schema: serde_json::Value,
 ) -> ToolDescriptor {
-    ToolDescriptor {
-        tool_id: tool_id.to_owned(),
-        provider_id: "builtin".to_owned(),
-        display_name: display.to_owned(),
-        description: description.to_owned(),
-        input_schema: schema,
-        risk_class: RiskClass::Read,
-        side_effect: SideEffect::None,
-        capability: "filesystem.read".to_owned(),
-        supports_cancellation: true,
-        replay_safety: ReplaySafety::Safe,
-    }
+    ToolDescriptor::new(
+        tool_id,
+        "builtin",
+        display,
+        description,
+        schema,
+        "filesystem.read",
+    )
 }
 
 /// A tool that changes project files.
@@ -807,23 +803,7 @@ impl FilesystemTools {
         }
         sync_directory(parent);
 
-        Ok(ToolOutcome {
-            content: serde_json::json!({
-                "path": display,
-                "bytes": content.len(),
-                "contentHash": content_hash(content),
-                "alreadyApplied": false,
-            }),
-            display_summary: format!("Created {display} ({} bytes)", content.len()),
-            side_effect: SideEffect::LocalReversible,
-            truncated: false,
-            changes: vec![change(
-                FileChangeKind::Created,
-                &display,
-                &content_hash(content),
-                false,
-            )],
-        })
+        Ok(created(&display, content, false))
     }
 }
 
@@ -854,23 +834,7 @@ fn already_there(
             "{display} already exists with different content"
         )));
     }
-    Ok(ToolOutcome {
-        content: serde_json::json!({
-            "path": display,
-            "bytes": content.len(),
-            "contentHash": content_hash(content),
-            "alreadyApplied": true,
-        }),
-        display_summary: format!("{display} already has this content; nothing changed"),
-        side_effect: SideEffect::None,
-        truncated: false,
-        changes: vec![change(
-            FileChangeKind::Created,
-            display,
-            &content_hash(content),
-            true,
-        )],
-    })
+    Ok(created(display, content, true))
 }
 
 /// A hidden temporary name, unique to one invocation.
@@ -1597,6 +1561,30 @@ impl FilesystemTools {
 ///
 /// Names the copy by its hash, never by where the store is: an absolute path
 /// names a machine and usually a person (`PROJECT_FORMAT.md` §3).
+fn created(display: &str, content: &str, already: bool) -> ToolOutcome {
+    let hash = content_hash(content);
+    ToolOutcome {
+        content: serde_json::json!({
+            "path": display,
+            "bytes": content.len(),
+            "contentHash": hash,
+            "alreadyApplied": already,
+        }),
+        display_summary: if already {
+            format!("{display} already has this content; nothing changed")
+        } else {
+            format!("Created {display} ({} bytes)", content.len())
+        },
+        side_effect: if already {
+            SideEffect::None
+        } else {
+            SideEffect::LocalReversible
+        },
+        truncated: false,
+        changes: vec![change(FileChangeKind::Created, display, &hash, already)],
+    }
+}
+
 fn deleted(display: &str, hash: &str, already: bool) -> ToolOutcome {
     ToolOutcome {
         content: serde_json::json!({

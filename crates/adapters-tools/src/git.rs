@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use tramontana_core::contracts::{
-    AuthorizedToolRequest, CorrelationId, ErrorCode, ErrorEnvelope, ProviderId, RiskClass,
-    SideEffect, ToolDescriptor,
+    AuthorizedToolRequest, CorrelationId, ErrorCode, ErrorEnvelope, ProviderId, SideEffect,
+    ToolDescriptor,
 };
 use tramontana_core::ports::{ToolOutcome, ToolProvider};
 
@@ -210,22 +210,12 @@ fn arguments_for(tool_id: &str) -> Option<&'static [&'static str]> {
 }
 
 fn descriptor(tool_id: &str, display: &str, description: &str) -> ToolDescriptor {
-    ToolDescriptor {
-        tool_id: tool_id.to_owned(),
-        provider_id: "builtin".to_owned(),
-        display_name: display.to_owned(),
-        description: description.to_owned(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {},
-            "additionalProperties": false,
-        }),
-        risk_class: RiskClass::Read,
-        side_effect: SideEffect::None,
-        capability: "git.read".to_owned(),
-        supports_cancellation: true,
-        replay_safety: tramontana_core::contracts::ReplaySafety::Safe,
-    }
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false,
+    });
+    ToolDescriptor::new(tool_id, "builtin", display, description, schema, "git.read")
 }
 
 #[async_trait]

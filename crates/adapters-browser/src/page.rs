@@ -289,10 +289,15 @@ pub(crate) struct Snapshot {
     pub(crate) element_count: usize,
 }
 
+/// The text at `key`, or nothing.
+pub(crate) fn text_of<'a>(value: &'a Value, key: &str) -> &'a str {
+    value.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
 /// A script's refusal, in words the model can act on.
 pub(crate) fn explain(answer: &Value) -> Option<String> {
     let error = answer.get("error")?.as_str()?;
-    let name = answer.get("name").and_then(Value::as_str).unwrap_or("");
+    let name = text_of(answer, "name");
     Some(match error {
         "unknown" => "There is no element with that number. Read the page to see its elements.".to_owned(),
         "stale" => "That element is no longer on the page. Read the page again.".to_owned(),
@@ -302,7 +307,7 @@ pub(crate) fn explain(answer: &Value) -> Option<String> {
         "hidden" => "That element is not visible, so it cannot be pressed.".to_owned(),
         "covered" => format!(
             "Something else is over that element (\"{}\"), such as a dialog. Deal with it first.",
-            answer.get("by").and_then(Value::as_str).unwrap_or("")
+            text_of(answer, "by")
         ),
         "password" => "Tramontana does not type into password fields. The person can type there in the browser window.".to_owned(),
         "untypable" => "That element does not take typing. Click it instead.".to_owned(),

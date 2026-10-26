@@ -187,7 +187,8 @@ impl BrowserProvider {
     async fn run(&self, request: &AuthorizedToolRequest) -> Result<ToolOutcome, ErrorEnvelope> {
         let task_id = request.task_id().ok_or_else(no_page)?;
         let arguments = request.arguments();
-        match request.tool_id() {
+        let tool = request.tool_id();
+        let tab = match tool {
             OPEN => {
                 let url = address(arguments)?;
                 let site = site::origin(url.as_str());
@@ -197,9 +198,18 @@ impl BrowserProvider {
                         "The address is not the one that was allowed.",
                     ));
                 }
-                let tab = self.open_tab(task_id).await?;
-                let _one_at_a_time = tab.busy.lock().await;
-                if let Some(site) = site {
+                self.open_tab(task_id).await?
+            }
+            READ | CLICK | TYPE | SUBMIT => self.tab_on(task_id, request.site()).await?,
+            _ => return Err(failure(ErrorCode::NotFound, "No such browser tool.")),
+        };
+        let _one_at_a_time = tab.busy.lock().await;
+        let mut at = (0, 0);
+        // The verb, and the element acted on (none: the page's address).
+        let (verb, name, effect, loading) = match tool {
+            OPEN => {
+                let url = address(arguments)?;
+                if let Some(site) = site::origin(url.as_str()) {
                     tab.allow(site);
                 }
                 let before = tab.begin();
@@ -215,110 +225,60 @@ impl BrowserProvider {
                         format!("The page could not be opened ({error})."),
                     ));
                 }
-                let page = tab.snapshot(0, 0).await?;
-                Ok(outcome(
-                    format!("Opened {}", shown(&page.url, 120)),
-                    SideEffect::External,
-                    &page,
-                    &tab,
-                    loading,
-                ))
+                ("Opened", None, SideEffect::External, loading)
             }
             READ => {
-                let tab = self.tab_on(task_id, request.site()).await?;
-                let _one_at_a_time = tab.busy.lock().await;
-                let offset = count(arguments, "offset")?;
-                let elements_from = count(arguments, "elementsFrom")?;
-                let page = tab.snapshot(offset, elements_from).await?;
-                Ok(outcome(
-                    format!("Read {}", shown(&page.url, 120)),
-                    SideEffect::None,
-                    &page,
-                    &tab,
-                    false,
-                ))
+                at = (
+                    count(arguments, "offset")?,
+                    count(arguments, "elementsFrom")?,
+                );
+                ("Read", None, SideEffect::None, false)
             }
             CLICK => {
-                let tab = self.tab_on(task_id, request.site()).await?;
-                let _one_at_a_time = tab.busy.lock().await;
                 let reference = reference(arguments)?;
                 let before = tab.begin();
                 let name = tab.press(reference, false).await?;
                 let loading = tab.settle(before).await;
-                let page = tab.snapshot(0, 0).await?;
-                Ok(outcome(
-                    format!("Clicked \"{}\"", shown(&name, 60)),
-                    SideEffect::External,
-                    &page,
-                    &tab,
-                    loading,
-                ))
+                ("Clicked", Some(name), SideEffect::External, loading)
             }
             TYPE => {
-                let tab = self.tab_on(task_id, request.site()).await?;
-                let _one_at_a_time = tab.busy.lock().await;
                 let reference = reference(arguments)?;
                 let text = typed(arguments)?;
-                let answer = tab.evaluate(&page::focus(reference, text)).await?;
-                if let Some(refusal) = page::explain(&answer) {
-                    return Err(failure(ErrorCode::InvalidRequest, refusal));
-                }
+                let answer = tab.checked(&page::focus(reference, text)).await?;
                 let chosen = answer.get("chosen").and_then(Value::as_bool) == Some(true);
                 if !chosen && !text.is_empty() {
                     tab.call("Input.insertText", json!({ "text": text }))
                         .await?;
                 }
-                let name = answer.get("name").and_then(Value::as_str).unwrap_or("");
-                let page = tab.snapshot(0, 0).await?;
-                Ok(outcome(
-                    format!(
-                        "{} \"{}\"",
-                        if chosen {
-                            "Chose an option of"
-                        } else {
-                            "Typed into"
-                        },
-                        shown(name, 60)
-                    ),
-                    SideEffect::External,
-                    &page,
-                    &tab,
-                    false,
-                ))
+                let verb = if chosen {
+                    "Chose an option of"
+                } else {
+                    "Typed into"
+                };
+                let name = page::text_of(&answer, "name").to_owned();
+                (verb, Some(name), SideEffect::External, false)
             }
-            SUBMIT => {
-                let tab = self.tab_on(task_id, request.site()).await?;
-                let _one_at_a_time = tab.busy.lock().await;
+            _ => {
                 let reference = reference(arguments)?;
-                let form = tab.evaluate(&page::describe_submit(reference)).await?;
-                if let Some(refusal) = page::explain(&form) {
-                    return Err(failure(ErrorCode::InvalidRequest, refusal));
-                }
+                let form = tab.checked(&page::describe_submit(reference)).await?;
                 let before = tab.begin();
                 if form.get("press").and_then(Value::as_bool) == Some(true) {
                     tab.press(reference, true).await?;
                 } else {
-                    let answer = tab.evaluate(&page::submit_form(reference)).await?;
-                    if let Some(refusal) = page::explain(&answer) {
-                        return Err(failure(ErrorCode::InvalidRequest, refusal));
-                    }
+                    tab.checked(&page::submit_form(reference)).await?;
                 }
                 let loading = tab.settle(before).await;
-                let page = tab.snapshot(0, 0).await?;
-                let name = form
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("the form");
-                Ok(outcome(
-                    format!("Submitted \"{}\"", shown(name, 60)),
-                    SideEffect::External,
-                    &page,
-                    &tab,
-                    loading,
-                ))
+                let name = form.get("name").and_then(Value::as_str);
+                let name = name.unwrap_or("the form").to_owned();
+                ("Submitted", Some(name), SideEffect::External, loading)
             }
-            _ => Err(failure(ErrorCode::NotFound, "No such browser tool.")),
-        }
+        };
+        let page = tab.snapshot(at.0, at.1).await?;
+        let summary = match name {
+            Some(name) => format!("{verb} \"{}\"", shown(&name, 60)),
+            None => format!("{verb} {}", shown(&page.url, 120)),
+        };
+        Ok(outcome(summary, effect, &page, &tab, loading))
     }
 }
 
@@ -371,18 +331,9 @@ impl ToolProvider for BrowserProvider {
             CLICK | TYPE | SUBMIT => {
                 let reference = reference(arguments)?;
                 if tool_id == SUBMIT {
-                    let form = tab.evaluate(&page::describe_submit(reference)).await?;
-                    if let Some(refusal) = page::explain(&form) {
-                        return Err(failure(ErrorCode::InvalidRequest, refusal));
-                    }
-                    details.push(detail(
-                        "Button",
-                        form.get("name").and_then(Value::as_str).unwrap_or(""),
-                    ));
-                    details.push(detail(
-                        "Sends to",
-                        form.get("action").and_then(Value::as_str).unwrap_or(""),
-                    ));
+                    let form = tab.checked(&page::describe_submit(reference)).await?;
+                    details.push(detail("Button", page::text_of(&form, "name")));
+                    details.push(detail("Sends to", page::text_of(&form, "action")));
                     for field in form
                         .get("fields")
                         .and_then(Value::as_array)
@@ -390,24 +341,18 @@ impl ToolProvider for BrowserProvider {
                         .flatten()
                     {
                         details.push(detail(
-                            &format!(
-                                "Field {}",
-                                field.get("name").and_then(Value::as_str).unwrap_or("")
-                            ),
-                            field.get("value").and_then(Value::as_str).unwrap_or(""),
+                            &format!("Field {}", page::text_of(field, "name")),
+                            page::text_of(field, "value"),
                         ));
                     }
                 } else {
-                    let element = tab.evaluate(&page::describe(reference)).await?;
-                    if let Some(refusal) = page::explain(&element) {
-                        return Err(failure(ErrorCode::InvalidRequest, refusal));
-                    }
+                    let element = tab.checked(&page::describe(reference)).await?;
                     details.push(detail(
                         "Element",
                         &format!(
                             "{} \"{}\"",
-                            element.get("role").and_then(Value::as_str).unwrap_or(""),
-                            element.get("name").and_then(Value::as_str).unwrap_or("")
+                            page::text_of(&element, "role"),
+                            page::text_of(&element, "name")
                         ),
                     ));
                     if tool_id == TYPE {
@@ -662,6 +607,15 @@ impl Tab {
         Ok(site::origin(&self.url().await?))
     }
 
+    /// [`Self::evaluate`], with the script's refusal as the error.
+    async fn checked(&self, script: &str) -> Result<Value, ErrorEnvelope> {
+        let answer = self.evaluate(script).await?;
+        match page::explain(&answer) {
+            Some(refusal) => Err(failure(ErrorCode::InvalidRequest, refusal)),
+            None => Ok(answer),
+        }
+    }
+
     /// Run a script in Tramontana's own world of the current document.
     async fn evaluate(&self, script: &str) -> Result<Value, ErrorEnvelope> {
         for _ in 0..2 {
@@ -747,10 +701,7 @@ impl Tab {
 
     /// Press a numbered element with the mouse, as a person would. Its name.
     async fn press(&self, reference: u64, submit: bool) -> Result<String, ErrorEnvelope> {
-        let aim = self.evaluate(&page::aim(reference, submit)).await?;
-        if let Some(refusal) = page::explain(&aim) {
-            return Err(failure(ErrorCode::InvalidRequest, refusal));
-        }
+        let aim = self.checked(&page::aim(reference, submit)).await?;
         let (Some(x), Some(y)) = (
             aim.get("x").and_then(Value::as_f64),
             aim.get("y").and_then(Value::as_f64),
@@ -971,7 +922,7 @@ fn render(page: &page::Snapshot, blocked: Option<&str>, loading: bool) -> String
 
 /// One numbered element: `[3] link "Pricing" -> https://example.com/pricing`.
 fn element_line(element: &Value) -> String {
-    let text = |key: &str| element.get(key).and_then(Value::as_str).unwrap_or("");
+    let text = |key: &str| page::text_of(element, key);
     let mut line = format!(
         "[{}] {} \"{}\"",
         element.get("ref").and_then(Value::as_u64).unwrap_or(0),
@@ -1094,18 +1045,19 @@ fn descriptor(
     side_effect: SideEffect,
 ) -> ToolDescriptor {
     ToolDescriptor {
-        tool_id: tool_id.to_owned(),
-        provider_id: BROWSER_PROVIDER.to_owned(),
-        display_name: display_name.to_owned(),
-        description: description.to_owned(),
-        input_schema,
         risk_class,
         side_effect,
-        capability: capability.to_owned(),
-        supports_cancellation: true,
         // A step interrupted mid-way is left for a person: the page it acted
         // on is gone after a restart, and acting again could act twice.
         replay_safety: ReplaySafety::Unknown,
+        ..ToolDescriptor::new(
+            tool_id,
+            BROWSER_PROVIDER,
+            display_name,
+            description,
+            input_schema,
+            capability,
+        )
     }
 }
 

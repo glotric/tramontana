@@ -232,6 +232,32 @@ pub struct ToolDescriptor {
     pub replay_safety: ReplaySafety,
 }
 
+impl ToolDescriptor {
+    /// A read-only tool: no side effect, cancellable, and safe to replay.
+    /// Anything else overrides those fields with struct update syntax.
+    pub fn new(
+        tool_id: &str,
+        provider_id: &str,
+        display_name: &str,
+        description: &str,
+        input_schema: serde_json::Value,
+        capability: &str,
+    ) -> Self {
+        Self {
+            tool_id: tool_id.to_owned(),
+            provider_id: provider_id.to_owned(),
+            display_name: display_name.to_owned(),
+            description: description.to_owned(),
+            input_schema,
+            risk_class: RiskClass::Read,
+            side_effect: SideEffect::None,
+            capability: capability.to_owned(),
+            supports_cancellation: true,
+            replay_safety: ReplaySafety::Safe,
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
