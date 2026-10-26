@@ -76,6 +76,23 @@ impl std::fmt::Debug for ServicePlane {
 /// belongs to another process, and this one opens without running tasks.
 const LEASE_PATIENCE: Duration = Duration::from_secs(3);
 
+/// Open (and migrate) the profile database, creating its folder first.
+///
+/// # Errors
+///
+/// A message naming what could not be created or opened.
+pub async fn open_database(path: &Path) -> Result<Database, String> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+    }
+    Database::open(path)
+        .await
+        .map_err(|error| format!("could not open {}: {error}", path.display()))
+}
+
 /// Open the profile at `path` and assemble the service over it.
 ///
 /// Model providers come from the endpoints configured in this profile. A
@@ -92,15 +109,7 @@ pub async fn open_service_plane(
     resolver: Arc<dyn SecretResolver>,
     chunk_delay_ms: u64,
 ) -> Result<ServicePlane, String> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
-    }
-    let database = Database::open(path)
-        .await
-        .map_err(|error| format!("could not open {}: {error}", path.display()))?;
+    let database = open_database(path).await?;
     // Filesystem and Git tools, behind the permission boundary. The registry
     // says a tool exists; only the permission manager says it may run. The
     // CLI assembles the identical set, including the same recovery store

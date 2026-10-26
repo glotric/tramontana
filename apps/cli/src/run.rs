@@ -498,15 +498,9 @@ async fn checkpoint_command(args: TaskShowArgs, operation: &str) -> ExitCode {
     };
     let task_id = TaskId::new(args.task_id);
     match operation {
-        "checkpoint" => match service.create_checkpoint(&task_id).await {
-            Ok(checkpoint) => render::json(&checkpoint),
-            Err(error) => render::application_error(&error),
-        },
+        "checkpoint" => render::result(service.create_checkpoint(&task_id).await),
         "discard" => match service.discard_checkpoint(&task_id).await {
-            Ok(()) => match service.get_task_record(&task_id).await {
-                Ok(record) => render::json(&record),
-                Err(error) => render::application_error(&error),
-            },
+            Ok(()) => render::result(service.get_task_record(&task_id).await),
             Err(error) => render::application_error(&error),
         },
         _ => match (
@@ -561,33 +555,25 @@ async fn list(args: TaskListArgs) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let conversation_id = args.conversation_id.map(ConversationId::new);
-    match service.list_tasks(conversation_id.as_ref()).await {
-        Ok(tasks) => render::json(&tasks),
-        Err(error) => render::application_error(&error),
-    }
+    render::result(service.list_tasks(conversation_id.as_ref()).await)
 }
 
 async fn show(args: TaskShowArgs) -> ExitCode {
     let Some(service) = wiring::open_or_report(args.profile).await else {
         return ExitCode::FAILURE;
     };
-    match service.get_task_record(&TaskId::new(args.task_id)).await {
-        Ok(task) => render::json(&task),
-        Err(error) => render::application_error(&error),
-    }
+    render::result(service.get_task_record(&TaskId::new(args.task_id)).await)
 }
 
 async fn replay(args: TaskReplayArgs) -> ExitCode {
     let Some(service) = wiring::open_or_report(args.profile).await else {
         return ExitCode::FAILURE;
     };
-    match service
-        .replay_task_events(&TaskId::new(args.task_id), args.after_sequence)
-        .await
-    {
-        Ok(events) => render::json(&events),
-        Err(error) => render::application_error(&error),
-    }
+    render::result(
+        service
+            .replay_task_events(&TaskId::new(args.task_id), args.after_sequence)
+            .await,
+    )
 }
 
 /// Print one event in the selected format.
@@ -628,10 +614,7 @@ async fn handoff(args: HandoffArgs) -> ExitCode {
     let task_id = TaskId::new(args.task_id);
 
     let Some(checkpoint_id) = args.checkpoint_id else {
-        return match service.handoff_task(&task_id).await {
-            Ok(handoff) => render::json(&handoff),
-            Err(error) => render::application_error(&error),
-        };
+        return render::result(service.handoff_task(&task_id).await);
     };
 
     let checkpoint_id = CheckpointId::new(checkpoint_id);

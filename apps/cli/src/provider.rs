@@ -17,10 +17,10 @@ use tramontana_core::contracts::{
 };
 use tramontana_core::ports::Clock;
 use tramontana_core::ports::ProviderSettingsRepository;
-use tramontana_persistence::{Database, SqliteProviderSettingsRepository};
+use tramontana_persistence::SqliteProviderSettingsRepository;
 use tramontana_platform::SystemClock;
 
-use crate::wiring;
+use crate::wiring::{self, ProfileArgs};
 
 /// Arguments for `tramontana provider`.
 #[derive(Debug, Args)]
@@ -59,13 +59,6 @@ enum ProviderCommand {
     /// upgrade or a changed model (ADR 0043). A changed executable is not
     /// started until this is done.
     Trust(RemoveArgs),
-}
-
-#[derive(Debug, Args)]
-struct ProfileArgs {
-    /// Database file to use.
-    #[arg(long, value_name = "PATH")]
-    profile: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -262,15 +255,7 @@ fn reference(key: &str) -> SecretRef {
 /// currently broken.
 async fn settings(profile: ProfileArgs) -> Result<SqliteProviderSettingsRepository, String> {
     let path = wiring::profile_path(profile.profile);
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
-    }
-    let database = Database::open(&path)
-        .await
-        .map_err(|error| format!("could not open {}: {error}", path.display()))?;
+    let database = tramontana_composition::open_database(&path).await?;
     Ok(SqliteProviderSettingsRepository::new(database))
 }
 

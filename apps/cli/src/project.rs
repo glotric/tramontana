@@ -8,6 +8,7 @@ use tramontana_core::config::ConfigurationSelection;
 use tramontana_core::contracts::ProjectId;
 use tramontana_platform::canonicalize_root;
 
+use crate::wiring::ProfileArgs;
 use crate::{configuration, render, wiring};
 
 /// Arguments for `tramontana project`.
@@ -64,13 +65,6 @@ struct InspectProjectArgs {
     #[arg(value_name = "PROJECT_ID")]
     project_id: String,
 
-    /// Database file to use.
-    #[arg(long, value_name = "PATH")]
-    profile: Option<PathBuf>,
-}
-
-#[derive(Debug, Args)]
-struct ProfileArgs {
     /// Database file to use.
     #[arg(long, value_name = "PATH")]
     profile: Option<PathBuf>,
@@ -135,10 +129,7 @@ async fn list(args: ProfileArgs) -> ExitCode {
     let Some(service) = wiring::open_or_report(args.profile).await else {
         return ExitCode::FAILURE;
     };
-    match service.list_projects().await {
-        Ok(projects) => render::json(&projects),
-        Err(error) => render::application_error(&error),
-    }
+    render::result(service.list_projects().await)
 }
 
 async fn inspect(args: InspectProjectArgs) -> ExitCode {

@@ -52,6 +52,14 @@ pub(crate) fn profile_path(explicit: Option<PathBuf>) -> PathBuf {
         .unwrap_or_else(default_profile_path)
 }
 
+/// `--profile`, for commands that take nothing else.
+#[derive(Debug, clap::Args)]
+pub(crate) struct ProfileArgs {
+    /// Database file to use.
+    #[arg(long, value_name = "PATH")]
+    pub(crate) profile: Option<PathBuf>,
+}
+
 /// Open a profile and assemble the service over it.
 ///
 /// # Errors
@@ -108,16 +116,7 @@ async fn open_with(
     supervision: Supervision,
     admission: tramontana_core::ports::ToolAdmission,
 ) -> Result<(Arc<TaskService>, ModelPlane, AppPlane), String> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
-    }
-
-    let database = Database::open(path)
-        .await
-        .map_err(|error| format!("could not open {}: {error}", path.display()))?;
+    let database = tramontana_composition::open_database(path).await?;
 
     // The profile's Apps, started before the registry is built so their tools
     // are registered beside the built-in ones and under the same permission

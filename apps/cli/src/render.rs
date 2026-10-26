@@ -21,6 +21,16 @@ pub(crate) fn json(value: &impl serde::Serialize) -> std::process::ExitCode {
 }
 
 /// Render a normalized application error at the adapter boundary.
+/// Print a service result: the value as JSON, or the error.
+pub(crate) fn result(
+    result: Result<impl serde::Serialize, tramontana_core::contracts::ErrorEnvelope>,
+) -> std::process::ExitCode {
+    match result {
+        Ok(value) => json(&value),
+        Err(error) => application_error(&error),
+    }
+}
+
 pub(crate) fn application_error(
     error: &tramontana_core::contracts::ErrorEnvelope,
 ) -> std::process::ExitCode {

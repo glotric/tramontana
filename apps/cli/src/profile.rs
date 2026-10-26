@@ -83,10 +83,7 @@ pub(crate) async fn execute(args: ProfileArgs) -> ExitCode {
         ProfileCommand::Forget { note_id } => service.forget(&note_id).await,
         ProfileCommand::Erase { .. } => unreachable!("handled before the profile is opened"),
     };
-    match result {
-        Ok(profile) => render::json(&profile),
-        Err(error) => render::application_error(&error),
-    }
+    render::result(result)
 }
 
 async fn set_details(

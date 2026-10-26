@@ -17,17 +17,10 @@ use tramontana_core::contracts::{
 use tramontana_core::ports::{
     AppSettingsRepository, Clock, SecretResolver, SecretVault, ToolProvider,
 };
-use tramontana_persistence::{Database, SqliteAppSettingsRepository};
+use tramontana_persistence::SqliteAppSettingsRepository;
 use tramontana_platform::{PlatformSecretVault, SystemClock};
 
-use crate::wiring;
-
-#[derive(Debug, Args)]
-struct ProfileArgs {
-    /// Database file to use.
-    #[arg(long, value_name = "PATH")]
-    profile: Option<std::path::PathBuf>,
-}
+use crate::wiring::{self, ProfileArgs};
 
 /// Arguments for `tramontana app`.
 #[derive(Debug, Args)]
@@ -170,15 +163,7 @@ pub(crate) async fn execute(args: AppArgs) -> ExitCode {
 /// Open just the App settings. Configuring an App must not start one.
 async fn settings(profile: ProfileArgs) -> Result<SqliteAppSettingsRepository, String> {
     let path = wiring::profile_path(profile.profile);
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
-    }
-    let database = Database::open(&path)
-        .await
-        .map_err(|error| format!("could not open {}: {error}", path.display()))?;
+    let database = tramontana_composition::open_database(&path).await?;
     Ok(SqliteAppSettingsRepository::new(database))
 }
 

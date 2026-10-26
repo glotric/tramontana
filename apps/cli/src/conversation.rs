@@ -186,13 +186,11 @@ async fn rename(args: RenameConversationArgs) -> ExitCode {
     let Some(service) = wiring::open_or_report(args.profile).await else {
         return ExitCode::FAILURE;
     };
-    match service
-        .rename_conversation(&ConversationId::new(args.conversation_id), &args.title)
-        .await
-    {
-        Ok(conversation) => render::json(&conversation),
-        Err(error) => render::application_error(&error),
-    }
+    render::result(
+        service
+            .rename_conversation(&ConversationId::new(args.conversation_id), &args.title)
+            .await,
+    )
 }
 
 async fn delete(args: DeleteConversationArgs) -> ExitCode {
@@ -218,10 +216,7 @@ async fn search(args: SearchArgs) -> ExitCode {
     let Some(service) = wiring::open_or_report(args.profile).await else {
         return ExitCode::FAILURE;
     };
-    match service.search(&args.query).await {
-        Ok(results) => render::json(&results),
-        Err(error) => render::application_error(&error),
-    }
+    render::result(service.search(&args.query).await)
 }
 
 async fn create(args: CreateConversationArgs) -> ExitCode {
@@ -229,10 +224,7 @@ async fn create(args: CreateConversationArgs) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let project_id = args.project_id.map(ProjectId::new);
-    match service.create_conversation(project_id, args.title).await {
-        Ok(conversation) => render::json(&conversation),
-        Err(error) => render::application_error(&error),
-    }
+    render::result(service.create_conversation(project_id, args.title).await)
 }
 
 async fn list(args: ListConversationArgs) -> ExitCode {
@@ -240,21 +232,16 @@ async fn list(args: ListConversationArgs) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let project_id = args.project_id.map(ProjectId::new);
-    match service.list_conversations(project_id.as_ref()).await {
-        Ok(conversations) => render::json(&conversations),
-        Err(error) => render::application_error(&error),
-    }
+    render::result(service.list_conversations(project_id.as_ref()).await)
 }
 
 async fn inspect(args: InspectConversationArgs) -> ExitCode {
     let Some(service) = wiring::open_or_report(args.profile).await else {
         return ExitCode::FAILURE;
     };
-    match service
-        .get_conversation(&ConversationId::new(args.conversation_id))
-        .await
-    {
-        Ok(conversation) => render::json(&conversation),
-        Err(error) => render::application_error(&error),
-    }
+    render::result(
+        service
+            .get_conversation(&ConversationId::new(args.conversation_id))
+            .await,
+    )
 }
