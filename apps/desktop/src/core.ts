@@ -751,6 +751,11 @@ export function failureText(error: unknown, fallback: string): string {
   return envelope ? `${envelope.code}: ${envelope.message}` : fallback;
 }
 
+/** The shell's own message for a failed call, or `fallback`. */
+export function errorMessage(error: unknown, fallback: string): string {
+  return asErrorEnvelope(error)?.message ?? fallback;
+}
+
 /** A file picked for the next message, held by the desktop until it is sent. */
 export interface StagedAttachment {
   readonly token: string;

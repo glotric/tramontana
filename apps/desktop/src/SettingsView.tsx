@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AnswerStyle, PersonalProfile } from "@tramontana/shared";
 
-import { asErrorEnvelope, forget, personalProfile, remember, updatePersonal } from "./core.js";
+import { errorMessage, forget, personalProfile, remember, updatePersonal } from "./core.js";
 import { DictationSettings } from "./Dictation.js";
 import { EraseAllData } from "./EraseAllData.js";
 import { Glyph } from "./Glyph.js";
@@ -39,10 +39,6 @@ const STYLES: readonly {
     hue: "purple",
   },
 ];
-
-function message(error: unknown, fallback: string): string {
-  return asErrorEnvelope(error)?.message ?? fallback;
-}
 
 /**
  * The design's Settings, Personalization (ADR 0061): what chats are told
@@ -101,7 +97,7 @@ function GeneralSettings(): React.JSX.Element {
         if (active) show(loaded);
       },
       (error: unknown) => {
-        if (active) setFailure(message(error, "Could not read your profile."));
+        if (active) setFailure(errorMessage(error, "Could not read your profile."));
       },
     );
     return () => {
@@ -144,7 +140,7 @@ function GeneralSettings(): React.JSX.Element {
               setSaved(true);
             },
             (error: unknown) => {
-              setFailure(message(error, "Could not save your profile."));
+              setFailure(errorMessage(error, "Could not save your profile."));
             },
           );
         }}
@@ -245,7 +241,7 @@ function GeneralSettings(): React.JSX.Element {
                   aria-label={`Forget “${kept.text}”`}
                   onClick={() => {
                     void forget(kept.noteId).then(show, (error: unknown) => {
-                      setFailure(message(error, "Could not forget the note."));
+                      setFailure(errorMessage(error, "Could not forget the note."));
                     });
                   }}
                 >
@@ -268,7 +264,7 @@ function GeneralSettings(): React.JSX.Element {
                 setNote("");
               },
               (error: unknown) => {
-                setFailure(message(error, "Could not add the note."));
+                setFailure(errorMessage(error, "Could not add the note."));
               },
             );
           }}

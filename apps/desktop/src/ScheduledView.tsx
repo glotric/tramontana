@@ -3,7 +3,7 @@ import type { ProjectRecord, RoutingMode, Schedule, ScheduleView } from "@tramon
 
 import { MODE_LABEL } from "./cards.js";
 import {
-  asErrorEnvelope,
+  errorMessage,
   createSchedule,
   deleteSchedule,
   listSchedules,
@@ -41,10 +41,6 @@ const IDEAS: readonly {
     description: "Every Friday, a summary of a project's week from its Git history.",
   },
 ];
-
-function message(error: unknown, fallback: string): string {
-  return asErrorEnvelope(error)?.message ?? fallback;
-}
 
 interface Draft {
   readonly title: string;
@@ -84,7 +80,7 @@ export function ScheduledView({
 
   const refresh = useCallback(() => {
     void listSchedules().then(setSchedules, (error: unknown) => {
-      setFailure(message(error, "Could not read the scheduled tasks."));
+      setFailure(errorMessage(error, "Could not read the scheduled tasks."));
     });
   }, []);
 
@@ -161,7 +157,7 @@ export function ScheduledView({
                 refresh();
               },
               (error: unknown) => {
-                setFailure(message(error, "Could not create the scheduled task."));
+                setFailure(errorMessage(error, "Could not create the scheduled task."));
               },
             );
           }}
@@ -322,7 +318,7 @@ export function ScheduledView({
                         refresh();
                       },
                       (error: unknown) => {
-                        setFailure(message(error, "Could not run it now."));
+                        setFailure(errorMessage(error, "Could not run it now."));
                       },
                     );
                   }}
@@ -342,7 +338,7 @@ export function ScheduledView({
                             refresh();
                           },
                           (error: unknown) => {
-                            setFailure(message(error, "Could not delete it."));
+                            setFailure(errorMessage(error, "Could not delete it."));
                           },
                         );
                       }}
@@ -381,7 +377,7 @@ export function ScheduledView({
                     void setScheduleEnabled(schedule.scheduleId, event.target.checked).then(
                       refresh,
                       (error: unknown) => {
-                        setFailure(message(error, "Could not change it."));
+                        setFailure(errorMessage(error, "Could not change it."));
                       },
                     );
                   }}

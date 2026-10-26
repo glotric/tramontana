@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { AddEndpointForm } from "./AddEndpointForm.js";
-import { ModelGuide } from "./ModelGuide.js";
+import { ModelGuide, describeBytes } from "./ModelGuide.js";
 import {
   asErrorEnvelope,
   checkEndpointModel,
@@ -64,12 +64,6 @@ function describeUse(
 }
 
 /** A size in words a person reads at a glance. */
-function describeBytes(bytes: number): string {
-  const gib = bytes / 1024 ** 3;
-  if (gib >= 1) return `${gib.toFixed(1)} GB`;
-  return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
-}
-
 /** Where a runtime's executable stands against its record (ADR 0043). */
 function describeExecutable(runtime: RuntimeFiles): string {
   switch (runtime.executableStatus) {

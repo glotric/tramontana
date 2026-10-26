@@ -2,21 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 import type { PersonalSkill } from "@tramontana/shared";
 
 import {
-  asErrorEnvelope,
+  errorMessage,
   importSkill,
   listPersonalSkills,
   removeSkill,
   skillsFolder,
 } from "./core.js";
+import { describeSize } from "./Attachments.js";
 import { Icon } from "./icons.js";
-
-function message(error: unknown, fallback: string): string {
-  return asErrorEnvelope(error)?.message ?? fallback;
-}
-
-function describeSize(bytes: number): string {
-  return bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024)} KB`;
-}
 
 /**
  * Settings, Customize, Skills (ADR 0070): the person's own skills, kept as
@@ -34,7 +27,7 @@ export function SkillsSettings(): React.JSX.Element {
   const read = useCallback(() => {
     void listPersonalSkills().then(setSkills, (error: unknown) => {
       setSkills([]);
-      setFailure(message(error, "Could not read your skills."));
+      setFailure(errorMessage(error, "Could not read your skills."));
     });
   }, []);
 
@@ -59,7 +52,7 @@ export function SkillsSettings(): React.JSX.Element {
           read();
         },
         (error: unknown) => {
-          setFailure(message(error, "Could not import the skill."));
+          setFailure(errorMessage(error, "Could not import the skill."));
         },
       )
       .finally(() => {
@@ -162,7 +155,7 @@ export function SkillsSettings(): React.JSX.Element {
                           read();
                         },
                         (error: unknown) => {
-                          setFailure(message(error, "Could not remove the skill."));
+                          setFailure(errorMessage(error, "Could not remove the skill."));
                         },
                       );
                     }}

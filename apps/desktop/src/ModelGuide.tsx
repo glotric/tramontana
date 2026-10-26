@@ -38,7 +38,7 @@ function downloadCommand(platform: ModelSetupHints["platform"], file: string, ur
     : `mkdir -p ~/models && curl -L -o ~/models/${file} ${url}`;
 }
 
-function describeBytes(bytes: number): string {
+export function describeBytes(bytes: number): string {
   const gib = bytes / 1024 ** 3;
   return gib >= 1 ? `${gib.toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
 }
