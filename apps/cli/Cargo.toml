@@ -27,6 +27,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 
 [dev-dependencies]
+tramontana-test-support = { workspace = true }
 tempfile = { workspace = true }
 
 # Discarding typeahead before an approval prompt, so a line typed earlier is

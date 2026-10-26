@@ -4,6 +4,7 @@
 
 #![allow(
     dead_code,
+    unused_imports,
     unreachable_pub,
     clippy::unwrap_used,
     clippy::expect_used,
@@ -11,14 +12,13 @@
     reason = "test support: a panic is the failure report, and each test file uses a part of it"
 )]
 
-use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use tramontana_adapters_tools::{FilesystemTools, GitTools, RecipeTools};
 use tramontana_composition::{
     AppPlane, ModelPlane, Supervision, assemble_models, assemble_worker, recovery_store, start_apps,
@@ -37,6 +37,7 @@ use tramontana_persistence::{
     SqliteProjectRepository, SqliteProviderSettingsRepository, SqliteTaskRepository,
 };
 use tramontana_platform::{SystemClock, UuidIdSource, canonicalize_root, discover};
+pub use tramontana_test_support::{answer, call, git, observation, read_body, read_hash, reply};
 
 /// Run the CLI against `profile`, requiring success.
 pub fn cli(profile: &Path, args: &[&str]) -> Output {
@@ -58,33 +59,6 @@ pub fn cli(profile: &Path, args: &[&str]) -> Output {
 
 pub fn cli_json(profile: &Path, args: &[&str]) -> Value {
     serde_json::from_slice(&cli(profile, args).stdout).unwrap()
-}
-
-/// Git, unaffected by whoever runs the test.
-pub fn git(root: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .current_dir(root)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .args([
-            "-c",
-            "user.name=Fixture",
-            "-c",
-            "user.email=fixture@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8(out.stdout).unwrap()
 }
 
 pub struct Fixture {
@@ -185,110 +159,11 @@ fn serve(listener: TcpListener, bodies: mpsc::Sender<Value>, script: Script) {
             .unwrap();
         let body = read_body(&mut socket);
         let (delta, finish) = script(turn, &body);
-        let payload = format!(
-            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-            json!({"choices":[{"delta":delta,"finish_reason":null}]}),
-            json!({"choices":[{"delta":{},"finish_reason":finish}]})
-        );
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            payload.len(),
-            payload
-        );
-        socket.write_all(response.as_bytes()).unwrap();
+        reply(&mut socket, &delta, finish).unwrap();
         if bodies.send(body).is_err() {
             return;
         }
     }
-}
-
-fn read_body(socket: &mut std::net::TcpStream) -> Value {
-    let mut bytes = Vec::new();
-    loop {
-        let mut chunk = [0; 4096];
-        let read = socket.read(&mut chunk).unwrap();
-        assert!(read > 0);
-        bytes.extend_from_slice(&chunk[..read]);
-        assert!(bytes.len() < 2_000_000);
-        if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
-            let headers = String::from_utf8_lossy(&bytes[..end]);
-            let len: usize = headers
-                .lines()
-                .find_map(|line| {
-                    line.to_ascii_lowercase()
-                        .strip_prefix("content-length:")
-                        .map(|s| s.trim().parse().unwrap())
-                })
-                .unwrap();
-            if bytes.len() >= end + 4 + len {
-                return serde_json::from_slice(&bytes[end + 4..end + 4 + len]).unwrap();
-            }
-        }
-    }
-}
-
-/// A scripted tool call to the tool whose description starts with
-/// `description`. The names on the wire are aliases, so tools are found by
-/// what they say they do.
-pub fn call(
-    turn: usize,
-    body: &Value,
-    description: &str,
-    arguments: Value,
-) -> (Value, &'static str) {
-    let call = json!({
-        "index": 0,
-        "id": format!("call-{turn}"),
-        "type": "function",
-        "function": { "name": tool_named(body, description), "arguments": arguments.to_string() },
-    });
-    (json!({ "tool_calls": [call] }), "tool_calls")
-}
-
-/// A scripted final answer.
-pub fn answer(text: &str) -> (Value, &'static str) {
-    (json!({ "content": text }), "stop")
-}
-
-fn tool_named(body: &Value, description: &str) -> Value {
-    body["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|tool| {
-            tool["function"]["description"]
-                .as_str()
-                .unwrap()
-                .starts_with(description)
-        })
-        .unwrap_or_else(|| panic!("no tool described as {description:?} was offered"))["function"]
-        ["name"]
-        .clone()
-}
-
-/// The latest tool result the model was shown.
-pub fn observation(body: &Value) -> String {
-    body["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .rev()
-        .find(|message| message["role"] == "tool")
-        .unwrap()["content"]
-        .as_str()
-        .unwrap()
-        .to_owned()
-}
-
-/// The content hash in the latest read the model was shown. The adapter wraps
-/// the brokered result as `{content, truncated}`.
-pub fn read_hash(body: &Value) -> String {
-    let seen = observation(body);
-    let read: Value = serde_json::from_str(&seen).unwrap();
-    read["content"]["output"]["contentHash"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no contentHash in the read the model saw: {seen}"))
-        .to_owned()
 }
 
 pub struct Running {

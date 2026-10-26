@@ -4,14 +4,16 @@
     clippy::panic,
     reason = "isolated integration fixture assertions"
 )]
+mod support;
+
 use serde_json::{Value, json};
 use std::{
-    io::{Read, Write},
     net::TcpListener,
     path::Path,
     process::{Command, Output},
     time::{Duration, Instant},
 };
+use support::{answer, call, cli as run, cli_json as json_out, observation, read_body, reply};
 
 fn command(profile: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_tramontana"))
@@ -20,20 +22,6 @@ fn command(profile: &Path, args: &[&str]) -> Output {
         .arg(profile)
         .output()
         .unwrap()
-}
-fn run(profile: &Path, args: &[&str]) -> Output {
-    let out = command(profile, args);
-    assert!(
-        out.status.success(),
-        "{:?}\n{}\n{}",
-        args,
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    out
-}
-fn json_out(profile: &Path, args: &[&str]) -> Value {
-    serde_json::from_slice(&run(profile, args).stdout).unwrap()
 }
 
 #[test]
@@ -112,68 +100,19 @@ fn configured_reference_worker_reads_a_repository_and_reopens_its_checkpoint() {
             socket
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
-            let mut bytes = Vec::new();
-            let body = loop {
-                let mut chunk = [0; 4096];
-                let read = socket.read(&mut chunk).unwrap();
-                assert!(read > 0);
-                bytes.extend_from_slice(&chunk[..read]);
-                assert!(bytes.len() < 2_000_000);
-                if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
-                    let headers = String::from_utf8_lossy(&bytes[..end]);
-                    let len: usize = headers
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(|s| s.trim().parse().unwrap())
-                        })
-                        .unwrap();
-                    if bytes.len() >= end + 4 + len {
-                        break serde_json::from_slice::<Value>(&bytes[end + 4..end + 4 + len])
-                            .unwrap();
-                    }
-                }
-            };
-            let delta = if turn == 0 {
-                let read_tool = body["tools"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|tool| {
-                        tool["function"]["description"]
-                            .as_str()
-                            .unwrap()
-                            .starts_with("Read a bounded")
-                    })
-                    .unwrap();
-                json!({"tool_calls":[{"index":0,"id":"call-synthetic","type":"function","function":{"name":read_tool["function"]["name"],"arguments":"{\"path\":\"README.md\"}"}}]})
+            let body = read_body(&mut socket);
+            let (delta, finish) = if turn == 0 {
+                call(
+                    turn,
+                    &body,
+                    "Read a bounded",
+                    json!({ "path": "README.md" }),
+                )
             } else {
-                let observation = body["messages"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|message| message["role"] == "tool")
-                    .unwrap();
-                assert!(
-                    observation["content"]
-                        .as_str()
-                        .unwrap()
-                        .contains("cargo test --workspace")
-                );
-                json!({"content":"README.md says to run cargo test --workspace."})
+                assert!(observation(&body).contains("cargo test --workspace"));
+                answer("README.md says to run cargo test --workspace.")
             };
-            let payload = format!(
-                "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-                json!({"choices":[{"delta":delta,"finish_reason":null}]}),
-                json!({"choices":[{"delta":{},"finish_reason":if turn==0 {"tool_calls"} else {"stop"}}]})
-            );
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                payload.len(),
-                payload
-            );
-            socket.write_all(response.as_bytes()).unwrap();
+            reply(&mut socket, &delta, finish).unwrap();
             bodies.push(body);
         }
         bodies

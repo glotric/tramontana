@@ -5451,6 +5451,7 @@ dependencies = [
  "tramontana-core",
  "tramontana-persistence",
  "tramontana-platform",
+ "tramontana-test-support",
 ]
 
 [[package]]
@@ -5513,6 +5514,7 @@ dependencies = [
  "tramontana-host",
  "tramontana-persistence",
  "tramontana-platform",
+ "tramontana-test-support",
 ]
 
 [[package]]
@@ -5581,6 +5583,13 @@ dependencies = [
  "tramontana-core",
  "tramontana-host",
  "tramontana-platform",
+]
+
+[[package]]
+name = "tramontana-test-support"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

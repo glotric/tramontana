@@ -27,7 +27,6 @@
     reason = "an isolated fixture scenario; a panic is the failure report"
 )]
 
-use std::io::{Read as _, Write as _};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -43,6 +42,8 @@ use tramontana_core::services::TaskService;
 use tramontana_persistence::{Database, SqliteProviderSettingsRepository};
 use tramontana_platform::{SystemClock, canonicalize_root};
 
+use tramontana_test_support::{call, git, observation, read_body, read_hash, reply};
+
 use crate::approval::DesktopApprover;
 use crate::state::AppState;
 
@@ -56,23 +57,6 @@ struct Fixture {
     root: PathBuf,
     profile: PathBuf,
     bundles: PathBuf,
-}
-
-fn git(root: &Path, arguments: &[&str]) {
-    let status = std::process::Command::new("git")
-        .args([
-            "-c",
-            "user.name=Fixture",
-            "-c",
-            "user.email=fixture@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(arguments)
-        .current_dir(root)
-        .status()
-        .unwrap();
-    assert!(status.success(), "git {arguments:?}");
 }
 
 fn fixture() -> Fixture {
@@ -155,100 +139,13 @@ fn serve(listener: TcpListener, script: Script) -> Arc<Mutex<Vec<Value>>> {
             socket.set_read_timeout(Some(PATIENCE)).unwrap();
             let body = read_body(&mut socket);
             let (delta, finish) = script(turn, &body);
-            let payload = format!(
-                "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-                json!({"choices":[{"delta":delta,"finish_reason":null}]}),
-                json!({"choices":[{"delta":{},"finish_reason":finish}]})
-            );
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                payload.len(),
-                payload
-            );
-            if socket.write_all(response.as_bytes()).is_err() {
+            if reply(&mut socket, &delta, finish).is_err() {
                 return;
             }
             bodies.lock().unwrap().push(body);
         }
     });
     seen
-}
-
-fn read_body(socket: &mut std::net::TcpStream) -> Value {
-    let mut bytes = Vec::new();
-    loop {
-        let mut chunk = [0; 4096];
-        let read = socket.read(&mut chunk).unwrap();
-        assert!(read > 0, "the request ended before its body");
-        bytes.extend_from_slice(&chunk[..read]);
-        assert!(bytes.len() < 2_000_000, "a request past any sane size");
-        if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            let headers = String::from_utf8_lossy(&bytes[..end]);
-            let length: usize = headers
-                .lines()
-                .find_map(|line| {
-                    line.to_ascii_lowercase()
-                        .strip_prefix("content-length:")
-                        .map(|value| value.trim().parse().unwrap())
-                })
-                .unwrap();
-            if bytes.len() >= end + 4 + length {
-                return serde_json::from_slice(&bytes[end + 4..end + 4 + length]).unwrap();
-            }
-        }
-    }
-}
-
-/// A scripted call to the tool whose description starts with `description`.
-/// Names on the wire are provider-neutral aliases, so a tool is found by what
-/// it says it does.
-fn call(turn: usize, body: &Value, description: &str, arguments: Value) -> (Value, &'static str) {
-    let name = body["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|tool| {
-            tool["function"]["description"]
-                .as_str()
-                .unwrap()
-                .starts_with(description)
-        })
-        .unwrap_or_else(|| panic!("no tool described as {description:?} was offered"))["function"]
-        ["name"]
-        .clone();
-    (
-        json!({ "tool_calls": [{
-            "index": 0,
-            "id": format!("call-{turn}"),
-            "type": "function",
-            "function": { "name": name, "arguments": arguments.to_string() },
-        }] }),
-        "tool_calls",
-    )
-}
-
-/// The latest tool result the model was shown.
-fn observation(body: &Value) -> String {
-    body["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .rev()
-        .find(|message| message["role"] == "tool")
-        .unwrap()["content"]
-        .as_str()
-        .unwrap()
-        .to_owned()
-}
-
-/// The content hash of the file the model read, which its patch must carry.
-fn read_hash(body: &Value) -> String {
-    let seen = observation(body);
-    let read: Value = serde_json::from_str(&seen).unwrap();
-    read["content"]["output"]["contentHash"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no contentHash in the read the model saw: {seen}"))
-        .to_owned()
 }
 
 /// Read the greeting, patch it using that read's hash, run the project's test,

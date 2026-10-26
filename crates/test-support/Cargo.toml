@@ -1,0 +1,16 @@
+[package]
+name = "tramontana-test-support"
+description = "Test-only helpers shared by the CLI's and the desktop's end-to-end tests Never a dependency of a shipped crate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
