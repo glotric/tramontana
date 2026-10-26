@@ -40,6 +40,37 @@ pub const DOCUMENT_READ_DEADLINE: std::time::Duration = std::time::Duration::fro
 /// The longest conversation title kept, in bytes (ADR 0059).
 pub const MAX_CONVERSATION_TITLE_BYTES: usize = 200;
 
+/// The longest goal an interface may submit, in bytes.
+///
+/// The webview and a remote desktop are untrusted input like any other, so
+/// both adapters check a goal against this before it reaches a service.
+pub const MAX_GOAL_BYTES: usize = 4_096;
+
+/// A goal as an interface submitted it: trimmed, not empty, not too long.
+///
+/// # Errors
+///
+/// [`ErrorCode::InvalidRequest`] naming which rule it broke.
+pub fn checked_goal(goal: &str) -> Result<String, ErrorEnvelope> {
+    let goal = goal.trim();
+    let refused = |message: String| {
+        ErrorEnvelope::new(
+            ErrorCode::InvalidRequest,
+            message,
+            crate::contracts::CorrelationId::new("ipc"),
+        )
+    };
+    if goal.is_empty() {
+        return Err(refused("a task needs a goal".to_owned()));
+    }
+    if goal.len() > MAX_GOAL_BYTES {
+        return Err(refused(format!(
+            "a goal may be at most {MAX_GOAL_BYTES} bytes"
+        )));
+    }
+    Ok(goal.to_owned())
+}
+
 /// The longest search asked for, in bytes (ADR 0059).
 pub const MAX_SEARCH_QUERY_BYTES: usize = 200;
 

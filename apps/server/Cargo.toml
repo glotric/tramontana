@@ -1,0 +1,26 @@
+[package]
+name = "tramontana-server"
+description = "The host program: Tramontana's service on an always-on machine, for paired desktops (SHARED_PROJECTS_PLAN.md SP1)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "tramontana-server"
+path = "src/main.rs"
+
+[dependencies]
+tramontana-core = { workspace = true }
+tramontana-composition = { workspace = true }
+tramontana-host = { workspace = true }
+# The encrypted file vault, for a host without a credential store (ADR 0075).
+# Only this program turns the feature on.
+tramontana-platform = { workspace = true, features = ["file-vault"] }
+clap = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
+
+[lints]
+workspace = true

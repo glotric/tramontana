@@ -12,7 +12,9 @@ members = [
     "crates/composition",
     "crates/persistence",
     "crates/platform",
+    "crates/host",
     "apps/cli",
+    "apps/server",
     "apps/desktop/src-tauri",
     "xtask",
 ]
@@ -40,6 +42,7 @@ tramontana-adapters-documents = { path = "crates/adapters-documents" }
 tramontana-composition = { path = "crates/composition" }
 tramontana-persistence = { path = "crates/persistence" }
 tramontana-platform = { path = "crates/platform" }
+tramontana-host = { path = "crates/host" }
 
 anyhow = "1.0.104"
 # Text from attached documents (ADR 0062). Exact versions; only what reading

@@ -31,11 +31,8 @@ use crate::bundles::{self, ExportScope};
 use crate::settings;
 use crate::state::AppState;
 
-/// Longest goal this boundary accepts.
-///
-/// Payloads are size-checked before reaching a service: the webview is
-/// untrusted input like any other, however friendly it looks.
-const MAX_GOAL_BYTES: usize = 4_096;
+/// Longest goal this boundary accepts; shared with a host (SP1).
+use tramontana_core::services::MAX_GOAL_BYTES;
 
 /// Longest conversation title accepted from the webview.
 const MAX_TITLE_BYTES: usize = 512;
@@ -674,15 +671,8 @@ pub(crate) async fn start_task_on<F>(
 where
     F: FnMut(TaskUpdate) -> bool + Send + 'static,
 {
-    let goal = goal.trim().to_owned();
-    if goal.is_empty() {
-        return Err(invalid("a task needs a goal"));
-    }
-    if goal.len() > MAX_GOAL_BYTES {
-        return Err(invalid(format!(
-            "a goal may be at most {MAX_GOAL_BYTES} bytes"
-        )));
-    }
+    // The same rule a host applies to a remote desktop's goal.
+    let goal = tramontana_core::services::checked_goal(&goal)?;
 
     // The project's files are read by the task itself now, with what this
     // task selects, so resolving the project here first would only write an

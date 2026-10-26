@@ -1,0 +1,33 @@
+[package]
+name = "tramontana-host"
+description = "A host: the application service served to paired desktops over pinned TLS (ADRs 0074-0076)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+tramontana-core = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt", "sync", "macros", "time"] }
+tokio-util = { workspace = true }
+# ADR 0074: the WebSocket the browser adapter already uses (ADR 0047), and
+# the platform TLS the model adapters already use (ADR 0009). No new crate.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+native-tls = "0.2"
+tokio-native-tls = "0.3"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tramontana-composition = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true
