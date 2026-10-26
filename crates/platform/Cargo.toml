@@ -59,6 +59,8 @@ keyring = { version = "4.2.0", default-features = false, features = [
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# SP0-C spike only: hashing device tokens, the version core already uses.
+sha2 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
 
 [lints]
