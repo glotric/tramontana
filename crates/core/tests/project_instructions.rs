@@ -83,35 +83,15 @@ impl ModelProvider for Recording {
     async fn stream(
         &self,
         request: AuthorizedModelRequest,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<mpsc::Receiver<ModelEvent>, ErrorEnvelope> {
         let stream_id = request.request().request_id.clone();
         self.requests.lock().unwrap().push(request);
         self.entered.notify_one();
         if self.hold.load(Ordering::SeqCst) {
-            _cancel.cancelled().await;
-            return Err(ErrorEnvelope::new(
-                ErrorCode::Cancelled,
-                "cancelled",
-                CorrelationId::new("test"),
-            ));
+            return Err(held_until_cancelled(&cancel).await);
         }
-        let (sender, receiver) = mpsc::channel(4);
-        sender
-            .send(ModelEvent::TextDelta {
-                stream_id,
-                offset: 0,
-                text: "Read and understood.".into(),
-            })
-            .await
-            .unwrap();
-        sender
-            .send(ModelEvent::Completed {
-                stop_reason: StopReason::Stop,
-            })
-            .await
-            .unwrap();
-        Ok(receiver)
+        Ok(answer_stream(stream_id, "Read and understood."))
     }
 }
 
@@ -144,29 +124,15 @@ fn file(path: &str, kind: ConfigurationKind, content: &str) -> RawSource {
 }
 
 fn service(model: &Arc<Recording>, files: Option<Arc<Files>>) -> TaskService {
-    let events = Arc::new(InMemoryEventStore::new());
-    let ids = Arc::new(SequentialIdSource::new());
-    let (tools, permissions, releases) = assemble_tool_plane(
-        vec![Arc::new(FakeToolProvider::new()) as Arc<dyn ToolProvider>],
-        Arc::new(InMemoryApprovalStore::new()),
+    let service = test_service(
+        Arc::new(InMemoryEventStore::new()),
+        vec![Arc::clone(model) as Arc<dyn ModelProvider>],
+        vec![Arc::new(FakeToolProvider::new())],
         Arc::new(ScriptedApprover::unavailable()),
-        ids.clone(),
-    )
-    .unwrap();
-    let service = TaskService::new(
-        in_memory_repositories(events),
-        Providers {
-            models: vec![Arc::clone(model) as Arc<dyn ModelProvider>],
-            tools,
-            permissions,
-            releases,
-            worker: Arc::new(ReferenceWorker::new(
-                vec!["fake.tool.echo".into()],
-                ReadOnlyLimits::default(),
-            )),
-        },
-        Arc::new(FakeClock::new()),
-        ids,
+        Arc::new(ReferenceWorker::new(
+            vec!["fake.tool.echo".into()],
+            ReadOnlyLimits::default(),
+        )),
     )
     .with_routing_mode(RoutingMode::LocalOnly);
     match files {
@@ -175,20 +141,23 @@ fn service(model: &Arc<Recording>, files: Option<Arc<Files>>) -> TaskService {
     }
 }
 
+/// A conversation in a new project rooted at `/fixture`.
+async fn conversation(service: &TaskService) -> ConversationId {
+    let project = service
+        .create_project("Fixture", vec!["/fixture".into()])
+        .await
+        .unwrap();
+    service
+        .create_conversation(Some(project.project_id), "Question")
+        .await
+        .unwrap()
+        .conversation_id
+}
+
 /// Start a task in a project and wait for it to end.
 async fn run(service: &TaskService, project: bool) -> Vec<EventEnvelope> {
     let conversation_id = if project {
-        let project = service
-            .create_project("Fixture", vec!["/fixture".into()])
-            .await
-            .unwrap();
-        Some(
-            service
-                .create_conversation(Some(project.project_id), "Question")
-                .await
-                .unwrap()
-                .conversation_id,
-        )
+        Some(conversation(service).await)
     } else {
         None
     };
@@ -200,24 +169,14 @@ async fn run(service: &TaskService, project: bool) -> Vec<EventEnvelope> {
         })
         .await
         .unwrap();
-    timeout(Duration::from_secs(20), async {
-        loop {
-            let events = service.replay_task_events(&task, 0).await.unwrap();
-            if events.last().is_some_and(|event| {
-                matches!(
-                    event.kind,
-                    TaskEventKind::TaskCompleted
-                        | TaskEventKind::TaskFailed
-                        | TaskEventKind::TaskCancelled
-                )
-            }) {
-                return events;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
+    wait_events(
+        service,
+        &task,
+        Duration::from_secs(20),
+        Duration::from_millis(20),
+        ended,
+    )
     .await
-    .unwrap()
 }
 
 /// The context manifest the task recorded.
@@ -440,20 +399,12 @@ async fn an_instruction_file_that_changed_stops_a_resume() {
     )]);
     let service = service(&model, Some(Arc::clone(&files)));
 
-    let project = service
-        .create_project("Fixture", vec!["/fixture".into()])
-        .await
-        .unwrap();
-    let conversation = service
-        .create_conversation(Some(project.project_id), "Question")
-        .await
-        .unwrap();
+    let conversation = conversation(&service).await;
     let task = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation.conversation_id),
-            goal: "Say what the project asks for.".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation,
+            "Say what the project asks for.",
+        ))
         .await
         .unwrap();
     timeout(Duration::from_secs(5), model.entered.notified())
@@ -494,20 +445,12 @@ async fn an_untouched_project_resumes_as_it_always_did() {
     )]);
     let service = service(&model, Some(files));
 
-    let project = service
-        .create_project("Fixture", vec!["/fixture".into()])
-        .await
-        .unwrap();
-    let conversation = service
-        .create_conversation(Some(project.project_id), "Question")
-        .await
-        .unwrap();
+    let conversation = conversation(&service).await;
     let task = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation.conversation_id),
-            goal: "Say what the project asks for.".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation,
+            "Say what the project asks for.",
+        ))
         .await
         .unwrap();
     timeout(Duration::from_secs(5), model.entered.notified())
@@ -521,17 +464,14 @@ async fn an_untouched_project_resumes_as_it_always_did() {
         .await
         .unwrap();
 
-    timeout(Duration::from_secs(20), async {
-        loop {
-            let state = service.get_task(&task).await.unwrap().state;
-            if state.is_terminal() {
-                return state;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_state(
+        &service,
+        &task,
+        Duration::from_secs(20),
+        Duration::from_millis(20),
+        TaskState::is_terminal,
+    )
+    .await;
 
     let messages = model.system_messages();
     assert!(messages[1].contains("Answer in one sentence."));
@@ -542,37 +482,26 @@ async fn run_with(
     service: &TaskService,
     selection: ConfigurationSelection,
 ) -> (TaskId, Vec<EventEnvelope>) {
-    let project = service
-        .create_project("Fixture", vec!["/fixture".into()])
-        .await
-        .unwrap();
-    let conversation = service
-        .create_conversation(Some(project.project_id), "Question")
-        .await
-        .unwrap();
+    let conversation = conversation(service).await;
     let task = service
         .start_task(StartTaskRequest {
-            conversation_id: Some(conversation.conversation_id),
-            goal: "Say what the project asks for.".into(),
             selection: Some(selection),
-            ..Default::default()
+            ..start_request(&conversation, "Say what the project asks for.")
         })
         .await
         .unwrap();
-    let events = timeout(Duration::from_secs(20), async {
-        loop {
-            let events = service.replay_task_events(&task, 0).await.unwrap();
-            if events
+    let events = wait_events(
+        service,
+        &task,
+        Duration::from_secs(20),
+        Duration::from_millis(20),
+        |events| {
+            events
                 .last()
                 .is_some_and(|event| matches!(event.kind, TaskEventKind::TaskCompleted))
-            {
-                return events;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
+        },
+    )
+    .await;
     (task, events)
 }
 
@@ -635,23 +564,14 @@ async fn a_task_that_named_a_skill_still_resumes() {
     let model = Recording::holding();
     let service = service(&model, Some(Files::holding(vec![review_skill()])));
 
-    let project = service
-        .create_project("Fixture", vec!["/fixture".into()])
-        .await
-        .unwrap();
-    let conversation = service
-        .create_conversation(Some(project.project_id), "Question")
-        .await
-        .unwrap();
+    let conversation = conversation(&service).await;
     let task = service
         .start_task(StartTaskRequest {
-            conversation_id: Some(conversation.conversation_id),
-            goal: "Say what the project asks for.".into(),
             selection: Some(ConfigurationSelection {
                 skill_ids: vec!["review".to_owned()],
                 ..ConfigurationSelection::default()
             }),
-            ..Default::default()
+            ..start_request(&conversation, "Say what the project asks for.")
         })
         .await
         .unwrap();
@@ -665,16 +585,14 @@ async fn a_task_that_named_a_skill_still_resumes() {
         .resume_task(&task, &checkpoint.checkpoint_id)
         .await
         .unwrap();
-    timeout(Duration::from_secs(20), async {
-        loop {
-            if service.get_task(&task).await.unwrap().state.is_terminal() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_state(
+        &service,
+        &task,
+        Duration::from_secs(20),
+        Duration::from_millis(20),
+        TaskState::is_terminal,
+    )
+    .await;
 
     assert!(
         model

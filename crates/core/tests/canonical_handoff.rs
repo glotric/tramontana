@@ -133,26 +133,19 @@ impl Harness {
         let repos = in_memory_repositories(events);
         let ids = Arc::new(SequentialIdSource::new());
         let tool = Arc::new(BlockingTool::default());
-        let (tools, permissions, releases) = assemble_tool_plane(
-            vec![tool.clone()],
-            Arc::new(InMemoryApprovalStore::new()),
-            Arc::new(ScriptedApprover::unavailable()),
-            ids.clone(),
-        )
-        .unwrap();
 
         Self {
             repos,
-            providers: Providers {
-                models: vec![Arc::new(FakeModelProvider::streaming(["answer"]))],
-                tools,
-                permissions,
-                releases,
-                worker: Arc::new(StartingWorker {
+            providers: test_providers(
+                vec![Arc::new(FakeModelProvider::streaming(["answer"]))],
+                vec![tool.clone()],
+                Arc::new(ScriptedApprover::unavailable()),
+                Arc::new(StartingWorker {
                     checkpoint_support: support,
                     first_step_value: first_step_value.to_owned(),
                 }),
-            },
+                ids.clone(),
+            ),
             ids,
             tool,
         }
@@ -178,11 +171,7 @@ impl Harness {
             .await
             .unwrap();
         let task_id = service
-            .start_task(StartTaskRequest {
-                conversation_id: Some(conversation.conversation_id),
-                goal: GOAL.into(),
-                ..Default::default()
-            })
+            .start_task(start_request(&conversation.conversation_id, GOAL))
             .await
             .unwrap();
 
@@ -196,17 +185,14 @@ impl Harness {
 
 /// Wait for a task to stop moving.
 async fn settled(service: &TaskService, task_id: &TaskId) -> TaskState {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let state = service.get_task(task_id).await.unwrap().state;
-            if state.is_terminal() || state == TaskState::Interrupted {
-                return state;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
+    wait_state(
+        service,
+        task_id,
+        Duration::from_secs(5),
+        Duration::from_millis(1),
+        |state| state.is_terminal() || state == TaskState::Interrupted,
+    )
     .await
-    .expect("the task never settled")
 }
 
 #[tokio::test]

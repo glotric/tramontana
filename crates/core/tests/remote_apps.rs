@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
 use tramontana_core::{contracts::*, ports::*, services::*, testing::*};
 
@@ -110,42 +110,11 @@ impl ModelProvider for Model {
             .iter()
             .any(|message| message.role == MessageRole::Tool);
         let stream_id = request.request().request_id.clone();
-        let (sender, receiver) = mpsc::channel(4);
-        if answered {
-            sender
-                .send(ModelEvent::TextDelta {
-                    stream_id,
-                    offset: 0,
-                    text: "Done.".into(),
-                })
-                .await
-                .unwrap();
-            sender
-                .send(ModelEvent::Completed {
-                    stop_reason: StopReason::Stop,
-                })
-                .await
-                .unwrap();
+        Ok(if answered {
+            answer_stream(stream_id, "Done.")
         } else {
-            sender
-                .send(ModelEvent::ToolCallDelta {
-                    stream_id,
-                    offset: 0,
-                    call_index: 0,
-                    call_id: Some("call-1".into()),
-                    name: Some(TOOL.into()),
-                    delta: "{}".into(),
-                })
-                .await
-                .unwrap();
-            sender
-                .send(ModelEvent::Completed {
-                    stop_reason: StopReason::ToolCall,
-                })
-                .await
-                .unwrap();
-        }
-        Ok(receiver)
+            tool_call_stream(stream_id, "call-1", TOOL, "{}")
+        })
     }
 }
 
@@ -204,23 +173,22 @@ async fn run(
         })
         .await
         .unwrap();
-    let events = timeout(Duration::from_secs(10), async {
-        loop {
-            let events = service.replay_task_events(&task, 0).await.unwrap();
-            if events.iter().any(|event| {
+    let events = wait_events(
+        &service,
+        &task,
+        Duration::from_secs(10),
+        Duration::from_millis(2),
+        |events| {
+            events.iter().any(|event| {
                 matches!(
                     event.kind,
                     TaskEventKind::TaskCompleted | TaskEventKind::TaskFailed
                 ) || matches!(&event.payload, EventPayload::DiagnosticRecorded { code, .. }
                     if code.starts_with("worker.stopped"))
-            }) {
-                return events;
-            }
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
-    })
-    .await
-    .unwrap();
+            })
+        },
+    )
+    .await;
     (events, model, remote, approvals)
 }
 

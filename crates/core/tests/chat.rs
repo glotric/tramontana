@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::{sync::mpsc, time::timeout};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tramontana_core::{contracts::*, ports::*, services::*, testing::*};
 
@@ -61,12 +61,7 @@ impl ModelProvider for Numbered {
         cancel: CancellationToken,
     ) -> Result<mpsc::Receiver<ModelEvent>, ErrorEnvelope> {
         if self.hold.load(std::sync::atomic::Ordering::SeqCst) {
-            cancel.cancelled().await;
-            return Err(ErrorEnvelope::new(
-                ErrorCode::Cancelled,
-                "cancelled",
-                CorrelationId::new("test"),
-            ));
+            return Err(held_until_cancelled(&cancel).await);
         }
         let stream_id = request.request().request_id.clone();
         let answer = {
@@ -74,22 +69,7 @@ impl ModelProvider for Numbered {
             requests.push(request.request().clone());
             format!("Answer {}.", requests.len())
         };
-        let (sender, receiver) = mpsc::channel(4);
-        sender
-            .send(ModelEvent::TextDelta {
-                stream_id,
-                offset: 0,
-                text: answer,
-            })
-            .await
-            .unwrap();
-        sender
-            .send(ModelEvent::Completed {
-                stop_reason: StopReason::Stop,
-            })
-            .await
-            .unwrap();
-        Ok(receiver)
+        Ok(answer_stream(stream_id, answer))
     }
 }
 
@@ -138,32 +118,18 @@ impl ToolProvider for ProjectReader {
 }
 
 fn service(model: &Arc<Numbered>) -> TaskService {
-    let events = Arc::new(InMemoryEventStore::new());
-    let ids = Arc::new(SequentialIdSource::new());
-    let (tools, permissions, releases) = assemble_tool_plane(
+    test_service(
+        Arc::new(InMemoryEventStore::new()),
+        vec![Arc::clone(model) as Arc<dyn ModelProvider>],
         vec![
             Arc::new(FakeToolProvider::new()) as Arc<dyn ToolProvider>,
             Arc::new(ProjectReader) as Arc<dyn ToolProvider>,
         ],
-        Arc::new(InMemoryApprovalStore::new()),
         Arc::new(ScriptedApprover::unavailable()),
-        ids.clone(),
-    )
-    .unwrap();
-    TaskService::new(
-        in_memory_repositories(events),
-        Providers {
-            models: vec![Arc::clone(model) as Arc<dyn ModelProvider>],
-            tools,
-            permissions,
-            releases,
-            worker: Arc::new(ReferenceWorker::new(
-                vec!["project.fs.read".into()],
-                ReadOnlyLimits::default(),
-            )),
-        },
-        Arc::new(FakeClock::new()),
-        ids,
+        Arc::new(ReferenceWorker::new(
+            vec!["project.fs.read".into()],
+            ReadOnlyLimits::default(),
+        )),
     )
     .with_routing_mode(RoutingMode::LocalOnly)
 }
@@ -174,31 +140,10 @@ async fn ask(
     goal: &str,
 ) -> Vec<EventEnvelope> {
     let task = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation_id.clone()),
-            goal: goal.into(),
-            ..Default::default()
-        })
+        .start_task(start_request(conversation_id, goal))
         .await
         .unwrap();
-    timeout(Duration::from_secs(20), async {
-        loop {
-            let events = service.replay_task_events(&task, 0).await.unwrap();
-            if events.last().is_some_and(|event| {
-                matches!(
-                    event.kind,
-                    TaskEventKind::TaskCompleted
-                        | TaskEventKind::TaskFailed
-                        | TaskEventKind::TaskCancelled
-                )
-            }) {
-                return events;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap()
+    settled(service, &task).await
 }
 
 fn manifest(events: &[EventEnvelope]) -> ContextManifest {
@@ -300,30 +245,26 @@ async fn an_attached_file_is_sent_before_the_goal_as_data_and_recorded() {
 
     let task = service
         .start_task(StartTaskRequest {
-            conversation_id: Some(chat.conversation_id.clone()),
-            goal: "Summarize it.".into(),
             attachments: vec![AttachmentInput {
                 name: "/home/me/notes/plan.md".into(),
                 bytes: b"# Plan\nShip on Friday.".to_vec(),
             }],
-            ..Default::default()
+            ..start_request(&chat.conversation_id, "Summarize it.")
         })
         .await
         .unwrap();
-    let events = timeout(Duration::from_secs(20), async {
-        loop {
-            let events = service.replay_task_events(&task, 0).await.unwrap();
-            if events
+    let events = wait_events(
+        &service,
+        &task,
+        Duration::from_secs(20),
+        Duration::from_millis(20),
+        |events| {
+            events
                 .last()
                 .is_some_and(|event| event.kind == TaskEventKind::TaskCompleted)
-            {
-                return events;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
+        },
+    )
+    .await;
 
     // The model reads the file, named and marked as data, just before the goal.
     let sent: Vec<_> = model
@@ -368,13 +309,11 @@ async fn a_file_that_cannot_be_attached_leaves_no_task_behind() {
 
     let refused = service
         .start_task(StartTaskRequest {
-            conversation_id: Some(chat.conversation_id.clone()),
-            goal: "Read this.".into(),
             attachments: vec![AttachmentInput {
                 name: "contract.pdf".into(),
                 bytes: b"%PDF-1.7".to_vec(),
             }],
-            ..Default::default()
+            ..start_request(&chat.conversation_id, "Read this.")
         })
         .await
         .unwrap_err();
@@ -460,11 +399,7 @@ async fn a_conversation_with_a_task_under_way_is_not_deleted() {
     let service = service(&model);
     let chat = service.create_conversation(None, "Busy").await.unwrap();
     let task = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(chat.conversation_id.clone()),
-            goal: "Think hard.".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(&chat.conversation_id, "Think hard."))
         .await
         .unwrap();
 
@@ -558,29 +493,26 @@ async fn a_transcript_holds_the_conversation_oldest_first_and_names_its_files() 
     ask(&service, &chat.conversation_id, "Name a wind.").await;
     let task = service
         .start_task(StartTaskRequest {
-            conversation_id: Some(chat.conversation_id.clone()),
-            goal: "Summarize the notes.".into(),
             attachments: vec![AttachmentInput {
                 name: "notes.md".into(),
                 bytes: b"Private detail.".to_vec(),
             }],
-            ..Default::default()
+            ..start_request(&chat.conversation_id, "Summarize the notes.")
         })
         .await
         .unwrap();
-    timeout(Duration::from_secs(20), async {
-        while !service
-            .replay_task_events(&task, 0)
-            .await
-            .unwrap()
-            .iter()
-            .any(|event| event.kind == TaskEventKind::TaskCompleted)
-        {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_events(
+        &service,
+        &task,
+        Duration::from_secs(20),
+        Duration::from_millis(20),
+        |events| {
+            events
+                .iter()
+                .any(|event| event.kind == TaskEventKind::TaskCompleted)
+        },
+    )
+    .await;
 
     let names_only = service
         .transcript(
@@ -628,31 +560,15 @@ async fn a_transcript_holds_the_conversation_oldest_first_and_names_its_files() 
 async fn a_chat_is_answered_by_a_model_that_cannot_call_tools() {
     // Regression: the worker demanded a tool-calling model even when it
     // offered no tools, so a chat on a plain model stopped (ADR 0057).
-    let events = Arc::new(InMemoryEventStore::new());
-    let ids = Arc::new(SequentialIdSource::new());
-    let (tools, permissions, releases) = assemble_tool_plane(
-        vec![Arc::new(ProjectReader) as Arc<dyn ToolProvider>],
-        Arc::new(InMemoryApprovalStore::new()),
+    let service = test_service(
+        Arc::new(InMemoryEventStore::new()),
+        vec![Arc::new(FakeModelProvider::streaming(["Plainly."]))],
+        vec![Arc::new(ProjectReader)],
         Arc::new(ScriptedApprover::unavailable()),
-        ids.clone(),
-    )
-    .unwrap();
-    let service = TaskService::new(
-        in_memory_repositories(events),
-        Providers {
-            models: vec![
-                Arc::new(FakeModelProvider::streaming(["Plainly."])) as Arc<dyn ModelProvider>
-            ],
-            tools,
-            permissions,
-            releases,
-            worker: Arc::new(ReferenceWorker::new(
-                vec!["project.fs.read".into()],
-                ReadOnlyLimits::default(),
-            )),
-        },
-        Arc::new(FakeClock::new()),
-        ids,
+        Arc::new(ReferenceWorker::new(
+            vec!["project.fs.read".into()],
+            ReadOnlyLimits::default(),
+        )),
     )
     .with_routing_mode(RoutingMode::LocalOnly);
     let chat = service.create_conversation(None, "Chat").await.unwrap();
@@ -777,24 +693,14 @@ fn local(year: i32, month: u8, day: u8, hour: u8, minute: u8) -> LocalDateTime {
 }
 
 async fn settled(service: &TaskService, task: &TaskId) -> Vec<EventEnvelope> {
-    timeout(Duration::from_secs(20), async {
-        loop {
-            let events = service.replay_task_events(task, 0).await.unwrap();
-            if events.last().is_some_and(|event| {
-                matches!(
-                    event.kind,
-                    TaskEventKind::TaskCompleted
-                        | TaskEventKind::TaskFailed
-                        | TaskEventKind::TaskCancelled
-                )
-            }) {
-                return events;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
+    wait_events(
+        service,
+        task,
+        Duration::from_secs(20),
+        Duration::from_millis(20),
+        ended,
+    )
     .await
-    .unwrap()
 }
 
 #[tokio::test]
@@ -1179,11 +1085,7 @@ async fn a_project_with_a_task_under_way_is_not_removed() {
         .await
         .unwrap();
     let task = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation.conversation_id),
-            goal: "Think.".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(&conversation.conversation_id, "Think."))
         .await
         .unwrap();
     assert_eq!(
@@ -1306,10 +1208,8 @@ async fn a_personal_skill_is_imported_given_to_a_task_recorded_and_removed() {
     let chat = service.create_conversation(None, "Chat").await.unwrap();
     let task = service
         .start_task(StartTaskRequest {
-            conversation_id: Some(chat.conversation_id.clone()),
-            goal: "Explain VAT.".into(),
             personal_skills: vec!["plain-english".into()],
-            ..Default::default()
+            ..start_request(&chat.conversation_id, "Explain VAT.")
         })
         .await
         .unwrap();
@@ -1344,10 +1244,8 @@ async fn a_personal_skill_is_imported_given_to_a_task_recorded_and_removed() {
     let before = service.list_tasks(None).await.unwrap().len();
     let missing = service
         .start_task(StartTaskRequest {
-            conversation_id: Some(chat.conversation_id.clone()),
-            goal: "Again.".into(),
             personal_skills: vec!["no-such-skill".into()],
-            ..Default::default()
+            ..start_request(&chat.conversation_id, "Again.")
         })
         .await
         .unwrap_err();

@@ -88,26 +88,12 @@ async fn service(
     tools: Vec<Arc<dyn ToolProvider>>,
     worker: Arc<dyn AgentProvider>,
 ) -> TaskService {
-    let ids = Arc::new(SequentialIdSource::new());
-    let (registry, permissions, releases) = assemble_tool_plane(
+    test_service(
+        Arc::new(InMemoryEventStore::new()),
+        plane.providers.clone(),
         tools,
-        Arc::new(InMemoryApprovalStore::new()),
         Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowSite)),
-        ids.clone(),
-    )
-    .unwrap();
-    let events = Arc::new(InMemoryEventStore::new());
-    TaskService::new(
-        in_memory_repositories(events),
-        Providers {
-            models: plane.providers.clone(),
-            tools: registry,
-            permissions,
-            releases,
-            worker,
-        },
-        Arc::new(FakeClock::new()),
-        ids,
+        worker,
     )
     .with_routing_mode(RoutingMode::LocalOnly)
     .with_worker_choice(worker_choice(true, Vec::new()))
@@ -119,9 +105,12 @@ async fn service(
 
 /// Wait until the task ended, or stopped for another worker.
 async fn settled(service: &TaskService, task: &TaskId, after: usize) -> Vec<EventEnvelope> {
-    tokio::time::timeout(Duration::from_secs(600), async {
-        loop {
-            let events = service.replay_task_events(task, 0).await.unwrap();
+    wait_events(
+        service,
+        task,
+        Duration::from_secs(600),
+        Duration::from_millis(50),
+        |events| {
             let fresh = &events[after.min(events.len())..];
             let ended = fresh.iter().any(|event| {
                 matches!(
@@ -136,14 +125,10 @@ async fn settled(service: &TaskService, task: &TaskId, after: usize) -> Vec<Even
                 .is_some_and(|event| event.kind == TaskEventKind::CheckpointSaved)
                 && fresh.iter().any(|event| matches!(&event.payload,
                     EventPayload::TaskStateChanged { reason_code, .. } if reason_code == "worker.stopped"));
-            if ended || stopped {
-                return events;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
+            ended || stopped
+        },
+    )
     .await
-    .unwrap()
 }
 
 /// What the task did, one line per step, for the evidence note.
@@ -360,11 +345,10 @@ async fn a_task_whose_model_stopped_is_handed_to_a_real_one() {
         .await
         .unwrap();
     let task = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation.conversation_id),
-            goal: "Read README.md and tell me the release codename.".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation.conversation_id,
+            "Read README.md and tell me the release codename.",
+        ))
         .await
         .unwrap();
     let events = settled(&service, &task, 0).await;

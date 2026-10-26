@@ -17,7 +17,9 @@ use tramontana_core::contracts::{
     ApprovalDecisionKind, Capability, CapabilityScope, GrantKind, InvocationId, ProjectId,
     RiskClass, TaskId, Timestamp,
 };
-use tramontana_core::ports::{ApprovalStore, PermissionPolicy, PermissionQuery, reason};
+use tramontana_core::ports::{
+    ApprovalStore, PermissionOutcome, PermissionPolicy, PermissionQuery, reason,
+};
 use tramontana_core::services::PermissionManager;
 use tramontana_core::testing::{InMemoryApprovalStore, ScriptedApprover, SequentialIdSource};
 
@@ -62,55 +64,80 @@ fn manager(approver: ScriptedApprover) -> (Arc<PermissionManager>, Arc<InMemoryA
     (Arc::new(manager), store)
 }
 
-// --- The safe default ------------------------------------------------------
-
-#[tokio::test]
-async fn a_read_inside_an_opened_project_needs_no_approval() {
-    let (manager, _) = manager(ScriptedApprover::unavailable());
-    let outcome = manager
-        .evaluate(&read_query(), &task(), &invocation(), &now())
+async fn eval(manager: &PermissionManager, query: &PermissionQuery) -> PermissionOutcome {
+    manager
+        .evaluate(query, &task(), &invocation(), &now())
         .await
-        .unwrap();
-
-    assert!(outcome.is_allowed());
-    assert_eq!(outcome.reason_code(), reason::SAFE_DEFAULT);
+        .unwrap()
 }
 
-#[tokio::test]
-async fn a_read_that_leaves_the_device_is_not_a_safe_default() {
-    // "A read action that sends content to a cloud endpoint is not treated as
-    // a harmless local read." (SECURITY_AND_PERMISSIONS.md §3.1)
-    let mut query = read_query();
-    query.scope.releases_data = true;
-
-    let (manager, _) = manager(ScriptedApprover::unavailable());
-    let outcome = manager
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
-
-    assert!(!outcome.is_allowed(), "a data release must be asked about");
-    assert_eq!(outcome.reason_code(), reason::NO_APPROVER);
-}
-
-// --- Fail closed -----------------------------------------------------------
+// --- Single decisions: the safe default, and failing closed -------------
 
 #[tokio::test]
-async fn a_modifying_tool_with_nobody_to_ask_is_denied() {
-    let query = PermissionQuery {
-        risk_class: RiskClass::Modify,
-        capability: Capability::new("filesystem.modify"),
-        tool_id: "builtin.fs.write".to_owned(),
-        ..read_query()
-    };
-    let (manager, _) = manager(ScriptedApprover::unavailable());
-    let outcome = manager
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
-
-    assert!(!outcome.is_allowed());
-    assert_eq!(outcome.reason_code(), reason::NO_APPROVER);
+async fn single_decisions() {
+    let mut leaves_the_device = read_query();
+    leaves_the_device.scope.releases_data = true;
+    let cases = [
+        (
+            "a read inside an opened project needs no approval",
+            read_query(),
+            ScriptedApprover::unavailable(),
+            true,
+            reason::SAFE_DEFAULT,
+        ),
+        // "A read action that sends content to a cloud endpoint is not treated
+        // as a harmless local read." (SECURITY_AND_PERMISSIONS.md §3.1)
+        (
+            "a read that leaves the device is not a safe default",
+            leaves_the_device,
+            ScriptedApprover::unavailable(),
+            false,
+            reason::NO_APPROVER,
+        ),
+        (
+            "a modifying tool with nobody to ask is denied",
+            PermissionQuery {
+                risk_class: RiskClass::Modify,
+                capability: Capability::new("filesystem.modify"),
+                tool_id: "builtin.fs.write".to_owned(),
+                ..read_query()
+            },
+            ScriptedApprover::unavailable(),
+            false,
+            reason::NO_APPROVER,
+        ),
+        // "Projectless tasks have no implicit filesystem or terminal access."
+        (
+            "a projectless task gets no filesystem scope",
+            PermissionQuery {
+                scope: CapabilityScope {
+                    project_id: None,
+                    roots: vec!["/work/project".to_owned()],
+                    releases_data: false,
+                },
+                ..read_query()
+            },
+            ScriptedApprover::always(ApprovalDecisionKind::AllowProject),
+            false,
+            reason::NO_PROJECT,
+        ),
+        (
+            "a denial is a denial",
+            PermissionQuery {
+                risk_class: RiskClass::Dangerous,
+                ..read_query()
+            },
+            ScriptedApprover::always(ApprovalDecisionKind::Deny),
+            false,
+            reason::USER_DENIED,
+        ),
+    ];
+    for (case, query, approver, allowed, reason_code) in cases {
+        let (manager, _) = manager(approver);
+        let outcome = eval(&manager, &query).await;
+        assert_eq!(outcome.is_allowed(), allowed, "{case}");
+        assert_eq!(outcome.reason_code(), reason_code, "{case}");
+    }
 }
 
 #[tokio::test]
@@ -120,50 +147,10 @@ async fn unreadable_policy_denies_rather_than_permits() {
     let (manager, store) = manager(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce));
     store.break_storage();
 
-    let outcome = manager
-        .evaluate(&read_query(), &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    let outcome = eval(&manager, &read_query()).await;
 
     assert!(!outcome.is_allowed(), "unknown policy must not permit");
     assert_eq!(outcome.reason_code(), reason::POLICY_UNAVAILABLE);
-}
-
-#[tokio::test]
-async fn a_projectless_task_gets_no_filesystem_scope() {
-    // "Projectless tasks have no implicit filesystem or terminal access."
-    let query = PermissionQuery {
-        scope: CapabilityScope {
-            project_id: None,
-            roots: vec!["/work/project".to_owned()],
-            releases_data: false,
-        },
-        ..read_query()
-    };
-    let (manager, _) = manager(ScriptedApprover::always(ApprovalDecisionKind::AllowProject));
-    let outcome = manager
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
-
-    assert!(!outcome.is_allowed());
-    assert_eq!(outcome.reason_code(), reason::NO_PROJECT);
-}
-
-#[tokio::test]
-async fn a_denial_is_a_denial() {
-    let query = PermissionQuery {
-        risk_class: RiskClass::Dangerous,
-        ..read_query()
-    };
-    let (manager, _) = manager(ScriptedApprover::always(ApprovalDecisionKind::Deny));
-    let outcome = manager
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
-
-    assert!(!outcome.is_allowed());
-    assert_eq!(outcome.reason_code(), reason::USER_DENIED);
 }
 
 // --- Grants ----------------------------------------------------------------
@@ -176,16 +163,10 @@ async fn a_project_grant_covers_later_requests_without_asking_again() {
     };
     let (manager, store) = manager(ScriptedApprover::always(ApprovalDecisionKind::AllowProject));
 
-    let first = manager
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    let first = eval(&manager, &query).await;
     assert_eq!(first.reason_code(), reason::APPROVED_PROJECT);
 
-    let second = manager
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    let second = eval(&manager, &query).await;
     assert_eq!(second.reason_code(), reason::PROJECT_GRANT);
 
     // Exactly one question was asked, not two.
@@ -203,10 +184,7 @@ async fn a_read_grant_cannot_authorize_a_write() {
         capability: Capability::new("filesystem.read"),
         ..read_query()
     };
-    manager
-        .evaluate(&read, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    eval(&manager, &read).await;
     assert_eq!(
         store
             .list_grants(&ProjectId::new("project-1"))
@@ -227,11 +205,8 @@ async fn a_read_grant_cannot_authorize_a_write() {
             ..read_query()
         };
         // Deny at the prompt so the only way through is the existing grant.
-        let (denying, _) = manager_with_existing_grant(&store, ApprovalDecisionKind::Deny);
-        let outcome = denying
-            .evaluate(&query, &task(), &invocation(), &now())
-            .await
-            .unwrap();
+        let denying = manager_with_existing_grant(&store, ApprovalDecisionKind::Deny);
+        let outcome = eval(&denying, &query).await;
         assert!(
             !outcome.is_allowed(),
             "a filesystem.read grant must not cover {escalation}"
@@ -247,21 +222,15 @@ async fn a_grant_never_covers_a_higher_risk_than_it_was_issued_for() {
         risk_class: RiskClass::Modify,
         ..read_query()
     };
-    manager
-        .evaluate(&modest, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    eval(&manager, &modest).await;
 
     // Same tool, same capability, but now a dangerous use.
     let dangerous = PermissionQuery {
         risk_class: RiskClass::Dangerous,
         ..read_query()
     };
-    let (denying, _) = manager_with_existing_grant(&store, ApprovalDecisionKind::Deny);
-    let outcome = denying
-        .evaluate(&dangerous, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    let denying = manager_with_existing_grant(&store, ApprovalDecisionKind::Deny);
+    let outcome = eval(&denying, &dangerous).await;
 
     assert!(
         !outcome.is_allowed(),
@@ -277,21 +246,15 @@ async fn a_grant_does_not_reach_a_root_it_was_not_given() {
         scope: scope(&["/work/project"]),
         ..read_query()
     };
-    manager
-        .evaluate(&granted, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    eval(&manager, &granted).await;
 
     let elsewhere = PermissionQuery {
         risk_class: RiskClass::Modify,
         scope: scope(&["/work/other"]),
         ..read_query()
     };
-    let (denying, _) = manager_with_existing_grant(&store, ApprovalDecisionKind::Deny);
-    let outcome = denying
-        .evaluate(&elsewhere, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    let denying = manager_with_existing_grant(&store, ApprovalDecisionKind::Deny);
+    let outcome = eval(&denying, &elsewhere).await;
 
     assert!(!outcome.is_allowed());
 }
@@ -303,10 +266,7 @@ async fn revoking_a_grant_blocks_the_next_invocation() {
         risk_class: RiskClass::Modify,
         ..read_query()
     };
-    manager
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    eval(&manager, &query).await;
 
     let grants = store
         .list_grants(&ProjectId::new("project-1"))
@@ -314,11 +274,8 @@ async fn revoking_a_grant_blocks_the_next_invocation() {
         .unwrap();
     assert!(store.revoke_grant(&grants[0].grant_id).await.unwrap());
 
-    let (denying, _) = manager_with_existing_grant(&store, ApprovalDecisionKind::Deny);
-    let outcome = denying
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    let denying = manager_with_existing_grant(&store, ApprovalDecisionKind::Deny);
+    let outcome = eval(&denying, &query).await;
     assert!(
         !outcome.is_allowed(),
         "a revoked grant must stop authorizing"
@@ -333,10 +290,7 @@ async fn a_non_persistable_operation_is_never_offered_a_project_grant() {
         ..read_query()
     };
     let (manager, store) = manager(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce));
-    manager
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    eval(&manager, &query).await;
 
     let offered = &store.requests()[0].eligible_decisions;
     assert!(!offered.contains(&ApprovalDecisionKind::AllowProject));
@@ -354,10 +308,7 @@ async fn an_approver_cannot_persist_a_grant_the_policy_forbade() {
         ..read_query()
     };
     let (manager, store) = manager(ScriptedApprover::always(ApprovalDecisionKind::AllowProject));
-    let outcome = manager
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    let outcome = eval(&manager, &query).await;
 
     assert!(!outcome.is_allowed());
     assert!(
@@ -407,16 +358,10 @@ async fn allow_once_does_not_survive_into_a_second_request() {
     };
     let (manager, store) = manager(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce));
 
-    let first = manager
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    let first = eval(&manager, &query).await;
     assert_eq!(first.reason_code(), reason::APPROVED_ONCE);
 
-    let second = manager
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    let second = eval(&manager, &query).await;
     assert_eq!(second.reason_code(), reason::APPROVED_ONCE, "asked again");
 
     // Two separate questions, two separate approvals — no grant was persisted.
@@ -538,13 +483,12 @@ async fn an_approval_prompt_carries_no_argument_values() {
 fn manager_with_existing_grant(
     store: &Arc<InMemoryApprovalStore>,
     answer: ApprovalDecisionKind,
-) -> (Arc<PermissionManager>, Arc<InMemoryApprovalStore>) {
-    let manager = PermissionManager::new(
+) -> PermissionManager {
+    PermissionManager::new(
         Arc::clone(store) as Arc<dyn ApprovalStore>,
         Arc::new(ScriptedApprover::always(answer)),
         Arc::new(SequentialIdSource::new()),
-    );
-    (Arc::new(manager), Arc::clone(store))
+    )
 }
 
 // --- An App's tools (ADR 0035) ---------------------------------------------
@@ -561,21 +505,10 @@ fn app_read(tool_id: &str) -> PermissionQuery {
 #[tokio::test]
 async fn an_app_read_is_asked_about_where_a_built_in_read_is_not() {
     let (manager, _) = manager(ScriptedApprover::unavailable());
-    let built_in = manager
-        .evaluate(&read_query(), &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    let built_in = eval(&manager, &read_query()).await;
     assert_eq!(built_in.reason_code(), reason::SAFE_DEFAULT);
 
-    let app = manager
-        .evaluate(
-            &app_read("mcp.notes.search"),
-            &task(),
-            &invocation(),
-            &now(),
-        )
-        .await
-        .unwrap();
+    let app = eval(&manager, &app_read("mcp.notes.search")).await;
     assert!(!app.is_allowed(), "an App's read ran unasked");
     assert_eq!(app.reason_code(), reason::NO_APPROVER);
 }
@@ -583,34 +516,15 @@ async fn an_app_read_is_asked_about_where_a_built_in_read_is_not() {
 #[tokio::test]
 async fn a_grant_for_an_app_tool_covers_that_tool_alone_until_it_is_revoked() {
     let (granting, store) = manager(ScriptedApprover::always(ApprovalDecisionKind::AllowProject));
-    let first = granting
-        .evaluate(
-            &app_read("mcp.notes.search"),
-            &task(),
-            &invocation(),
-            &now(),
-        )
-        .await
-        .unwrap();
+    let first = eval(&granting, &app_read("mcp.notes.search")).await;
     assert_eq!(first.reason_code(), reason::APPROVED_PROJECT);
 
     // From here on every question is refused: only the grant can allow.
-    let (later, _) = manager_with_existing_grant(&store, ApprovalDecisionKind::Deny);
-    let covered = later
-        .evaluate(
-            &app_read("mcp.notes.search"),
-            &task(),
-            &invocation(),
-            &now(),
-        )
-        .await
-        .unwrap();
+    let later = manager_with_existing_grant(&store, ApprovalDecisionKind::Deny);
+    let covered = eval(&later, &app_read("mcp.notes.search")).await;
     assert_eq!(covered.reason_code(), reason::PROJECT_GRANT);
     for other in ["mcp.notes.delete_all", "mcp.other.search"] {
-        let outcome = later
-            .evaluate(&app_read(other), &task(), &invocation(), &now())
-            .await
-            .unwrap();
+        let outcome = eval(&later, &app_read(other)).await;
         assert!(!outcome.is_allowed(), "the grant reached {other}");
     }
 
@@ -620,15 +534,7 @@ async fn a_grant_for_an_app_tool_covers_that_tool_alone_until_it_is_revoked() {
         .unwrap();
     assert_eq!(grants.len(), 1);
     assert!(store.revoke_grant(&grants[0].grant_id).await.unwrap());
-    let revoked = later
-        .evaluate(
-            &app_read("mcp.notes.search"),
-            &task(),
-            &invocation(),
-            &now(),
-        )
-        .await
-        .unwrap();
+    let revoked = eval(&later, &app_read("mcp.notes.search")).await;
     assert!(
         !revoked.is_allowed(),
         "a revoked grant still allowed the App's tool"
@@ -647,10 +553,7 @@ async fn the_question_names_the_app_and_does_not_vouch_for_its_claim() {
     silent.risk_class = RiskClass::Dangerous;
     silent.persistable = false;
     for query in [app_read("mcp.notes.search"), silent, read_query_asked()] {
-        manager
-            .evaluate(&query, &task(), &invocation(), &now())
-            .await
-            .unwrap();
+        eval(&manager, &query).await;
     }
 
     let asked = approver.asked();
@@ -721,10 +624,7 @@ async fn a_site_allowed_for_a_task_covers_that_site_in_that_task_only() {
     assert!(!offered.contains(&ApprovalDecisionKind::AllowProject));
 
     // The same site in the same task is not asked about again.
-    let again = manager
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    let again = eval(&manager, &query).await;
     assert_eq!(again.reason_code(), reason::SITE_GRANT);
     assert_eq!(store.requests().len(), 1);
 
@@ -743,44 +643,27 @@ async fn a_site_allowed_for_a_task_covers_that_site_in_that_task_only() {
 
     // An ended task's sites are forgotten.
     manager.task_ended(&task());
-    manager
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    eval(&manager, &query).await;
     assert_eq!(store.requests().len(), 5);
 }
 
 #[tokio::test]
 async fn submitting_a_form_is_asked_every_time_even_on_an_allowed_site() {
     let (allowing, _) = manager(ScriptedApprover::always(ApprovalDecisionKind::AllowSite));
-    allowing
-        .evaluate(
-            &site_query("https://example.com", true),
-            &task(),
-            &invocation(),
-            &now(),
-        )
-        .await
-        .unwrap();
+    eval(&allowing, &site_query("https://example.com", true)).await;
     let submit = PermissionQuery {
         tool_id: "builtin.browser.submit".to_owned(),
         capability: Capability::new("browser.submit"),
         ..site_query("https://example.com", false)
     };
     // The approver answers AllowSite, which was not offered: not consent.
-    let outcome = allowing
-        .evaluate(&submit, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    let outcome = eval(&allowing, &submit).await;
     assert!(!outcome.is_allowed());
     assert_eq!(outcome.reason_code(), reason::USER_DENIED);
 
     let (once, store) = manager(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce));
     for _ in 0..2 {
-        let outcome = once
-            .evaluate(&submit, &task(), &invocation(), &now())
-            .await
-            .unwrap();
+        let outcome = eval(&once, &submit).await;
         assert_eq!(outcome.reason_code(), reason::APPROVED_ONCE);
     }
     assert_eq!(store.requests().len(), 2);
@@ -800,10 +683,7 @@ async fn a_page_on_the_web_is_never_a_safe_default_read() {
         ..site_query("https://example.com", true)
     };
     let (manager, store) = manager(ScriptedApprover::unavailable());
-    let outcome = manager
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    let outcome = eval(&manager, &query).await;
     assert!(!outcome.is_allowed());
     assert_eq!(outcome.reason_code(), reason::NO_APPROVER);
     assert_eq!(
@@ -830,10 +710,7 @@ async fn allow_site_is_refused_for_a_call_that_names_no_site() {
         ..read_query()
     };
     let (manager, store) = manager(ScriptedApprover::always(ApprovalDecisionKind::AllowSite));
-    let outcome = manager
-        .evaluate(&query, &task(), &invocation(), &now())
-        .await
-        .unwrap();
+    let outcome = eval(&manager, &query).await;
     assert!(!outcome.is_allowed());
     assert!(
         !store.requests()[0]

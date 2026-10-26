@@ -22,71 +22,39 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
-use tramontana_core::contracts::{ConversationId, TaskId, TaskUpdate};
-use tramontana_core::ports::{ApprovalStore, Approver, EventStore, ToolProvider};
-use tramontana_core::services::{Providers, StartTaskRequest, TaskService, forward_task_updates};
+use tramontana_core::contracts::{TaskId, TaskUpdate};
+use tramontana_core::ports::EventStore;
+use tramontana_core::services::{TaskService, forward_task_updates};
 use tramontana_core::testing::{
-    FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryApprovalStore,
-    InMemoryEventStore, ScriptedApprover, SequentialIdSource, assemble_tool_plane,
-    in_memory_repositories,
+    FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryEventStore, ScriptedApprover,
+    conversation_in_a_project, start_request, test_service, wait_state,
 };
 
 fn service_with_store() -> (Arc<TaskService>, Arc<InMemoryEventStore>) {
-    let (registry, permissions, releases) = assemble_tool_plane(
-        vec![Arc::new(FakeToolProvider::new()) as Arc<dyn ToolProvider>],
-        Arc::new(InMemoryApprovalStore::new()) as Arc<dyn ApprovalStore>,
-        Arc::new(ScriptedApprover::unavailable()) as Arc<dyn Approver>,
-        Arc::new(SequentialIdSource::new()),
-    )
-    .expect("the fake tool registers");
-
     let store = Arc::new(InMemoryEventStore::new());
-    let events = Arc::clone(&store) as Arc<dyn EventStore>;
-    let service = TaskService::new(
-        in_memory_repositories(events),
-        Providers {
-            models: vec![Arc::new(FakeModelProvider::streaming([
-                "Hello", ", ", "world",
-            ]))],
-            tools: registry,
-            permissions,
-            releases,
-            worker: Arc::new(FakeWorker::new()),
-        },
-        Arc::new(FakeClock::new()),
-        Arc::new(SequentialIdSource::new()),
+    let service = test_service(
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        vec![Arc::new(FakeModelProvider::streaming([
+            "Hello", ", ", "world",
+        ]))],
+        vec![Arc::new(FakeToolProvider::new())],
+        Arc::new(ScriptedApprover::unavailable()),
+        Arc::new(FakeWorker::new()),
     );
     (Arc::new(service), store)
 }
 
 async fn start_task(service: &TaskService) -> TaskId {
-    let project = service
-        .create_project("Demo", vec!["/work/demo".to_owned()])
-        .await
-        .unwrap();
-    let conversation: ConversationId = service
-        .create_conversation(Some(project.project_id), "First")
-        .await
-        .unwrap()
-        .conversation_id;
+    let conversation = conversation_in_a_project(service).await;
     service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation),
-            goal: "say hello".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(&conversation, "say hello"))
         .await
         .unwrap()
 }
 
 async fn await_terminal(service: &TaskService, task_id: &TaskId) {
-    for _ in 0..1_000 {
-        if service.get_task(task_id).await.unwrap().state.is_terminal() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-    panic!("task {task_id} never reached a terminal state");
+    let every = Duration::from_millis(1);
+    wait_state(service, task_id, every * 1_000, every, |s| s.is_terminal()).await;
 }
 
 /// A host in miniature: each connection names a task and the last sequence

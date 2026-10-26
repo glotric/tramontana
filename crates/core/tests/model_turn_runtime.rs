@@ -3,6 +3,7 @@
 
 use async_trait::async_trait;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tramontana_core::contracts::*;
@@ -110,26 +111,13 @@ impl ModelProvider for ScriptedModel {
 
 fn service(scenario: Scenario) -> (TaskService, Arc<InMemoryEventStore>) {
     let events = Arc::new(InMemoryEventStore::new());
-    let ids = Arc::new(SequentialIdSource::new());
-    let (tools, permissions, releases) = assemble_tool_plane(
-        vec![Arc::new(FakeToolProvider::new())],
-        Arc::new(InMemoryApprovalStore::new()),
-        Arc::new(ScriptedApprover::unavailable()),
-        ids.clone(),
-    )
-    .unwrap();
     (
-        TaskService::new(
-            in_memory_repositories(events.clone()),
-            Providers {
-                models: vec![Arc::new(ScriptedModel(scenario))],
-                tools,
-                permissions,
-                releases,
-                worker: Arc::new(FakeWorker::new()),
-            },
-            Arc::new(FakeClock::new()),
-            ids,
+        test_service(
+            events.clone(),
+            vec![Arc::new(ScriptedModel(scenario))],
+            vec![Arc::new(FakeToolProvider::new())],
+            Arc::new(ScriptedApprover::unavailable()),
+            Arc::new(FakeWorker::new()),
         ),
         events,
     )
@@ -157,25 +145,18 @@ async fn invalid_or_unsupported_turns_fail_without_a_tool_invocation() {
             .await
             .unwrap();
         let task_id = service
-            .start_task(StartTaskRequest {
-                conversation_id: Some(conversation.conversation_id),
-                goal: "hello".into(),
-                ..Default::default()
-            })
+            .start_task(start_request(&conversation.conversation_id, "hello"))
             .await
             .unwrap();
-        let snapshot = tokio::time::timeout(std::time::Duration::from_secs(130), async {
-            loop {
-                let snapshot = service.get_task(&task_id).await.unwrap();
-                if snapshot.state.is_terminal() {
-                    break snapshot;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(snapshot.state, TaskState::Failed, "{scenario:?}");
+        let state = wait_state(
+            &service,
+            &task_id,
+            Duration::from_secs(130),
+            Duration::from_millis(10),
+            TaskState::is_terminal,
+        )
+        .await;
+        assert_eq!(state, TaskState::Failed, "{scenario:?}");
         let records = events.replay(&task_id, 0).await.unwrap();
         assert!(
             !records
@@ -213,35 +194,28 @@ async fn user_cancellation_during_a_model_call_is_cancelled_not_failed() {
             })
             .await
             .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if events
-                    .replay(&task_id, 0)
-                    .await
-                    .unwrap()
+        wait_events(
+            &service,
+            &task_id,
+            Duration::from_secs(1),
+            Duration::from_millis(1),
+            |events| {
+                events
                     .iter()
                     .any(|event| event.kind == TaskEventKind::ModelStarted)
-                {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-            }
-        })
-        .await
-        .unwrap();
+            },
+        )
+        .await;
         service.cancel_task(&task_id).await.unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                let state = service.get_task(&task_id).await.unwrap().state;
-                if state.is_terminal() {
-                    assert_eq!(state, TaskState::Cancelled);
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-            }
-        })
-        .await
-        .unwrap();
+        let state = wait_state(
+            &service,
+            &task_id,
+            Duration::from_secs(1),
+            Duration::from_millis(1),
+            TaskState::is_terminal,
+        )
+        .await;
+        assert_eq!(state, TaskState::Cancelled);
         let records = events.replay(&task_id, 0).await.unwrap();
         assert_eq!(
             records

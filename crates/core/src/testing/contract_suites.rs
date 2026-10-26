@@ -63,6 +63,7 @@ where
     Fut: Future<Output = Arc<dyn EventStore>>,
 {
     let task = TaskId::new("task-1");
+    let other = TaskId::new("task-2");
 
     // An empty stream is at sequence 0, not an error.
     let store = build().await;
@@ -71,29 +72,13 @@ where
 
     // A first append expects 0 and yields sequence 1.
     let store = build().await;
-    assert_eq!(
-        store
-            .append(&task, 0, vec![event_at(&task, 1)])
-            .await
-            .unwrap(),
-        1
-    );
+    assert_eq!(append(&*store, &task, 0, &[1]).await.unwrap(), 1);
     assert_eq!(store.last_sequence(&task).await.unwrap(), 1);
 
     // A batch lands consecutively.
     let store = build().await;
-    assert_eq!(
-        store
-            .append(&task, 0, vec![event_at(&task, 1), event_at(&task, 2)])
-            .await
-            .unwrap(),
-        2
-    );
-    let replayed = store.replay(&task, 0).await.unwrap();
-    assert_eq!(
-        replayed.iter().map(|e| e.sequence).collect::<Vec<_>>(),
-        vec![1, 2]
-    );
+    assert_eq!(append(&*store, &task, 0, &[1, 2]).await.unwrap(), 2);
+    assert_eq!(seqs(&*store, &task, 0).await, vec![1, 2]);
 
     // Round trip: what comes back is what went in.
     let original = event_at(&task, 1);
@@ -108,16 +93,9 @@ where
     // A stale expected sequence conflicts rather than interleaving. This is
     // what stops two writers corrupting one task's order.
     let store = build().await;
-    store
-        .append(&task, 0, vec![event_at(&task, 1)])
-        .await
-        .unwrap();
-    let error = store
-        .append(&task, 0, vec![event_at(&task, 1)])
-        .await
-        .unwrap_err();
+    append(&*store, &task, 0, &[1]).await.unwrap();
     assert_eq!(
-        error,
+        append(&*store, &task, 0, &[1]).await.unwrap_err(),
         EventStoreError::SequenceConflict {
             task_id: task.clone(),
             expected: 0,
@@ -132,12 +110,8 @@ where
 
     // Misnumbered events are rejected, and nothing partial is written.
     let store = build().await;
-    let error = store
-        .append(&task, 0, vec![event_at(&task, 1), event_at(&task, 3)])
-        .await
-        .unwrap_err();
     assert_eq!(
-        error,
+        append(&*store, &task, 0, &[1, 3]).await.unwrap_err(),
         EventStoreError::NonConsecutive {
             task_id: task.clone(),
             expected_first: 1,
@@ -160,65 +134,56 @@ where
     // Replay is exclusive of `after_sequence`, so it can be called directly
     // with the last sequence an interface already rendered.
     let store = build().await;
-    store
-        .append(
-            &task,
-            0,
-            vec![event_at(&task, 1), event_at(&task, 2), event_at(&task, 3)],
-        )
-        .await
-        .unwrap();
-    let tail = store.replay(&task, 1).await.unwrap();
-    assert_eq!(
-        tail.iter().map(|e| e.sequence).collect::<Vec<_>>(),
-        vec![2, 3]
-    );
+    append(&*store, &task, 0, &[1, 2, 3]).await.unwrap();
+    assert_eq!(seqs(&*store, &task, 1).await, vec![2, 3]);
     assert!(store.replay(&task, 3).await.unwrap().is_empty());
 
     // Streams are isolated per task.
     let store = build().await;
-    let other = TaskId::new("task-2");
-    store
-        .append(&task, 0, vec![event_at(&task, 1)])
-        .await
-        .unwrap();
+    append(&*store, &task, 0, &[1]).await.unwrap();
     assert_eq!(store.last_sequence(&other).await.unwrap(), 0);
-    store
-        .append(&other, 0, vec![event_at(&other, 1)])
-        .await
-        .unwrap();
+    append(&*store, &other, 0, &[1]).await.unwrap();
     assert_eq!(store.replay(&task, 0).await.unwrap().len(), 1);
     assert_eq!(store.replay(&other, 0).await.unwrap().len(), 1);
 
     // Appending after a successful append continues the stream.
     let store = build().await;
-    store
-        .append(&task, 0, vec![event_at(&task, 1)])
-        .await
-        .unwrap();
-    store
-        .append(&task, 1, vec![event_at(&task, 2)])
-        .await
-        .unwrap();
+    append(&*store, &task, 0, &[1]).await.unwrap();
+    append(&*store, &task, 1, &[2]).await.unwrap();
     assert_eq!(store.last_sequence(&task).await.unwrap(), 2);
 
     // Deleting a stream removes that task's events and no other's, and a
     // stream that holds nothing deletes without error (ADR 0059).
     let store = build().await;
     let kept = TaskId::new("task-kept");
-    store
-        .append(&task, 0, vec![event_at(&task, 1), event_at(&task, 2)])
-        .await
-        .unwrap();
-    store
-        .append(&kept, 0, vec![event_at(&kept, 1)])
-        .await
-        .unwrap();
+    append(&*store, &task, 0, &[1, 2]).await.unwrap();
+    append(&*store, &kept, 0, &[1]).await.unwrap();
     store.delete_stream(&task).await.unwrap();
     assert!(store.replay(&task, 0).await.unwrap().is_empty());
     assert_eq!(store.last_sequence(&task).await.unwrap(), 0);
     assert_eq!(store.replay(&kept, 0).await.unwrap().len(), 1);
     store.delete_stream(&task).await.unwrap();
+}
+
+/// Append `task`'s events numbered `sequences`, expecting `expected`.
+async fn append(
+    store: &dyn EventStore,
+    task: &TaskId,
+    expected: u64,
+    sequences: &[u64],
+) -> Result<u64, EventStoreError> {
+    let events = sequences.iter().map(|&at| event_at(task, at)).collect();
+    store.append(task, expected, events).await
+}
+
+/// The sequences `task`'s replay after `after` returns.
+#[allow(
+    clippy::unwrap_used,
+    reason = "this is a test suite; a panic is the failure report"
+)]
+async fn seqs(store: &dyn EventStore, task: &TaskId, after: u64) -> Vec<u64> {
+    let events = store.replay(task, after).await.unwrap();
+    events.iter().map(|event| event.sequence).collect()
 }
 
 /// The tasks [`checkpoint_repository_contract`] writes checkpoints for.

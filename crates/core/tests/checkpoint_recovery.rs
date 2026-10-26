@@ -150,20 +150,13 @@ impl Harness {
         let ids = Arc::new(SequentialIdSource::new());
         let tool = Arc::new(tool);
         let worker = Arc::new(TwoStepWorker::default());
-        let (tools, permissions, releases) = assemble_tool_plane(
+        let providers = test_providers(
+            vec![Arc::new(FakeModelProvider::streaming(["answer"]))],
             vec![tool.clone()],
-            Arc::new(InMemoryApprovalStore::new()),
             Arc::new(ScriptedApprover::unavailable()),
+            worker.clone(),
             ids.clone(),
-        )
-        .unwrap();
-        let providers = Providers {
-            models: vec![Arc::new(FakeModelProvider::streaming(["answer"]))],
-            tools,
-            permissions,
-            releases,
-            worker: worker.clone(),
-        };
+        );
         Self {
             repos,
             providers,
@@ -190,11 +183,7 @@ impl Harness {
             .await
             .unwrap();
         let task_id = service
-            .start_task(StartTaskRequest {
-                conversation_id: Some(conversation.conversation_id),
-                goal: "Two steps".into(),
-                ..Default::default()
-            })
+            .start_task(start_request(&conversation.conversation_id, "Two steps"))
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), self.tool.entered.notified())
@@ -205,17 +194,14 @@ impl Harness {
 }
 
 async fn stopped(service: &TaskService, task: &TaskId) -> TaskState {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let state = service.get_task(task).await.unwrap().state;
-            if state.is_terminal() || state == TaskState::Interrupted {
-                return state;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
+    wait_state(
+        service,
+        task,
+        Duration::from_secs(5),
+        Duration::from_millis(1),
+        |state| state.is_terminal() || state == TaskState::Interrupted,
+    )
     .await
-    .unwrap()
 }
 
 #[tokio::test]

@@ -100,8 +100,23 @@ impl ModelProvider for Model {
                 CorrelationId::new("test"),
             ));
         }
-        let (sender, receiver) = mpsc::channel(8);
         let stream_id = request.request().request_id.clone();
+        if has_result
+            && matches!(
+                self.scenario,
+                Scenario::Answer
+                    | Scenario::Write
+                    | Scenario::Recipe
+                    | Scenario::Many
+                    | Scenario::UndeclaredRecipe
+            )
+        {
+            return Ok(answer_stream(
+                stream_id,
+                "The fixture contains the requested repository fact.",
+            ));
+        }
+        let (sender, receiver) = mpsc::channel(8);
         if matches!(self.scenario, Scenario::ExcessUsage) {
             sender
                 .send(ModelEvent::Usage {
@@ -114,31 +129,7 @@ impl ModelProvider for Model {
                 .await
                 .unwrap();
         }
-        if has_result
-            && matches!(
-                self.scenario,
-                Scenario::Answer
-                    | Scenario::Write
-                    | Scenario::Recipe
-                    | Scenario::Many
-                    | Scenario::UndeclaredRecipe
-            )
-        {
-            sender
-                .send(ModelEvent::TextDelta {
-                    stream_id,
-                    offset: 0,
-                    text: "The fixture contains the requested repository fact.".into(),
-                })
-                .await
-                .unwrap();
-            sender
-                .send(ModelEvent::Completed {
-                    stop_reason: StopReason::Stop,
-                })
-                .await
-                .unwrap();
-        } else if matches!(self.scenario, Scenario::Huge | Scenario::Length) {
+        if matches!(self.scenario, Scenario::Huge | Scenario::Length) {
             sender
                 .send(ModelEvent::TextDelta {
                     stream_id,
@@ -274,24 +265,10 @@ impl Harness {
         worker: Arc<dyn AgentProvider>,
         approver: Arc<dyn Approver>,
     ) -> Self {
-        let events = Arc::new(InMemoryEventStore::new());
         let ids = Arc::new(SequentialIdSource::new());
-        let (tools, permissions, releases) = assemble_tool_plane(
-            tools,
-            Arc::new(InMemoryApprovalStore::new()),
-            approver,
-            ids.clone(),
-        )
-        .unwrap();
         Self {
-            repositories: in_memory_repositories(events),
-            providers: Providers {
-                models: vec![model],
-                tools,
-                permissions,
-                releases,
-                worker,
-            },
+            repositories: in_memory_repositories(Arc::new(InMemoryEventStore::new())),
+            providers: test_providers(vec![model], tools, approver, worker, ids.clone()),
             ids,
             clock: Arc::new(FakeClock::new()),
         }
@@ -338,24 +315,7 @@ async fn finished_within(
     task: &TaskId,
     limit: Duration,
 ) -> Vec<EventEnvelope> {
-    timeout(limit, async {
-        loop {
-            let events = service.replay_task_events(task, 0).await.unwrap();
-            if events.last().is_some_and(|event| {
-                matches!(
-                    event.kind,
-                    TaskEventKind::TaskCompleted
-                        | TaskEventKind::TaskFailed
-                        | TaskEventKind::TaskCancelled
-                )
-            }) {
-                return events;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .unwrap()
+    wait_events(service, task, limit, Duration::from_millis(100), ended).await
 }
 /// Whether the task was stopped for another worker and has its checkpoint.
 fn paused(events: &[EventEnvelope]) -> bool {
@@ -368,24 +328,14 @@ fn paused(events: &[EventEnvelope]) -> bool {
         })
 }
 async fn finished(service: &TaskService, task: &TaskId) -> Vec<EventEnvelope> {
-    timeout(Duration::from_secs(35), async {
-        loop {
-            let events = service.replay_task_events(task, 0).await.unwrap();
-            if events.last().is_some_and(|event| {
-                matches!(
-                    event.kind,
-                    TaskEventKind::TaskCompleted
-                        | TaskEventKind::TaskFailed
-                        | TaskEventKind::TaskCancelled
-                ) || paused(&events)
-            }) {
-                return events;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
+    wait_events(
+        service,
+        task,
+        Duration::from_secs(35),
+        Duration::from_millis(1),
+        |events| ended(events) || paused(events),
+    )
     .await
-    .unwrap()
 }
 fn fail(events: &[EventEnvelope], code: ErrorCode) {
     assert!(
@@ -742,13 +692,7 @@ async fn a_task_resumed_after_the_defaults_change_keeps_its_recorded_limits() {
     let mut h = harness(model.clone(), tool.clone(), limits);
     let service = h.service(RoutingMode::LocalOnly);
     let task = start(&service, true).await;
-    timeout(Duration::from_secs(2), async {
-        while model.requests.lock().unwrap().len() < 2 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
+    model_asked(&model, 2, Duration::from_secs(2)).await;
     let cp = service.create_checkpoint(&task).await.unwrap();
     drop(service);
     model.pause_after_read.store(false, Ordering::SeqCst);
@@ -779,13 +723,7 @@ async fn completed_observations_survive_reopen_without_replaying_tools_or_resett
     let h = harness(model.clone(), tool.clone(), limits);
     let service = h.service(RoutingMode::LocalOnly);
     let task = start(&service, true).await;
-    timeout(Duration::from_secs(2), async {
-        while model.requests.lock().unwrap().len() < 2 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
+    model_asked(&model, 2, Duration::from_secs(2)).await;
     let cp = service.create_checkpoint(&task).await.unwrap();
     assert_eq!(cp.completed_step_ids, vec!["reference-1"]);
     assert!(cp.resume.eligible);
@@ -914,13 +852,7 @@ async fn repeated_model_interruptions_resume_without_phantom_pending_actions() {
     let mut service = h.service(RoutingMode::LocalOnly);
     let task = start(&service, true).await;
     for expected_requests in [2, 3] {
-        timeout(Duration::from_secs(2), async {
-            while model.requests.lock().unwrap().len() < expected_requests {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        model_asked(&model, expected_requests, Duration::from_secs(2)).await;
         let cp = service.create_checkpoint(&task).await.unwrap();
         assert!(cp.resume.eligible);
         assert_eq!(cp.completed_step_ids, vec!["reference-1"]);
@@ -1162,11 +1094,10 @@ async fn start_with_recipes(service: &TaskService) -> TaskId {
         .await
         .unwrap();
     service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation.conversation_id),
-            goal: "Run the tests.".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation.conversation_id,
+            "Run the tests.",
+        ))
         .await
         .unwrap()
 }
@@ -1394,8 +1325,8 @@ fn approved_write(model: Arc<Model>) -> Harness {
         Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce)),
     )
 }
-async fn model_asked(model: &Model, times: usize) {
-    timeout(Duration::from_secs(5), async {
+async fn model_asked(model: &Model, times: usize, limit: Duration) {
+    timeout(limit, async {
         while model.requests.lock().unwrap().len() < times {
             tokio::task::yield_now().await;
         }
@@ -1475,7 +1406,7 @@ async fn a_task_that_stopped_half_way_still_says_what_it_changed() {
     let h = approved_write(model.clone());
     let service = h.service(RoutingMode::LocalOnly);
     let task = start(&service, true).await;
-    model_asked(&model, 2).await;
+    model_asked(&model, 2, Duration::from_secs(5)).await;
     service.cancel_task(&task).await.unwrap();
     let events = finished(&service, &task).await;
     assert_eq!(events.last().unwrap().kind, TaskEventKind::TaskCancelled);
@@ -1491,7 +1422,7 @@ async fn a_resumed_task_counts_what_it_changed_before_the_interruption_once() {
     let h = approved_write(model.clone());
     let service = h.service(RoutingMode::LocalOnly);
     let task = start(&service, true).await;
-    model_asked(&model, 2).await;
+    model_asked(&model, 2, Duration::from_secs(5)).await;
     let checkpoint = service.create_checkpoint(&task).await.unwrap();
     drop(service);
 
@@ -1632,13 +1563,7 @@ async fn a_resume_cannot_change_what_the_model_may_be_offered() {
             let mut h = writing(model.clone(), write, started, approver);
             let service = h.service(RoutingMode::LocalOnly);
             let task = start(&service, true).await;
-            timeout(Duration::from_secs(2), async {
-                while model.requests.lock().unwrap().len() < 2 {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .unwrap();
+            model_asked(&model, 2, Duration::from_secs(2)).await;
             let cp = service.create_checkpoint(&task).await.unwrap();
             assert!(cp.resume.eligible);
             drop(service);

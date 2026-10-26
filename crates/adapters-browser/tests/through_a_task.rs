@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, timeout};
+use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tramontana_adapters_browser::{BrowserProvider, LaunchOptions, READ, TOOLS, find_browser};
 use tramontana_core::contracts::*;
@@ -192,24 +192,14 @@ async fn a_task_opens_a_site_once_allowed_and_follows_a_link_on_it() {
         })
         .await
         .unwrap();
-    let events = timeout(Duration::from_secs(60), async {
-        loop {
-            let events = service.replay_task_events(&task, 0).await.unwrap();
-            if events.last().is_some_and(|event| {
-                matches!(
-                    event.kind,
-                    TaskEventKind::TaskCompleted
-                        | TaskEventKind::TaskFailed
-                        | TaskEventKind::TaskCancelled
-                )
-            }) {
-                return events;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
+    let events = wait_events(
+        &service,
+        &task,
+        Duration::from_secs(60),
+        Duration::from_millis(20),
+        ended,
+    )
+    .await;
 
     assert!(
         matches!(

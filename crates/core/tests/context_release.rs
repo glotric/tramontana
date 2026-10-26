@@ -560,27 +560,12 @@ async fn a_credential_pasted_into_a_goal_reaches_nothing() {
     const PASTED: &str = "sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4";
 
     let endpoint = Arc::new(RecordingEndpoint::default());
-    let events: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
-    let ids = Arc::new(SequentialIdSource::new());
-    let (tools, permissions, releases) = assemble_tool_plane(
+    let service = test_service(
+        Arc::new(InMemoryEventStore::new()),
+        vec![endpoint.clone()],
         vec![Arc::new(FakeToolProvider::new())],
-        Arc::new(InMemoryApprovalStore::new()),
         Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce)),
-        ids.clone(),
-    )
-    .unwrap();
-
-    let service = TaskService::new(
-        in_memory_repositories(events),
-        Providers {
-            models: vec![endpoint.clone()],
-            tools,
-            permissions,
-            releases,
-            worker: Arc::new(FakeWorker::new()),
-        },
-        Arc::new(FakeClock::new()),
-        ids,
+        Arc::new(FakeWorker::new()),
     );
 
     let task_id = service
@@ -592,22 +577,14 @@ async fn a_credential_pasted_into_a_goal_reaches_nothing() {
         .await
         .unwrap();
 
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if service
-                .get_task(&task_id)
-                .await
-                .unwrap()
-                .state
-                .is_terminal()
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .expect("the task never settled");
+    wait_state(
+        &service,
+        &task_id,
+        Duration::from_secs(5),
+        Duration::from_millis(1),
+        TaskState::is_terminal,
+    )
+    .await;
 
     // Not in the durable record — not the task-created event, not the
     // manifest, not the release plan, not the committed message.
@@ -715,27 +692,12 @@ async fn run_to_completion(
     endpoint: Arc<CloudEndpoint>,
     answer: ApprovalDecisionKind,
 ) -> Vec<EventEnvelope> {
-    let events: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
-    let ids = Arc::new(SequentialIdSource::new());
-    let (tools, permissions, releases) = assemble_tool_plane(
+    let service = test_service(
+        Arc::new(InMemoryEventStore::new()),
+        vec![endpoint],
         vec![Arc::new(FakeToolProvider::new())],
-        Arc::new(InMemoryApprovalStore::new()),
         Arc::new(ScriptedApprover::always(answer)),
-        ids.clone(),
-    )
-    .unwrap();
-
-    let service = TaskService::new(
-        in_memory_repositories(events),
-        Providers {
-            models: vec![endpoint],
-            tools,
-            permissions,
-            releases,
-            worker: Arc::new(FakeWorker::new()),
-        },
-        Arc::new(FakeClock::new()),
-        ids,
+        Arc::new(FakeWorker::new()),
     )
     .with_routing_mode(RoutingMode::CloudPreferred);
 
@@ -748,22 +710,14 @@ async fn run_to_completion(
         .await
         .unwrap();
 
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if service
-                .get_task(&task_id)
-                .await
-                .unwrap()
-                .state
-                .is_terminal()
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .expect("the task never settled");
+    wait_state(
+        &service,
+        &task_id,
+        Duration::from_secs(5),
+        Duration::from_millis(1),
+        TaskState::is_terminal,
+    )
+    .await;
 
     service.replay_task_events(&task_id, 0).await.unwrap()
 }

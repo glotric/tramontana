@@ -119,22 +119,17 @@ fn fixture() -> Fixture {
     let ids = Arc::new(SequentialIdSource::new());
     let reads = Arc::new(Reads::default());
     let asked = Arc::new(Asked::default());
-    let (tools, permissions, releases) = assemble_tool_plane(
+    let providers = test_providers(
+        vec![Arc::new(FakeModelProvider::streaming(["answer"]))],
         vec![reads.clone()],
-        Arc::new(InMemoryApprovalStore::new()),
         asked.clone(),
+        Arc::new(FakeWorker::new()),
         ids.clone(),
-    )
-    .unwrap();
+    );
+    let permissions = providers.permissions.clone();
     let service = TaskService::new(
         in_memory_repositories(events),
-        Providers {
-            models: vec![Arc::new(FakeModelProvider::streaming(["answer"]))],
-            tools,
-            permissions: permissions.clone(),
-            releases,
-            worker: Arc::new(FakeWorker::new()),
-        },
+        providers,
         Arc::new(FakeClock::new()),
         ids,
     );

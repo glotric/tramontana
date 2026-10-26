@@ -8,7 +8,6 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use tramontana_core::contracts::*;
 use tramontana_core::ports::*;
-use tramontana_core::services::*;
 use tramontana_core::testing::*;
 
 /// A write tool, as the filesystem adapter declares one.
@@ -96,27 +95,13 @@ impl Approver for Recording {
 
 #[tokio::test]
 async fn a_writes_approval_names_the_files_and_not_their_content() {
-    let events: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
-    let ids = Arc::new(SequentialIdSource::new());
     let asked = Arc::new(Recording::default());
-    let (tools, permissions, releases) = assemble_tool_plane(
+    let service = test_service(
+        Arc::new(InMemoryEventStore::new()),
+        vec![Arc::new(FakeModelProvider::streaming(["answer"]))],
         vec![Arc::new(Writes)],
-        Arc::new(InMemoryApprovalStore::new()),
         asked.clone(),
-        ids.clone(),
-    )
-    .unwrap();
-    let service = TaskService::new(
-        in_memory_repositories(events),
-        Providers {
-            models: vec![Arc::new(FakeModelProvider::streaming(["answer"]))],
-            tools,
-            permissions,
-            releases,
-            worker: Arc::new(Mover),
-        },
-        Arc::new(FakeClock::new()),
-        ids,
+        Arc::new(Mover),
     );
     let project = service
         .create_project("Synthetic project", vec!["/synthetic".into()])
@@ -127,20 +112,20 @@ async fn a_writes_approval_names_the_files_and_not_their_content() {
         .await
         .unwrap();
     let task = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation.conversation_id),
-            goal: "Move the draft".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation.conversation_id,
+            "Move the draft",
+        ))
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !service.get_task(&task).await.unwrap().state.is_terminal() {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_state(
+        &service,
+        &task,
+        Duration::from_secs(5),
+        Duration::from_millis(1),
+        TaskState::is_terminal,
+    )
+    .await;
 
     let asked = asked.0.lock().unwrap();
     assert_eq!(asked.len(), 1, "the write was not put to anyone");

@@ -155,26 +155,12 @@ impl Approver for Approval {
     }
 }
 fn service(model: Arc<Model>, approval: Arc<Approval>, work: Work) -> TaskService {
-    let events = Arc::new(InMemoryEventStore::new());
-    let ids = Arc::new(SequentialIdSource::new());
-    let (tools, permissions, releases) = assemble_tool_plane(
+    test_service(
+        Arc::new(InMemoryEventStore::new()),
+        vec![model],
         vec![Arc::new(FakeToolProvider::new())],
-        Arc::new(InMemoryApprovalStore::new()),
         approval,
-        ids.clone(),
-    )
-    .unwrap();
-    TaskService::new(
-        in_memory_repositories(events),
-        Providers {
-            models: vec![model],
-            tools,
-            permissions,
-            releases,
-            worker: Arc::new(Worker(work)),
-        },
-        Arc::new(FakeClock::new()),
-        ids,
+        Arc::new(Worker(work)),
     )
     .with_routing_mode(RoutingMode::CloudPreferred)
 }
@@ -189,14 +175,15 @@ async fn start(service: &TaskService) -> TaskId {
         .unwrap()
 }
 async fn finished(service: &TaskService, task: &TaskId) -> Vec<EventEnvelope> {
-    timeout(Duration::from_secs(130), async {
-        while !service.get_task(task).await.unwrap().state.is_terminal() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        service.replay_task_events(task, 0).await.unwrap()
-    })
-    .await
-    .unwrap()
+    wait_state(
+        service,
+        task,
+        Duration::from_secs(130),
+        Duration::from_millis(10),
+        TaskState::is_terminal,
+    )
+    .await;
+    service.replay_task_events(task, 0).await.unwrap()
 }
 fn failed(events: &[EventEnvelope], code: ErrorCode) {
     assert!(events.iter().any(
@@ -328,11 +315,10 @@ async fn configuration_is_disclosed_as_excluded_not_silently_uploaded() {
         .await
         .unwrap();
     let task = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation.conversation_id),
-            goal: "Inspect fixture".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation.conversation_id,
+            "Inspect fixture",
+        ))
         .await
         .unwrap();
     let events = finished(&service, &task).await;

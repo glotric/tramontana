@@ -199,25 +199,18 @@ impl Profile {
 
     /// A service over this profile, as one process would open it.
     fn open(&self, mode: RoutingMode, choice: Option<WorkerChoice>) -> TaskService {
-        let (tools, permissions, releases) = assemble_tool_plane(
-            vec![self.tool.clone()],
-            Arc::new(InMemoryApprovalStore::new()),
-            Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce)),
-            self.ids.clone(),
-        )
-        .unwrap();
         let service = TaskService::new(
             self.repositories.clone(),
-            Providers {
-                models: vec![self.cloud.clone(), self.local.clone()],
-                tools,
-                permissions,
-                releases,
-                worker: Arc::new(Named {
+            test_providers(
+                vec![self.cloud.clone(), self.local.clone()],
+                vec![self.tool.clone()],
+                Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce)),
+                Arc::new(Named {
                     name: "the service's own",
                     uses_tool: self.uses_tool,
                 }),
-            },
+                self.ids.clone(),
+            ),
             Arc::new(FakeClock::new()),
             self.ids.clone(),
         )
@@ -230,17 +223,14 @@ impl Profile {
 }
 
 async fn settled(service: &TaskService, task: &TaskId) -> TaskState {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let state = service.get_task(task).await.unwrap().state;
-            if state.is_terminal() || state == TaskState::Interrupted {
-                return state;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
+    wait_state(
+        service,
+        task,
+        Duration::from_secs(5),
+        Duration::from_millis(1),
+        |state| state.is_terminal() || state == TaskState::Interrupted,
+    )
     .await
-    .expect("the task never settled")
 }
 
 async fn history(service: &TaskService, task: &TaskId) -> Vec<EventPayload> {
@@ -387,14 +377,9 @@ async fn a_resumed_task_keeps_the_worker_and_mode_it_started_with() {
         .unwrap();
     let task = first
         .start_task(StartTaskRequest {
-            conversation_id: Some(conversation.conversation_id),
-            goal: "Hold a step".into(),
             admission: Some(ToolAdmission::READ_WRITE),
             routing_mode: Some(RoutingMode::LocalOnly),
-            worker: None,
-            selection: None,
-            attachments: Vec::new(),
-            personal_skills: Vec::new(),
+            ..start_request(&conversation.conversation_id, "Hold a step")
         })
         .await
         .unwrap();

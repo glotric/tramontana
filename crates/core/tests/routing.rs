@@ -355,8 +355,6 @@ impl ModelProvider for CountingProvider {
 
 #[tokio::test]
 async fn under_local_only_a_task_never_reaches_a_cloud_endpoint() {
-    let events: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
-    let ids = Arc::new(SequentialIdSource::new());
     // Two configured endpoints, as a profile with both would have.
     let sink = Arc::new(CountingProvider::new(
         "cloud",
@@ -368,25 +366,12 @@ async fn under_local_only_a_task_never_reaches_a_cloud_endpoint() {
         "on-device",
         ModelLocation::Local,
     ));
-    let (tools, permissions, releases) = assemble_tool_plane(
+    let service = test_service(
+        Arc::new(InMemoryEventStore::new()),
+        vec![sink.clone(), on_device.clone()],
         vec![Arc::new(FakeToolProvider::new())],
-        Arc::new(InMemoryApprovalStore::new()),
         Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce)),
-        ids.clone(),
-    )
-    .unwrap();
-
-    let service = TaskService::new(
-        in_memory_repositories(events),
-        Providers {
-            models: vec![sink.clone(), on_device.clone()],
-            tools,
-            permissions,
-            releases,
-            worker: Arc::new(FakeWorker::new()),
-        },
-        Arc::new(FakeClock::new()),
-        ids,
+        Arc::new(FakeWorker::new()),
     )
     .with_routing_mode(RoutingMode::LocalOnly);
 
@@ -399,22 +384,14 @@ async fn under_local_only_a_task_never_reaches_a_cloud_endpoint() {
         .await
         .unwrap();
 
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if service
-                .get_task(&task_id)
-                .await
-                .unwrap()
-                .state
-                .is_terminal()
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .expect("the task never settled");
+    wait_state(
+        &service,
+        &task_id,
+        Duration::from_secs(5),
+        Duration::from_millis(1),
+        TaskState::is_terminal,
+    )
+    .await;
 
     // A model ran — this is not a test that nothing happened — and it was
     // the one on this device.
@@ -457,16 +434,6 @@ async fn under_local_only_a_task_never_reaches_a_cloud_endpoint() {
 #[tokio::test]
 async fn a_task_with_no_eligible_model_fails_with_the_reason() {
     // A refusal is as much a decision as a choice, and the user has to be told.
-    let events: Arc<dyn EventStore> = Arc::new(InMemoryEventStore::new());
-    let ids = Arc::new(SequentialIdSource::new());
-    let (tools, permissions, releases) = assemble_tool_plane(
-        vec![Arc::new(FakeToolProvider::new())],
-        Arc::new(InMemoryApprovalStore::new()),
-        Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce)),
-        ids.clone(),
-    )
-    .unwrap();
-
     /// A provider offering nothing at all.
     #[derive(Debug)]
     struct NoModels;
@@ -488,17 +455,12 @@ async fn a_task_with_no_eligible_model_fails_with_the_reason() {
         }
     }
 
-    let service = TaskService::new(
-        in_memory_repositories(events),
-        Providers {
-            models: vec![Arc::new(NoModels)],
-            tools,
-            permissions,
-            releases,
-            worker: Arc::new(FakeWorker::new()),
-        },
-        Arc::new(FakeClock::new()),
-        ids,
+    let service = test_service(
+        Arc::new(InMemoryEventStore::new()),
+        vec![Arc::new(NoModels)],
+        vec![Arc::new(FakeToolProvider::new())],
+        Arc::new(ScriptedApprover::always(ApprovalDecisionKind::AllowOnce)),
+        Arc::new(FakeWorker::new()),
     );
 
     let task_id = service
@@ -510,17 +472,14 @@ async fn a_task_with_no_eligible_model_fails_with_the_reason() {
         .await
         .unwrap();
 
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let state = service.get_task(&task_id).await.unwrap().state;
-            if state.is_terminal() {
-                return state;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .expect("the task never settled");
+    wait_state(
+        &service,
+        &task_id,
+        Duration::from_secs(5),
+        Duration::from_millis(1),
+        TaskState::is_terminal,
+    )
+    .await;
 
     let failure = service
         .replay_task_events(&task_id, 0)

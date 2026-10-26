@@ -13,6 +13,7 @@
 pub mod contract_suites;
 pub mod release;
 
+mod bench;
 mod clock;
 mod compute;
 mod event_store;
@@ -26,6 +27,10 @@ mod tool;
 mod tool_plane;
 mod worker;
 
+pub use bench::{
+    answer_stream, conversation_in_a_project, ended, held_until_cancelled, start_request,
+    test_providers, test_service, tool_call_stream, wait_events, wait_state,
+};
 pub use clock::{FakeClock, FakeLocalClock};
 pub use compute::{FakeComputeProvisioner, InMemoryComputeLeaseJournal};
 pub use event_store::InMemoryEventStore;

@@ -7,8 +7,8 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
 use tramontana_core::{contracts::*, ports::*, services::*, testing::*};
 
@@ -75,57 +75,25 @@ impl ModelProvider for Model {
             .count();
         self.requests.lock().unwrap().push(request.clone());
         let stream_id = request.request().request_id.clone();
-        let (sender, receiver) = mpsc::channel(8);
-        if results >= self.enough {
-            sender
-                .send(ModelEvent::TextDelta {
-                    stream_id,
-                    offset: 0,
-                    text: format!("Done by {} after {results} results.", self.provider),
-                })
-                .await
-                .unwrap();
-            sender
-                .send(ModelEvent::Completed {
-                    stop_reason: StopReason::Stop,
-                })
-                .await
-                .unwrap();
+        Ok(if results >= self.enough {
+            answer_stream(
+                stream_id,
+                format!("Done by {} after {results} results.", self.provider),
+            )
         } else {
-            sender
-                .send(ModelEvent::ToolCallDelta {
-                    stream_id,
-                    offset: 0,
-                    call_index: 0,
-                    call_id: Some(format!("call-{results}")),
-                    name: Some("fake.tool.echo".into()),
-                    delta: "{\"value\":\"a fact\"}".into(),
-                })
-                .await
-                .unwrap();
-            sender
-                .send(ModelEvent::Completed {
-                    stop_reason: StopReason::ToolCall,
-                })
-                .await
-                .unwrap();
-        }
-        Ok(receiver)
+            tool_call_stream(
+                stream_id,
+                format!("call-{results}"),
+                "fake.tool.echo",
+                "{\"value\":\"a fact\"}",
+            )
+        })
     }
 }
 
 /// The built-in worker as the composition root builds it: two steps when the
 /// router chooses, the default when pinned, so the first runs out.
 fn service(mode: RoutingMode, models: &[Arc<Model>], approver: ScriptedApprover) -> TaskService {
-    let events = Arc::new(InMemoryEventStore::new());
-    let ids = Arc::new(SequentialIdSource::new());
-    let (tools, permissions, releases) = assemble_tool_plane(
-        vec![Arc::new(FakeToolProvider::new()) as Arc<dyn ToolProvider>],
-        Arc::new(InMemoryApprovalStore::new()),
-        Arc::new(approver),
-        ids.clone(),
-    )
-    .unwrap();
     let tools_offered = vec!["fake.tool.echo".to_owned()];
     let short = ReadOnlyLimits {
         steps: 2,
@@ -149,20 +117,15 @@ fn service(mode: RoutingMode, models: &[Arc<Model>], approver: ScriptedApprover)
             ) as Arc<dyn AgentProvider>
         }) as PinnedWorkerChoice
     };
-    TaskService::new(
-        in_memory_repositories(events),
-        Providers {
-            models: models
-                .iter()
-                .map(|model| Arc::clone(model) as Arc<dyn ModelProvider>)
-                .collect(),
-            tools,
-            permissions,
-            releases,
-            worker: automatic(ToolAdmission::READ_ONLY),
-        },
-        Arc::new(FakeClock::new()),
-        ids,
+    test_service(
+        Arc::new(InMemoryEventStore::new()),
+        models
+            .iter()
+            .map(|model| Arc::clone(model) as Arc<dyn ModelProvider>)
+            .collect(),
+        vec![Arc::new(FakeToolProvider::new())],
+        Arc::new(approver),
+        automatic(ToolAdmission::READ_ONLY),
     )
     .with_routing_mode(mode)
     .with_worker_choice(automatic)
@@ -180,10 +143,8 @@ async fn start(service: &TaskService, admission: ToolAdmission) -> TaskId {
         .unwrap();
     service
         .start_task(StartTaskRequest {
-            conversation_id: Some(conversation.conversation_id),
-            goal: "Find the fact".into(),
             admission: Some(admission),
-            ..Default::default()
+            ..start_request(&conversation.conversation_id, "Find the fact")
         })
         .await
         .unwrap()
@@ -191,30 +152,29 @@ async fn start(service: &TaskService, admission: ToolAdmission) -> TaskId {
 
 /// Wait until the task has ended, or has stopped for another worker.
 async fn settled(service: &TaskService, task: &TaskId, after: usize) -> Vec<EventEnvelope> {
-    timeout(Duration::from_secs(10), async {
-        loop {
-            let events = service.replay_task_events(task, 0).await.unwrap();
+    wait_events(
+        service,
+        task,
+        Duration::from_secs(10),
+        Duration::from_millis(2),
+        |events| {
             let fresh = &events[after.min(events.len())..];
-            let ended = fresh.iter().any(|event| {
+            let stopped = fresh
+                .last()
+                .is_some_and(|event| event.kind == TaskEventKind::CheckpointSaved)
+                && fresh.iter().any(|event| matches!(&event.payload,
+                EventPayload::TaskStateChanged { reason_code, .. } if reason_code == "worker.stopped"));
+            fresh.iter().any(|event| {
                 matches!(
                     event.kind,
                     TaskEventKind::TaskCompleted
                         | TaskEventKind::TaskFailed
                         | TaskEventKind::TaskCancelled
                 )
-            });
-            let stopped = fresh.last().is_some_and(|event| {
-                event.kind == TaskEventKind::CheckpointSaved
-            }) && fresh.iter().any(|event| matches!(&event.payload,
-                EventPayload::TaskStateChanged { reason_code, .. } if reason_code == "worker.stopped"));
-            if ended || stopped {
-                return events;
-            }
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
-    })
+            }) || stopped
+        },
+    )
     .await
-    .unwrap()
 }
 
 fn stopped_with(events: &[EventEnvelope]) -> Vec<String> {
@@ -362,10 +322,8 @@ async fn a_task_can_start_on_the_worker_a_person_named() {
         .unwrap();
     let task = service
         .start_task(StartTaskRequest {
-            conversation_id: Some(conversation.conversation_id.clone()),
-            goal: "Find the fact".into(),
             worker: Some("builtin.reference@b-large/model".into()),
-            ..Default::default()
+            ..start_request(&conversation.conversation_id, "Find the fact")
         })
         .await
         .unwrap();
@@ -386,10 +344,8 @@ async fn a_task_can_start_on_the_worker_a_person_named() {
         .len();
     let unknown = service
         .start_task(StartTaskRequest {
-            conversation_id: Some(conversation.conversation_id.clone()),
-            goal: "Find the fact".into(),
             worker: Some("builtin.reference@nobody/model".into()),
-            ..Default::default()
+            ..start_request(&conversation.conversation_id, "Find the fact")
         })
         .await
         .unwrap_err();

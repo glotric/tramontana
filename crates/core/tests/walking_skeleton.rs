@@ -20,63 +20,34 @@ use tramontana_core::contracts::{
     ConfigurationKind, ConversationId, EventPayload, MessagePart, MessageRole, TaskEventKind,
     TaskId, TaskState, TaskUpdate,
 };
-use tramontana_core::ports::{ApprovalStore, Approver, EventStore, ToolProvider};
-use tramontana_core::services::{Providers, StartTaskRequest, TaskService};
+use tramontana_core::ports::EventStore;
+use tramontana_core::services::{StartTaskRequest, TaskService};
+// Tools are only permitted inside an opened project
+// (`SECURITY_AND_PERMISSIONS.md` §3.1), so a task that means to use one needs
+// a conversation that belongs to a project; the projectless case is asserted
+// on its own below.
 use tramontana_core::testing::{
-    FakeClock, FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryApprovalStore,
-    InMemoryEventStore, ScriptedApprover, SequentialIdSource, assemble_tool_plane,
-    in_memory_repositories,
+    FakeModelProvider, FakeToolProvider, FakeWorker, InMemoryEventStore, ScriptedApprover,
+    conversation_in_a_project, start_request, test_service, wait_state,
 };
 
 /// Assemble a service over an event store the test can also inspect.
 fn service_with_store() -> (Arc<TaskService>, Arc<InMemoryEventStore>) {
-    let (registry, permissions, releases) = assemble_tool_plane(
-        vec![Arc::new(FakeToolProvider::new()) as Arc<dyn ToolProvider>],
-        Arc::new(InMemoryApprovalStore::new()) as Arc<dyn ApprovalStore>,
-        Arc::new(ScriptedApprover::unavailable()) as Arc<dyn Approver>,
-        Arc::new(SequentialIdSource::new()),
-    )
-    .expect("the fake tool registers");
-
     let store = Arc::new(InMemoryEventStore::new());
-    let events = Arc::clone(&store) as Arc<dyn EventStore>;
-    let service = TaskService::new(
-        in_memory_repositories(events),
-        Providers {
-            models: vec![Arc::new(FakeModelProvider::streaming([
-                "Hello", ", ", "world",
-            ]))],
-            tools: registry,
-            permissions,
-            releases,
-            worker: Arc::new(FakeWorker::new()),
-        },
-        Arc::new(FakeClock::new()),
-        Arc::new(SequentialIdSource::new()),
+    let service = test_service(
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        vec![Arc::new(FakeModelProvider::streaming([
+            "Hello", ", ", "world",
+        ]))],
+        vec![Arc::new(FakeToolProvider::new())],
+        Arc::new(ScriptedApprover::unavailable()),
+        Arc::new(FakeWorker::new()),
     );
     (Arc::new(service), store)
 }
 
 fn service() -> Arc<TaskService> {
     service_with_store().0
-}
-
-/// Create a project and a conversation inside it.
-///
-/// Tools are only permitted inside an opened project
-/// (`SECURITY_AND_PERMISSIONS.md` §3.1), so a task that means to use one needs
-/// a conversation that belongs to a project. A projectless task reaching for a
-/// tool is a separate case, asserted on its own below.
-async fn conversation_in_a_project(service: &TaskService) -> ConversationId {
-    let project = service
-        .create_project("Demo", vec!["/work/demo".to_owned()])
-        .await
-        .expect("project");
-    service
-        .create_conversation(Some(project.project_id), "First")
-        .await
-        .expect("conversation")
-        .conversation_id
 }
 
 #[tokio::test]
@@ -99,15 +70,8 @@ async fn opening_the_same_roots_reuses_the_project_record() {
 /// still asynchronous, and a fixed sleep is exactly the flake
 /// `TESTING_STRATEGY.md` §11 forbids.
 async fn await_terminal(service: &TaskService, task_id: &TaskId) -> TaskState {
-    for _ in 0..1_000 {
-        let snapshot = service.get_task(task_id).await.unwrap();
-        if snapshot.state.is_terminal() {
-            return snapshot.state;
-        }
-        tokio::task::yield_now().await;
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-    panic!("task {task_id} never reached a terminal state");
+    let every = Duration::from_millis(1);
+    wait_state(service, task_id, every * 1_000, every, |s| s.is_terminal()).await
 }
 
 #[tokio::test]
@@ -134,11 +98,10 @@ async fn a_project_task_captures_the_latest_configuration_manifest() {
         .await
         .unwrap();
     let task_id = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation.conversation_id),
-            goal: "use the project configuration".to_owned(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation.conversation_id,
+            "use the project configuration",
+        ))
         .await
         .unwrap();
 
@@ -167,11 +130,10 @@ async fn a_task_runs_to_completion_with_an_ordered_event_stream() {
     let (service, store) = service_with_store();
 
     let task_id = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation_in_a_project(&service).await),
-            goal: "say hello".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation_in_a_project(&service).await,
+            "say hello",
+        ))
         .await
         .unwrap();
 
@@ -267,11 +229,10 @@ async fn a_task_reaches_exactly_one_terminal_state() {
     let (service, store) = service_with_store();
 
     let task_id = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation_in_a_project(&service).await),
-            goal: "say hello".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation_in_a_project(&service).await,
+            "say hello",
+        ))
         .await
         .unwrap();
     await_terminal(&service, &task_id).await;
@@ -292,11 +253,10 @@ async fn cancelling_before_the_work_starts_still_converges_to_cancelled() {
     let (service, store) = service_with_store();
 
     let task_id = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation_in_a_project(&service).await),
-            goal: "say hello".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation_in_a_project(&service).await,
+            "say hello",
+        ))
         .await
         .unwrap();
     // Racing the driver deliberately: the cancel may land before it has moved
@@ -327,11 +287,10 @@ async fn cancelling_after_completion_does_not_move_a_terminal_task() {
     let (service, store) = service_with_store();
 
     let task_id = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation_in_a_project(&service).await),
-            goal: "say hello".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation_in_a_project(&service).await,
+            "say hello",
+        ))
         .await
         .unwrap();
     assert_eq!(
@@ -360,11 +319,10 @@ async fn a_subscriber_replays_missed_events_and_then_receives_live_ones() {
     let service = service();
 
     let task_id = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation_in_a_project(&service).await),
-            goal: "say hello".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation_in_a_project(&service).await,
+            "say hello",
+        ))
         .await
         .unwrap();
 
@@ -396,11 +354,10 @@ async fn resubscribing_after_a_disconnect_recovers_the_gap() {
     let service = service();
 
     let task_id = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation_in_a_project(&service).await),
-            goal: "say hello".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation_in_a_project(&service).await,
+            "say hello",
+        ))
         .await
         .unwrap();
     await_terminal(&service, &task_id).await;
@@ -427,11 +384,10 @@ async fn streamed_frames_reconstruct_the_answer_exactly_once() {
     let service = service();
 
     let task_id = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation_in_a_project(&service).await),
-            goal: "say hello".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation_in_a_project(&service).await,
+            "say hello",
+        ))
         .await
         .unwrap();
     let (_, mut updates) = service.subscribe_task_events(&task_id, 0).await.unwrap();
@@ -493,11 +449,10 @@ async fn every_tool_call_records_an_origin_scope_and_decision() {
     let (service, store) = service_with_store();
 
     let task_id = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation_in_a_project(&service).await),
-            goal: "say hello".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation_in_a_project(&service).await,
+            "say hello",
+        ))
         .await
         .unwrap();
     await_terminal(&service, &task_id).await;
@@ -581,11 +536,7 @@ async fn a_task_can_be_attached_to_a_conversation_in_a_project() {
         .unwrap();
 
     let task_id = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation.conversation_id.clone()),
-            goal: "say hello".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(&conversation.conversation_id, "say hello"))
         .await
         .unwrap();
     await_terminal(&service, &task_id).await;
@@ -611,11 +562,7 @@ async fn unknown_projects_conversations_and_tasks_are_reported_not_invented() {
     assert_eq!(error.code, ErrorCode::NotFound);
 
     let error = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(ConversationId::new("nope")),
-            goal: "x".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(&ConversationId::new("nope"), "x"))
         .await
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::NotFound);
@@ -634,11 +581,10 @@ async fn a_finished_task_is_no_longer_held_as_running() {
     // stream and the whole record from replay.
     let service = service();
     let task_id = service
-        .start_task(StartTaskRequest {
-            conversation_id: Some(conversation_in_a_project(&service).await),
-            goal: "say hello".into(),
-            ..Default::default()
-        })
+        .start_task(start_request(
+            &conversation_in_a_project(&service).await,
+            "say hello",
+        ))
         .await
         .unwrap();
     assert_eq!(
