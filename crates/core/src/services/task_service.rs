@@ -151,7 +151,7 @@ pub(crate) type LiveTasks = Arc<Mutex<HashMap<TaskId, LiveTask>>>;
 /// A repository result, as the service reports it.
 ///
 /// `.or_envelope(self)` in place of
-/// `.or_envelope(self)` at every storage call.
+/// `.map_err(|error| self.repository_error(&error))` at every storage call.
 pub(super) trait OrEnvelope<T> {
     /// Map a failure through [`TaskService::repository_error`].
     fn or_envelope(self, service: &TaskService) -> Result<T, ErrorEnvelope>;

@@ -11,8 +11,6 @@
 
 use std::collections::BTreeMap;
 
-use sha2::{Digest, Sha256};
-
 use crate::contracts::{
     BUNDLE_MAJOR_VERSION, BUNDLE_MINOR_VERSION, BundleEntry, ConversationRecord, EventEnvelope,
     EventPayload, ExportBundle, ExportManifest, ExportOptions, ExportedConfiguration,
@@ -203,7 +201,7 @@ pub fn build_export(request: ExportRequest) -> ExportBundle {
         .iter()
         .map(|(path, contents)| BundleEntry {
             path: path.clone(),
-            sha256: sha256_hex(contents.as_bytes()),
+            sha256: crate::contracts::content_hash_bytes(contents.as_bytes()),
             byte_count: contents.len() as u64,
         })
         .collect();
@@ -406,10 +404,6 @@ fn readme(task_ids: &[TaskId], omissions: &[Omission], options: ExportOptions) -
 }
 
 /// Lowercase hex SHA-256.
-fn sha256_hex(bytes: &[u8]) -> String {
-    crate::contracts::configuration_hex(&Sha256::digest(bytes))
-}
-
 /// Why a bundle was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -566,7 +560,7 @@ pub fn validate_import(
             });
         }
 
-        if sha256_hex(contents.as_bytes()) != entry.sha256 {
+        if crate::contracts::content_hash_bytes(contents.as_bytes()) != entry.sha256 {
             return Err(ImportError::ChecksumMismatch {
                 path: entry.path.clone(),
             });

@@ -64,10 +64,9 @@ impl BrokeredHost {
             .get(step_id)
             .is_some_and(|previous| previous != &hash)
         {
-            return Err(ErrorEnvelope::new(
+            return Err(self.journal.error(
                 ErrorCode::InterruptedUnsafe,
                 "A recorded step cannot be reused with a different tool or arguments",
-                self.journal.correlation_id().clone(),
             ));
         }
         if let Some(completed) = plan.already_done(step_id) {
@@ -260,10 +259,9 @@ impl BrokeredHost {
         // Defense in depth: never offered under Local Only, and refused if
         // asked for anyway (ADR 0050).
         if self.reaches_off_device_under_local_only(&descriptor.tool_id) {
-            return Err(ErrorEnvelope::new(
+            return Err(self.journal.error(
                 ErrorCode::PermissionDenied,
                 "This task runs Local Only, and this App is not on this computer",
-                self.journal.correlation_id().clone(),
             ));
         }
         // What the call acts on, where only its provider knows: the site of
@@ -423,11 +421,8 @@ impl BrokeredHost {
     }
 
     fn tool_error(&self, code: ErrorCode) -> ErrorEnvelope {
-        ErrorEnvelope::new(
-            code,
-            "Tool invocation did not complete successfully",
-            self.journal.correlation_id().clone(),
-        )
+        self.journal
+            .error(code, "Tool invocation did not complete successfully")
     }
 }
 

@@ -22,7 +22,6 @@ use crate::ports::{AgentProvider, ToolAdmission};
 use crate::services::ProjectInstructions;
 use crate::services::handoff::build_handoff;
 
-/// Every admission a task can start with, to find the worker one recorded.
 /// Every admission a task could have been started with.
 fn admissions() -> impl Iterator<Item = ToolAdmission> {
     (0u8..16).map(|bits| ToolAdmission {
@@ -36,36 +35,6 @@ fn admissions() -> impl Iterator<Item = ToolAdmission> {
 /// The routing mode a task was created under, when its record says.
 ///
 /// Tasks created before the mode was recorded say nothing.
-/// The files attached to the task's message, from its own record (ADR 0058).
-fn created_attachments(events: &[EventEnvelope]) -> Vec<crate::contracts::TaskAttachment> {
-    events
-        .iter()
-        .find_map(|event| match &event.payload {
-            EventPayload::TaskCreated { attachments, .. } => Some(attachments.clone()),
-            _ => None,
-        })
-        .unwrap_or_default()
-}
-
-/// What the task's model was told about the person, from its own record
-/// (ADR 0061).
-fn created_skills(events: &[EventEnvelope]) -> Vec<crate::contracts::TaskSkill> {
-    events
-        .iter()
-        .find_map(|event| match &event.payload {
-            EventPayload::TaskCreated { skills, .. } => Some(skills.clone()),
-            _ => None,
-        })
-        .unwrap_or_default()
-}
-
-fn created_personal(events: &[EventEnvelope]) -> Option<String> {
-    events.iter().find_map(|event| match &event.payload {
-        EventPayload::TaskCreated { personal, .. } => personal.clone(),
-        _ => None,
-    })
-}
-
 fn created_mode(events: &[EventEnvelope]) -> Option<RoutingMode> {
     events.iter().find_map(|event| match &event.payload {
         EventPayload::TaskCreated { routing_mode, .. } => *routing_mode,
@@ -641,6 +610,20 @@ impl TaskService {
         // 0031). Only a task recorded before modes were has none, and takes
         // the profile's, as it always did.
         let routing_mode = created_mode(&events).unwrap_or_else(|| self.routing_mode());
+        // The message's attachments (ADR 0058) and what the model was told
+        // about the person (ADR 0061), from the task's own record.
+        let (attachments, skills, personal) = events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::TaskCreated {
+                    attachments,
+                    skills,
+                    personal,
+                    ..
+                } => Some((attachments.clone(), skills.clone(), personal.clone())),
+                _ => None,
+            })
+            .unwrap_or_default();
         let plan = ResumePlan::from_events(&events);
         let earlier = self.earlier_turns(&record).await;
         let driver = TaskDriver::new(journal, self.providers.clone(), scope, self.clock.clone())
@@ -648,9 +631,9 @@ impl TaskService {
             .with_configuration(configuration)
             .with_instructions(instructions)
             .with_earlier_turns(earlier)
-            .with_attachments(created_attachments(&events))
-            .with_personal(created_personal(&events))
-            .with_skills(created_skills(&events))
+            .with_attachments(attachments)
+            .with_personal(personal)
+            .with_skills(skills)
             .with_checkpoints(Arc::clone(&self.repositories.checkpoints));
         let driver = match handoff {
             Some(handoff) => driver.handing_over(worker, handoff, plan, interrupt),

@@ -624,8 +624,8 @@ impl TaskDriver {
             snapshot_id: self.journal.next_id("availability"),
             models: tokio::select! {
                 biased;
-                () = cancel.cancelled() => return Err(ErrorEnvelope::new(ErrorCode::Cancelled, "Routing cancelled", self.journal.correlation_id().clone())),
-                () = tokio::time::sleep(std::time::Duration::from_secs(30)) => return Err(ErrorEnvelope::new(ErrorCode::Timeout, "Model discovery timed out", self.journal.correlation_id().clone())),
+                () = cancel.cancelled() => return Err(self.journal.error(ErrorCode::Cancelled, "Routing cancelled")),
+                () = tokio::time::sleep(std::time::Duration::from_secs(30)) => return Err(self.journal.error(ErrorCode::Timeout, "Model discovery timed out")),
                 models = async {
                 let mut available = Vec::new();
                 for provider in &self.providers.models {
@@ -653,10 +653,9 @@ impl TaskDriver {
         input.required = self.worker().pinned_model();
 
         let decision = route(self.journal.next_id("decision"), &input).map_err(|refusal| {
-            ErrorEnvelope::new(
+            self.journal.error(
                 ErrorCode::ProviderUnavailable,
                 format!("no model could serve this task: {refusal}"),
-                self.journal.correlation_id().clone(),
             )
         })?;
 
@@ -677,13 +676,9 @@ impl TaskDriver {
         to: TaskState,
         reason_code: &str,
     ) -> Result<TaskState, ErrorEnvelope> {
-        let current = from.transition_to(to).map_err(|error| {
-            ErrorEnvelope::new(
-                ErrorCode::Internal,
-                error.to_string(),
-                self.journal.correlation_id().clone(),
-            )
-        })?;
+        let current = from
+            .transition_to(to)
+            .map_err(|error| self.journal.error(ErrorCode::Internal, error.to_string()))?;
 
         self.record(EventDraft::user(
             TaskEventKind::TaskStateChanged,
@@ -863,11 +858,7 @@ impl BrokeredHost {
             ReleaseError::InvalidPayload(code) => *code,
             _ => ErrorCode::Internal,
         };
-        ErrorEnvelope::new(
-            code,
-            error.to_string(),
-            self.journal.correlation_id().clone(),
-        )
+        self.journal.error(code, error.to_string())
     }
 }
 
@@ -942,11 +933,9 @@ impl WorkerHost for BrokeredHost {
     async fn emit(&self, draft: EventDraft) -> Result<(), ErrorEnvelope> {
         if matches!(&draft.payload, EventPayload::DiagnosticRecorded { code, .. } if code.starts_with("reference."))
         {
-            return Err(ErrorEnvelope::new(
-                ErrorCode::PermissionDenied,
-                "Reserved host event",
-                self.journal.correlation_id().clone(),
-            ));
+            return Err(self
+                .journal
+                .error(ErrorCode::PermissionDenied, "Reserved host event"));
         }
         // Workers cannot forge lifecycle, approval, release, or completion
         // ledger entries. What is left is an observation about the worker's
@@ -958,10 +947,9 @@ impl WorkerHost for BrokeredHost {
                 EventPayload::DiagnosticRecorded { .. }
             )
         ) {
-            return Err(ErrorEnvelope::new(
+            return Err(self.journal.error(
                 ErrorCode::PermissionDenied,
                 "Workers may emit only diagnostic observations",
-                self.journal.correlation_id().clone(),
             ));
         }
         self.journal.append(draft).await.map(|_| ())

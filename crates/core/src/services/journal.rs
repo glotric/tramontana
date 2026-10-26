@@ -200,6 +200,12 @@ impl TaskJournal {
         &self.correlation_id
     }
 
+    /// An error envelope carrying this task's correlation identifier.
+    #[must_use]
+    pub fn error(&self, code: ErrorCode, message: impl Into<String>) -> ErrorEnvelope {
+        ErrorEnvelope::new(code, message, self.correlation_id.clone())
+    }
+
     /// The conversation this task belongs to, when it has one.
     #[must_use]
     pub fn conversation_id(&self) -> Option<&ConversationId> {

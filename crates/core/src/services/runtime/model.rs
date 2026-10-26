@@ -23,10 +23,9 @@ impl BrokeredHost {
         // eligible on this legacy text path. Tool observations need a separate
         // host-owned history path; concatenating them into this prompt fails.
         let Some(initial) = self.context.as_ref() else {
-            return Err(ErrorEnvelope::new(
+            return Err(self.journal.error(
                 ErrorCode::PermissionDenied,
                 "A model request needs assembled context",
-                self.journal.correlation_id().clone(),
             ));
         };
         if prompt.len() > crate::services::MODEL_INPUT_BYTES {
@@ -138,11 +137,7 @@ impl BrokeredHost {
             )),
         };
         if let Some((code, message)) = refusal {
-            return Err(ErrorEnvelope::new(
-                code,
-                message,
-                self.journal.correlation_id().clone(),
-            ));
+            return Err(self.journal.error(code, message));
         }
         Ok(answer)
     }
@@ -239,11 +234,9 @@ impl BrokeredHost {
         let _cancel_on_drop = model_cancel.clone().drop_guard();
         let mut stream = tokio::select! {
             biased;
-            () = cancel.cancelled() => return Err(ErrorEnvelope::new(
-                ErrorCode::Cancelled, "Model request cancelled", self.journal.correlation_id().clone())),
-            () = tokio::time::sleep_until(deadline) => return Err(ErrorEnvelope::new(
-                ErrorCode::Timeout, "Model request deadline exceeded", self.journal.correlation_id().clone())),
-            result = provider.stream(authorized, model_cancel.clone()) => result.map_err(|error| ErrorEnvelope::new(error.code, "Model provider could not start the request", self.journal.correlation_id().clone()))?,
+            () = cancel.cancelled() => return Err(self.journal.error(ErrorCode::Cancelled, "Model request cancelled")),
+            () = tokio::time::sleep_until(deadline) => return Err(self.journal.error(ErrorCode::Timeout, "Model request deadline exceeded")),
+            result = provider.stream(authorized, model_cancel.clone()) => result.map_err(|error| self.journal.error(error.code, "Model provider could not start the request"))?,
         };
 
         // Deltas are coalesced here and committed once. Persisting every token
@@ -259,13 +252,11 @@ impl BrokeredHost {
             let event = tokio::select! {
                 biased;
                 () = cancel.cancelled() => {
-                    failure = Some(ErrorEnvelope::new(ErrorCode::Cancelled,
-                        "Model request cancelled", self.journal.correlation_id().clone()));
+                    failure = Some(self.journal.error(ErrorCode::Cancelled, "Model request cancelled"));
                     break;
                 }
                 () = tokio::time::sleep_until(deadline) => {
-                    failure = Some(ErrorEnvelope::new(ErrorCode::Timeout,
-                        "Model request deadline exceeded", self.journal.correlation_id().clone()));
+                    failure = Some(self.journal.error(ErrorCode::Timeout, "Model request deadline exceeded"));
                     break;
                 }
                 event = stream.recv() => event,
@@ -298,11 +289,9 @@ impl BrokeredHost {
             if !partial.is_empty() {
                 self.commit_answer(&partial, MessageStatus::Partial).await?;
             }
-            return Err(ErrorEnvelope::new(
-                error.code,
-                "Model turn did not complete",
-                self.journal.correlation_id().clone(),
-            ));
+            return Err(self
+                .journal
+                .error(error.code, "Model turn did not complete"));
         }
         let mut result = result?;
         result.text = crate::services::redact(&result.text).text;
@@ -351,6 +340,6 @@ impl BrokeredHost {
             ErrorCode::LimitExceeded => "Model input limit exceeded",
             _ => "Selected model provider is unavailable",
         };
-        ErrorEnvelope::new(code, message, self.journal.correlation_id().clone())
+        self.journal.error(code, message)
     }
 }

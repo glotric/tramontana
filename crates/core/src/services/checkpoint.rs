@@ -5,7 +5,6 @@ use crate::contracts::{
     EventPayload, PendingAction, PendingActionKind, ReplaySafety, ResumeEligibility,
     TaskCheckpoint, TaskId, TaskState, Timestamp,
 };
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Stable checkpoint refusal and eligibility reasons.
@@ -54,11 +53,7 @@ impl ResumePlan {
 /// Deterministic fingerprint that excludes argument values from storage.
 /// serde_json's default map representation sorts keys.
 pub(crate) fn request_hash(tool_id: &str, arguments: &serde_json::Value) -> String {
-    let bytes = format!("{tool_id}\n{arguments}");
-    Sha256::digest(bytes.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    crate::contracts::content_hash_bytes(format!("{tool_id}\n{arguments}").as_bytes())
 }
 
 /// Canonical facts used to construct a checkpoint and resume guard.

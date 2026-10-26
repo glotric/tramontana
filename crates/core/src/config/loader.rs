@@ -1,7 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-use sha2::{Digest, Sha256};
-
 use crate::config::front_matter::split_front_matter;
 use crate::contracts::{
     ConfigurationDiagnostic, ConfigurationKind, ConfigurationSource, DiagnosticSeverity,
@@ -185,7 +183,7 @@ fn interpret(
         None => (raw.content.as_slice(), Vec::new()),
     };
     let byte_count = releasable.len() as u64;
-    let content_hash = crate::contracts::configuration_hex(&Sha256::digest(releasable));
+    let content_hash = crate::contracts::content_hash_bytes(releasable);
 
     let mut source = ConfigurationSource {
         source_id: raw.relative_path.clone(),
@@ -1066,13 +1064,13 @@ mod tests {
             ]
         );
         // Not the hash of the file on disk.
-        let raw_hash = crate::contracts::configuration_hex(&Sha256::digest(raw.as_bytes()));
+        let raw_hash = crate::contracts::content_hash_bytes(raw.as_bytes());
         assert_ne!(source.content_hash, raw_hash);
         // But exactly the hash of what may be released.
         let releasable = crate::services::redact(raw).text;
         assert_eq!(
             source.content_hash,
-            crate::contracts::configuration_hex(&Sha256::digest(releasable.as_bytes()))
+            crate::contracts::content_hash_bytes(releasable.as_bytes())
         );
         assert_eq!(source.byte_count, releasable.len() as u64);
     }
@@ -1091,7 +1089,7 @@ mod tests {
         );
         assert_eq!(
             resolved.sources[0].content_hash,
-            crate::contracts::configuration_hex(&Sha256::digest(raw))
+            crate::contracts::content_hash_bytes(raw)
         );
         assert!(resolved.sources[0].redactions.is_empty());
         assert_eq!(resolved.sources[0].byte_count, raw.len() as u64);
