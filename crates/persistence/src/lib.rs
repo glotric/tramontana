@@ -11,6 +11,7 @@
 //! against this.
 
 mod apps;
+mod compute;
 mod database;
 mod dictation;
 mod erasure;
@@ -21,6 +22,7 @@ mod repositories;
 mod schedules;
 
 pub use apps::SqliteAppSettingsRepository;
+pub use compute::SqliteComputeLeaseJournal;
 
 pub use database::{Database, DatabaseError};
 pub use dictation::SqliteDictationRepository;

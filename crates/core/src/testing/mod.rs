@@ -14,6 +14,7 @@ pub mod contract_suites;
 pub mod release;
 
 mod clock;
+mod compute;
 mod event_store;
 mod ids;
 mod model;
@@ -26,6 +27,7 @@ mod tool_plane;
 mod worker;
 
 pub use clock::{FakeClock, FakeLocalClock};
+pub use compute::{FakeComputeProvisioner, InMemoryComputeLeaseJournal};
 pub use event_store::InMemoryEventStore;
 pub use ids::SequentialIdSource;
 pub use model::{FakeModelProvider, FakeModelScript};

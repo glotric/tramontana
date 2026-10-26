@@ -104,6 +104,10 @@ declare_id!(
     /// Something a task produced and recorded, such as its changed-file summary.
     ArtifactId
 );
+declare_id!(
+    /// One rented-compute lease: a serverless endpoint or a machine (ADR 0072).
+    LeaseId
+);
 
 #[cfg(test)]
 #[allow(
