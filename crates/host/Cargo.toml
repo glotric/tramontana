@@ -27,7 +27,7 @@ tokio-native-tls = "0.3"
 [dev-dependencies]
 tempfile = { workspace = true }
 tramontana-composition = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "test-util"] }
 
 [lints]
 workspace = true

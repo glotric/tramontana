@@ -14,13 +14,15 @@
 //! No policy lives here. A rule a host needs that the desktop does not have
 //! belongs in `crates/core`.
 
+mod approvals;
 mod devices;
 mod dispatch;
 mod protocol;
 mod server;
 mod tls;
 
+pub use approvals::RemoteApprover;
 pub use devices::{Devices, PairError, Token};
 pub use protocol::{ClientFrame, ServerFrame};
-pub use server::{Host, NobodyToAsk};
+pub use server::Host;
 pub use tls::{ConnectError, acceptor, connect, fingerprint};

@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::net::TcpListener;
@@ -19,41 +18,25 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use tramontana_core::contracts::{
-    ApprovalDecisionKind, ApprovalRequest, CorrelationId, ErrorCode, ErrorEnvelope, TaskId,
+    ApprovalDecisionKind, ApprovalId, CorrelationId, ErrorCode, ErrorEnvelope, TaskId,
 };
-use tramontana_core::ports::{Approver, PermissionError};
 use tramontana_core::services::{TaskService, forward_task_updates};
 
+use crate::approvals::RemoteApprover;
 use crate::devices::{Devices, PairError};
-use crate::dispatch::{dispatch, invalid, parse};
+use crate::dispatch::{dispatch, invalid, parse, to_value};
 use crate::protocol::{ClientFrame, ServerFrame};
 
 /// How many frames may wait for one slow desktop before it is cut off.
 const QUEUE: usize = 1_024;
 
-/// Answers every approval question with "nobody can be asked".
-///
-/// SP1's host has no way to reach a person yet, so a task that needs an
-/// approval fails closed, as a headless CLI's does.
-// shortcut: replaced by an approver that asks the desktop driving the task,
-// in SP1 step 3.
-#[derive(Debug, Default)]
-pub struct NobodyToAsk;
-
-#[async_trait]
-impl Approver for NobodyToAsk {
-    async fn ask(
-        &self,
-        _request: &ApprovalRequest,
-    ) -> Result<ApprovalDecisionKind, PermissionError> {
-        Err(PermissionError::NoApprover)
-    }
-}
-
 /// A host: the service, the paired devices, and how to serve them.
 pub struct Host {
     service: Arc<TaskService>,
     devices: Arc<Devices>,
+    /// The approver the service was assembled with, so connected desktops
+    /// can be asked and can answer.
+    approvals: Arc<RemoteApprover>,
     queue: usize,
 }
 
@@ -79,13 +62,26 @@ struct Unwatch {
     watch_id: u64,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Resolve {
+    approval_id: ApprovalId,
+    decision: ApprovalDecisionKind,
+}
+
 impl Host {
     /// A host over `service`, admitting the devices in `devices`.
+    /// `approvals` must be the approver `service` was assembled with.
     #[must_use]
-    pub fn new(service: Arc<TaskService>, devices: Arc<Devices>) -> Self {
+    pub fn new(
+        service: Arc<TaskService>,
+        devices: Arc<Devices>,
+        approvals: Arc<RemoteApprover>,
+    ) -> Self {
         Self {
             service,
             devices,
+            approvals,
             queue: QUEUE,
         }
     }
@@ -198,6 +194,9 @@ impl Host {
             return;
         };
         send(admitted);
+        // From here this desktop is asked every approval question, including
+        // those already waiting.
+        let desktop = self.approvals.attach(outgoing.clone(), closing.clone());
 
         let mut watches: HashMap<u64, CancellationToken> = HashMap::new();
         let mut next_watch = 0_u64;
@@ -226,12 +225,25 @@ impl Host {
                     }
                     serde_json::Value::Null
                 }),
+                // The desktop's own approval commands, by the same names.
+                "resolve_approval" => parse::<Resolve>(&name, args).and_then(
+                    |Resolve {
+                         approval_id,
+                         decision,
+                     }| {
+                        self.approvals
+                            .resolve(&approval_id, decision)
+                            .map(|()| serde_json::Value::Null)
+                    },
+                ),
+                "pending_approvals" => to_value(self.approvals.pending()),
                 _ => dispatch(&self.service, &name, args).await,
             };
             if !send(reply(id, result)) {
                 break;
             }
         }
+        self.approvals.detach(desktop);
         closing.cancel();
         drop(outgoing);
         let _ = writer.await;
@@ -279,7 +291,7 @@ impl Host {
 
 /// Queue a frame, or close the connection if the desktop has fallen so far
 /// behind that the queue is full. Returns whether the frame was queued.
-fn send_or_close(
+pub(crate) fn send_or_close(
     outgoing: &mpsc::Sender<ServerFrame>,
     closing: &CancellationToken,
     frame: ServerFrame,

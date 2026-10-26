@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tramontana_core::contracts::{ErrorEnvelope, TaskUpdate};
+use tramontana_core::contracts::{ApprovalId, ApprovalRequest, ErrorEnvelope, TaskUpdate};
 
 use crate::devices::Token;
 
@@ -79,6 +79,18 @@ pub enum ServerFrame {
         watch: u64,
         /// The update, exactly as the desktop's own channel carries it.
         update: Box<TaskUpdate>,
+    },
+    /// A question a task is waiting on, as the desktop's own card shows it.
+    /// Answered with the `resolve_approval` command.
+    ApprovalRequested {
+        /// The question, with the answers that may be given.
+        request: Box<ApprovalRequest>,
+    },
+    /// A question is no longer waiting — answered, here or on another
+    /// desktop, or expired — so its card goes away.
+    ApprovalSettled {
+        /// Which question.
+        approval_id: ApprovalId,
     },
     /// The connection is refused, and closes after this frame.
     Refused {

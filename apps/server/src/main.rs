@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 use tramontana_core::ports::{Approver, SecretResolver};
-use tramontana_host::{Devices, Host, NobodyToAsk};
+use tramontana_host::{Devices, Host, RemoteApprover};
 use tramontana_platform::{FileSecretVault, PlatformSecretVault};
 
 #[derive(Parser)]
@@ -138,9 +138,11 @@ async fn serve(
         Some(key_file) => Arc::new(FileSecretVault::new(data.join("vault"), key_file)),
         None => Arc::new(PlatformSecretVault::new()),
     };
+    // Questions go to the desktops connected to this host.
+    let approvals = Arc::new(RemoteApprover::new());
     let plane = tramontana_composition::open_service_plane(
         &data.join("host.sqlite"),
-        Arc::new(NobodyToAsk) as Arc<dyn Approver>,
+        Arc::clone(&approvals) as Arc<dyn Approver>,
         resolver,
         0,
     )
@@ -160,7 +162,7 @@ async fn serve(
         .await
         .map_err(|error| format!("could not listen on {listen}: {error}"))?;
     println!("Listening on {listen}.");
-    let host = Arc::new(Host::new(Arc::new(plane.service), devices));
+    let host = Arc::new(Host::new(Arc::new(plane.service), devices, approvals));
     let served = host.serve(listener, acceptor).await;
     let mut models = plane.models;
     models.shutdown().await;

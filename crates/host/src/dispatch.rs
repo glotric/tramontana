@@ -104,7 +104,7 @@ pub(crate) fn parse<T: DeserializeOwned>(name: &str, args: Value) -> Result<T, E
         .map_err(|_| invalid(format!("the arguments for {name} are not valid")))
 }
 
-fn to_value(value: impl serde::Serialize) -> Result<Value, ErrorEnvelope> {
+pub(crate) fn to_value(value: impl serde::Serialize) -> Result<Value, ErrorEnvelope> {
     serde_json::to_value(value).map_err(|_| {
         ErrorEnvelope::new(
             ErrorCode::Internal,

@@ -22,10 +22,15 @@ use tokio::net::TcpStream;
 use tokio_native_tls::TlsStream;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
-use tramontana_core::contracts::{ErrorCode, TaskUpdate};
+use tramontana_core::contracts::{
+    ApprovalDecisionKind, ApprovalId, ApprovalRequest, Capability, CapabilityScope, ErrorCode,
+    RiskClass, SideEffect, TaskId, TaskUpdate,
+};
 use tramontana_core::ports::{Approver, SecretResolver};
 use tramontana_core::testing::InMemorySecretVault;
-use tramontana_host::{ClientFrame, ConnectError, Devices, Host, NobodyToAsk, ServerFrame, Token};
+use tramontana_host::{
+    ClientFrame, ConnectError, Devices, Host, RemoteApprover, ServerFrame, Token,
+};
 
 type Socket = WebSocketStream<TlsStream<TcpStream>>;
 
@@ -33,6 +38,7 @@ struct Running {
     address: String,
     pin: String,
     devices: Arc<Devices>,
+    approvals: Arc<RemoteApprover>,
     _dir: tempfile::TempDir,
 }
 
@@ -67,16 +73,24 @@ fn certificate(dir: &Path) -> Option<(Vec<u8>, Vec<u8>)> {
 async fn start(queue: usize) -> Option<Running> {
     let dir = tempfile::tempdir().unwrap();
     let (cert, key) = certificate(dir.path())?;
+    let approvals = Arc::new(RemoteApprover::new());
     let plane = tramontana_composition::open_service_plane(
         &dir.path().join("host.sqlite"),
-        Arc::new(NobodyToAsk) as Arc<dyn Approver>,
+        Arc::clone(&approvals) as Arc<dyn Approver>,
         Arc::new(InMemorySecretVault::new()) as Arc<dyn SecretResolver>,
         0,
     )
     .await
     .unwrap();
     let devices = Arc::new(Devices::open(dir.path().join("devices.json")).unwrap());
-    let host = Arc::new(Host::new(Arc::new(plane.service), Arc::clone(&devices)).with_queue(queue));
+    let host = Arc::new(
+        Host::new(
+            Arc::new(plane.service),
+            Arc::clone(&devices),
+            Arc::clone(&approvals),
+        )
+        .with_queue(queue),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap().to_string();
     let acceptor = tramontana_host::acceptor(&cert, &key).unwrap();
@@ -85,6 +99,7 @@ async fn start(queue: usize) -> Option<Running> {
         address,
         pin: tramontana_host::fingerprint(&cert).unwrap(),
         devices,
+        approvals,
         _dir: dir,
     })
 }
@@ -178,7 +193,7 @@ async fn command(
                     None => Ok(result.unwrap_or(Value::Null)),
                 };
             }
-            Some(ServerFrame::Update { .. }) => {}
+            Some(ServerFrame::Update { .. } | ServerFrame::ApprovalSettled { .. }) => {}
             other => panic!("expected the reply to {id}: {other:?}"),
         }
     }
@@ -237,21 +252,24 @@ async fn a_task_started_remotely_is_watched_to_the_end_once_in_order() {
     let task_id = command(&mut socket, 1, "start_task", json!({ "goal": "say hello" }))
         .await
         .unwrap();
-    let watch = command(
+    send(
         &mut socket,
-        2,
-        "watch_task",
-        json!({ "taskId": task_id, "afterSequence": 0 }),
+        &ClientFrame::Command {
+            id: 2,
+            name: "watch_task".to_owned(),
+            args: json!({ "taskId": task_id, "afterSequence": 0 }),
+        },
     )
-    .await
-    .unwrap();
-    let watch_id = watch["watchId"].as_u64().unwrap();
+    .await;
 
+    // The task's questions arrive on the same connection as its events; the
+    // desktop answers each one, as its card would, and the task goes on.
     let mut sequences = Vec::new();
+    let mut questions = 0;
+    let mut next_id = 100;
     loop {
         match receive(&mut socket).await {
-            Some(ServerFrame::Update { watch, update }) => {
-                assert_eq!(watch, watch_id);
+            Some(ServerFrame::Update { update, .. }) => {
                 if let TaskUpdate::Event { event } = *update {
                     sequences.push(event.sequence);
                     if event.is_terminal_outcome() {
@@ -259,9 +277,27 @@ async fn a_task_started_remotely_is_watched_to_the_end_once_in_order() {
                     }
                 }
             }
+            Some(ServerFrame::ApprovalRequested { request }) => {
+                questions += 1;
+                next_id += 1;
+                send(
+                    &mut socket,
+                    &ClientFrame::Command {
+                        id: next_id,
+                        name: "resolve_approval".to_owned(),
+                        args: json!({ "approvalId": request.approval_id, "decision": "deny" }),
+                    },
+                )
+                .await;
+            }
+            Some(ServerFrame::Reply { error: None, .. } | ServerFrame::ApprovalSettled { .. }) => {}
             other => panic!("the stream ended before the task did: {other:?}"),
         }
     }
+    assert!(
+        questions >= 1,
+        "the fake worker's listing was never asked about"
+    );
     assert_eq!(
         sequences,
         (1..=*sequences.last().unwrap()).collect::<Vec<_>>()
@@ -373,4 +409,132 @@ async fn a_desktop_too_slow_for_its_queue_is_disconnected() {
         frames += 1;
         assert!(frames < 1_000, "the connection was never closed");
     }
+}
+
+fn question(id: &str) -> ApprovalRequest {
+    ApprovalRequest {
+        schema_version: tramontana_core::SCHEMA_VERSION,
+        approval_id: ApprovalId::new(id),
+        task_id: TaskId::new("task-1"),
+        invocation_id: None,
+        capability: Capability::new("fs.write"),
+        tool_id: "builtin.fs.patch".to_owned(),
+        requested_scope: CapabilityScope {
+            project_id: None,
+            roots: Vec::new(),
+            releases_data: false,
+        },
+        risk_class: RiskClass::Modify,
+        side_effect: SideEffect::LocalReversible,
+        summary: "patch a file".to_owned(),
+        details: Vec::new(),
+        eligible_decisions: vec![ApprovalDecisionKind::AllowOnce, ApprovalDecisionKind::Deny],
+    }
+}
+
+/// The next frame that is an approval question, skipping nothing else.
+async fn asked(socket: &mut Socket) -> ApprovalRequest {
+    match receive(socket).await {
+        Some(ServerFrame::ApprovalRequested { request }) => *request,
+        other => panic!("expected an approval question: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_question_reaches_every_desktop_and_the_first_answer_settles_it() {
+    let Some(running) = start(1_024).await else {
+        return;
+    };
+    let token = pair(&running).await;
+    let mut laptop = hello(&running, &token).await;
+    let mut desktop = hello(&running, &token).await;
+
+    // A task asks, as the permission manager would.
+    let asking = {
+        let approvals = Arc::clone(&running.approvals);
+        tokio::spawn(async move { approvals.ask(&question("approval-1")).await })
+    };
+    assert_eq!(
+        asked(&mut laptop).await.approval_id,
+        ApprovalId::new("approval-1")
+    );
+    assert_eq!(
+        asked(&mut desktop).await.approval_id,
+        ApprovalId::new("approval-1")
+    );
+
+    // Answered on the laptop, by the desktop's own command name.
+    assert_eq!(
+        command(
+            &mut laptop,
+            1,
+            "resolve_approval",
+            json!({ "approvalId": "approval-1", "decision": "allowOnce" }),
+        )
+        .await,
+        Ok(Value::Null)
+    );
+    assert_eq!(
+        asking.await.unwrap().unwrap(),
+        ApprovalDecisionKind::AllowOnce
+    );
+
+    // The other desktop's card goes away, and a second answer finds nothing.
+    assert!(matches!(
+        receive(&mut desktop).await,
+        Some(ServerFrame::ApprovalSettled { approval_id }) if approval_id == ApprovalId::new("approval-1")
+    ));
+    assert_eq!(
+        command(
+            &mut desktop,
+            2,
+            "resolve_approval",
+            json!({ "approvalId": "approval-1", "decision": "deny" }),
+        )
+        .await,
+        Err(ErrorCode::NotFound)
+    );
+}
+
+#[tokio::test]
+async fn a_desktop_that_connects_later_is_asked_what_is_still_waiting() {
+    let Some(running) = start(1_024).await else {
+        return;
+    };
+    let token = pair(&running).await;
+
+    // Asked while no desktop is connected: it waits, it is not allowed.
+    let asking = {
+        let approvals = Arc::clone(&running.approvals);
+        tokio::spawn(async move { approvals.ask(&question("approval-1")).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(!asking.is_finished());
+
+    let mut socket = hello(&running, &token).await;
+    let request = asked(&mut socket).await;
+    assert_eq!(
+        command(&mut socket, 1, "pending_approvals", Value::Null).await,
+        Ok(json!([serde_json::to_value(&request).unwrap()]))
+    );
+    // An answer that was not offered is refused, and the question waits on.
+    assert_eq!(
+        command(
+            &mut socket,
+            2,
+            "resolve_approval",
+            json!({ "approvalId": "approval-1", "decision": "allowProject" }),
+        )
+        .await,
+        Err(ErrorCode::InvalidRequest)
+    );
+    command(
+        &mut socket,
+        3,
+        "resolve_approval",
+        json!({ "approvalId": "approval-1", "decision": "deny" }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(asking.await.unwrap().unwrap(), ApprovalDecisionKind::Deny);
 }
