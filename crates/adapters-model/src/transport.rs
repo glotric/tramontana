@@ -59,6 +59,46 @@ pub(crate) trait WireFormat: Send + Sync + 'static {
 ///
 /// Written to have a single exit that produces the terminal event, so no
 /// branch can end the stream without one.
+/// The HTTP client every model adapter sends with.
+pub(crate) fn http_client() -> Result<reqwest::Client, ErrorEnvelope> {
+    reqwest::Client::builder()
+        // Connection setup only. The whole-request bound is the deadline
+        // carried on each `ModelRequest`, which a caller can vary; a fixed
+        // client timeout would silently override it.
+        .connect_timeout(Duration::from_secs(10))
+        // Never followed: a redirect would replay the prompt, and any
+        // credential header the library does not know to strip, to a
+        // host the routing decision never named — over plain HTTP, if
+        // that is where it points (ADR 0066).
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|failure| {
+            error(
+                ErrorCode::Internal,
+                format!("could not build an HTTP client: {failure}"),
+            )
+        })
+}
+
+/// Stream `builder`'s response through `wire` on its own task.
+pub(crate) fn spawn_stream(
+    builder: reqwest::RequestBuilder,
+    wire: impl WireFormat,
+    stream_id: String,
+    deadline: Duration,
+    cancel: CancellationToken,
+) -> mpsc::Receiver<ModelEvent> {
+    let (sender, receiver) = mpsc::channel(32);
+    tokio::spawn(async move {
+        let outcome = pump(builder, &wire, &stream_id, deadline, &cancel, &sender).await;
+        // Exactly one terminal event, whatever happened above — including
+        // when the consumer has already gone away, in which case the send
+        // fails harmlessly.
+        let _ = sender.send(outcome).await;
+    });
+    receiver
+}
+
 pub(crate) async fn pump(
     builder: reqwest::RequestBuilder,
     wire: &dyn WireFormat,

@@ -130,7 +130,7 @@ impl BrowserProvider {
             return Ok(tab);
         }
         let connection = self.connection().await?;
-        let tab = Arc::new(Tab::create(connection).await.map_err(browser_error)?);
+        let tab = Arc::new(Tab::create(connection).await?);
         self.tabs
             .lock()
             .await
@@ -157,7 +157,7 @@ impl BrowserProvider {
             Ok(connection) => connection,
             Err(error) => {
                 running.stop().await;
-                return Err(browser_error(error));
+                return Err(error.into());
             }
         };
         *browser = Some(Browser {
@@ -205,8 +205,7 @@ impl BrowserProvider {
                 let before = tab.begin();
                 let answer = tab
                     .call("Page.navigate", json!({ "url": url.as_str() }))
-                    .await
-                    .map_err(browser_error)?;
+                    .await?;
                 let loading = tab.settle(before).await;
                 if let Some(error) = answer.get("errorText").and_then(Value::as_str)
                     && tab.blocked().is_none()
@@ -267,8 +266,7 @@ impl BrowserProvider {
                 let chosen = answer.get("chosen").and_then(Value::as_bool) == Some(true);
                 if !chosen && !text.is_empty() {
                     tab.call("Input.insertText", json!({ "text": text }))
-                        .await
-                        .map_err(browser_error)?;
+                        .await?;
                 }
                 let name = answer.get("name").and_then(Value::as_str).unwrap_or("");
                 let page = tab.snapshot(0, 0).await?;
@@ -651,8 +649,7 @@ impl Tab {
                 "Target.getTargetInfo",
                 json!({ "targetId": self.target }),
             )
-            .await
-            .map_err(browser_error)?;
+            .await?;
         Ok(info
             .pointer("/targetInfo/url")
             .and_then(Value::as_str)
@@ -698,7 +695,7 @@ impl Tab {
                 Err(CdpError::Protocol(_)) => {
                     *self.world.lock().await = None;
                 }
-                Err(error) => return Err(browser_error(error)),
+                Err(error) => return Err(error.into()),
             }
         }
         Err(failure(
@@ -717,8 +714,7 @@ impl Tab {
         }
         let frame = self
             .call("Page.getFrameTree", json!({}))
-            .await
-            .map_err(browser_error)?
+            .await?
             .pointer("/frameTree/frame/id")
             .and_then(Value::as_str)
             .map(str::to_owned)
@@ -728,8 +724,7 @@ impl Tab {
                 "Page.createIsolatedWorld",
                 json!({ "frameId": frame, "worldName": "tramontana", "grantUniveralAccess": false }),
             )
-            .await
-            .map_err(browser_error)?
+            .await?
             .get("executionContextId")
             .and_then(Value::as_i64)
             .ok_or_else(no_page)?;
@@ -781,7 +776,7 @@ impl Tab {
                 // follows say what the click did, or fail if the page is
                 // truly stuck.
                 Err(CdpError::Timeout(_)) => {}
-                Err(error) => return Err(browser_error(error)),
+                Err(error) => return Err(error.into()),
             }
         }
         Ok(aim
@@ -1191,14 +1186,16 @@ fn no_page() -> ErrorEnvelope {
     )
 }
 
-fn browser_error(error: CdpError) -> ErrorEnvelope {
-    match error {
-        CdpError::Timeout(_) => failure(ErrorCode::Timeout, error.to_string()),
-        CdpError::Closed => failure(
-            ErrorCode::NotFound,
-            "The browser window was closed. Open a page to start again.",
-        ),
-        CdpError::Protocol(_) => failure(ErrorCode::ToolFailed, error.to_string()),
+impl From<CdpError> for ErrorEnvelope {
+    fn from(error: CdpError) -> Self {
+        match error {
+            CdpError::Timeout(_) => failure(ErrorCode::Timeout, error.to_string()),
+            CdpError::Closed => failure(
+                ErrorCode::NotFound,
+                "The browser window was closed. Open a page to start again.",
+            ),
+            CdpError::Protocol(_) => failure(ErrorCode::ToolFailed, error.to_string()),
+        }
     }
 }
 

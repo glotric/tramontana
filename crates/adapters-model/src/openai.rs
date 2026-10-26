@@ -26,7 +26,7 @@ use tramontana_core::contracts::{
 };
 use tramontana_core::ports::{ModelProvider, SecretResolver};
 
-use crate::transport::{Signal, WireFormat, check_endpoint, error, pump};
+use crate::transport::{Signal, WireFormat, check_endpoint, error, http_client, spawn_stream};
 
 /// How a request authenticates, when it must.
 ///
@@ -109,23 +109,7 @@ impl OpenAiCompatibleProvider {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
         check_endpoint(&base_url)?;
 
-        let client = reqwest::Client::builder()
-            // Connection setup only. The whole-request bound is the deadline
-            // carried on each `ModelRequest`, which a caller can vary; a fixed
-            // client timeout would silently override it.
-            .connect_timeout(Duration::from_secs(10))
-            // Never followed: a redirect would replay the prompt, and any
-            // credential header the library does not know to strip, to a
-            // host the routing decision never named — over plain HTTP, if
-            // that is where it points (ADR 0066).
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|failure| {
-                error(
-                    ErrorCode::Internal,
-                    format!("could not build an HTTP client: {failure}"),
-                )
-            })?;
+        let client = http_client()?;
 
         Ok(Self {
             provider_id: ProviderId::new(provider_id),
@@ -225,30 +209,16 @@ impl ModelProvider for OpenAiCompatibleProvider {
             ProviderAuth::Session(key) => builder = builder.bearer_auth(key),
         }
 
-        let stream_id = request.request_id.clone();
-        let deadline = Duration::from_millis(request.limits.deadline_ms);
-        let (sender, receiver) = mpsc::channel(32);
-
-        tokio::spawn(async move {
-            let outcome = pump(
-                builder,
-                &crate::request::NamedWire {
-                    format: ChatCompletions,
-                    names,
-                },
-                &stream_id,
-                deadline,
-                &cancel,
-                &sender,
-            )
-            .await;
-            // Exactly one terminal event, whatever happened above — including
-            // when the consumer has already gone away, in which case the send
-            // fails harmlessly.
-            let _ = sender.send(outcome).await;
-        });
-
-        Ok(receiver)
+        Ok(spawn_stream(
+            builder,
+            crate::request::NamedWire {
+                format: ChatCompletions,
+                names,
+            },
+            request.request_id.clone(),
+            Duration::from_millis(request.limits.deadline_ms),
+            cancel,
+        ))
     }
 }
 

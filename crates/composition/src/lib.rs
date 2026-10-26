@@ -611,38 +611,15 @@ pub fn runtime_files(
 /// The same configuration, with its files recorded as they are now.
 #[must_use]
 pub fn with_provenance(
-    config: ProviderConfig,
+    mut config: ProviderConfig,
     recorded: tramontana_core::contracts::RuntimeProvenance,
 ) -> ProviderConfig {
-    match config {
-        ProviderConfig::LlamaServer {
-            binary_path,
-            model_path,
-            model_id,
-            extra_args,
-            ..
-        } => ProviderConfig::LlamaServer {
-            binary_path,
-            model_path,
-            model_id,
-            extra_args,
-            provenance: Some(recorded),
-        },
-        ProviderConfig::MlxServer {
-            binary_path,
-            model_path,
-            model_id,
-            extra_args,
-            ..
-        } => ProviderConfig::MlxServer {
-            binary_path,
-            model_path,
-            model_id,
-            extra_args,
-            provenance: Some(recorded),
-        },
-        other => other,
+    if let ProviderConfig::LlamaServer { provenance, .. }
+    | ProviderConfig::MlxServer { provenance, .. } = &mut config
+    {
+        *provenance = Some(recorded);
     }
+    config
 }
 
 /// Where a supervised runtime's files stand against their record.
@@ -667,17 +644,12 @@ pub async fn check_executable(
     let Some(recorded) = recorded else {
         return FileCheck::NotRecorded;
     };
-    let expected = recorded.executable_sha256.clone();
-    let binary = binary.to_path_buf();
-    match tokio::task::spawn_blocking(move || {
-        tramontana_adapters_local::fingerprint::fingerprint_file(&binary)
-    })
+    check(
+        binary,
+        recorded.executable_sha256.clone(),
+        tramontana_adapters_local::fingerprint::fingerprint_file,
+    )
     .await
-    {
-        Ok(Ok(now)) if now.sha256 == expected => FileCheck::Unchanged,
-        Ok(Ok(_)) => FileCheck::Changed,
-        _ => FileCheck::Unreadable,
-    }
 }
 
 /// Whether a runtime's model is still what was recorded. Reads all of it,
@@ -689,13 +661,24 @@ pub async fn check_model(
     let Some(recorded) = recorded else {
         return FileCheck::NotRecorded;
     };
-    let expected = recorded.model_sha256.clone();
-    let model = model.to_path_buf();
-    match tokio::task::spawn_blocking(move || {
-        tramontana_adapters_local::fingerprint::fingerprint_model(&model)
-    })
+    check(
+        model,
+        recorded.model_sha256.clone(),
+        tramontana_adapters_local::fingerprint::fingerprint_model,
+    )
     .await
-    {
+}
+
+/// Fingerprint `path` off the async runtime and compare it with `expected`.
+async fn check(
+    path: &std::path::Path,
+    expected: String,
+    fingerprint: fn(
+        &std::path::Path,
+    ) -> std::io::Result<tramontana_adapters_local::fingerprint::Fingerprint>,
+) -> FileCheck {
+    let path = path.to_path_buf();
+    match tokio::task::spawn_blocking(move || fingerprint(&path)).await {
         Ok(Ok(now)) if now.sha256 == expected => FileCheck::Unchanged,
         Ok(Ok(_)) => FileCheck::Changed,
         _ => FileCheck::Unreadable,

@@ -29,7 +29,7 @@ use tramontana_core::contracts::{
 };
 use tramontana_core::ports::{ModelProvider, SecretResolver};
 
-use crate::transport::{Signal, WireFormat, check_endpoint, error, pump};
+use crate::transport::{Signal, WireFormat, check_endpoint, error, http_client, spawn_stream};
 
 /// The API version this adapter is written against.
 ///
@@ -85,20 +85,7 @@ impl AnthropicProvider {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
         check_endpoint(&base_url)?;
 
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            // Never followed: a redirect would replay the prompt, and any
-            // credential header the library does not know to strip, to a
-            // host the routing decision never named — over plain HTTP, if
-            // that is where it points (ADR 0066).
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|failure| {
-                error(
-                    ErrorCode::Internal,
-                    format!("could not build an HTTP client: {failure}"),
-                )
-            })?;
+        let client = http_client()?;
 
         Ok(Self {
             // The configured endpoint's identifier, not a fixed vendor name:
@@ -185,27 +172,16 @@ impl ModelProvider for AnthropicProvider {
             .header("x-api-key", key)
             .json(&body);
 
-        let stream_id = request.request_id.clone();
-        let deadline = Duration::from_millis(request.limits.deadline_ms);
-        let (sender, receiver) = mpsc::channel(32);
-
-        tokio::spawn(async move {
-            let outcome = pump(
-                builder,
-                &crate::request::NamedWire {
-                    format: Messages,
-                    names,
-                },
-                &stream_id,
-                deadline,
-                &cancel,
-                &sender,
-            )
-            .await;
-            let _ = sender.send(outcome).await;
-        });
-
-        Ok(receiver)
+        Ok(spawn_stream(
+            builder,
+            crate::request::NamedWire {
+                format: Messages,
+                names,
+            },
+            request.request_id.clone(),
+            Duration::from_millis(request.limits.deadline_ms),
+            cancel,
+        ))
     }
 }
 

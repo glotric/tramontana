@@ -177,16 +177,10 @@ fn write_descriptor(
     schema: serde_json::Value,
 ) -> ToolDescriptor {
     ToolDescriptor {
-        tool_id: tool_id.to_owned(),
-        provider_id: "builtin".to_owned(),
-        display_name: display.to_owned(),
-        description: description.to_owned(),
-        input_schema: schema,
         risk_class: RiskClass::Modify,
         side_effect: SideEffect::LocalReversible,
         capability: "filesystem.write".to_owned(),
-        supports_cancellation: true,
-        replay_safety: ReplaySafety::Safe,
+        ..descriptor(tool_id, display, description, schema)
     }
 }
 
@@ -942,12 +936,7 @@ impl FilesystemTools {
         let expected = argument(request, "expectedHash")?;
         let old_text = argument(request, "oldText")?;
         let new_text = argument(request, "newText")?;
-        if !valid_hash(expected) {
-            return Err(invalid(
-                request,
-                "`expectedHash` must be the 64-character lowercase `contentHash` a read returned",
-            ));
-        }
+        check_hash(request, expected)?;
         // Both non-empty: an empty replacement would make every byte position a
         // candidate when verifying a replay. A deletion names its context.
         if old_text.is_empty() || new_text.is_empty() {
@@ -1192,6 +1181,17 @@ fn already_applied(current: &str, old_text: &str, new_text: &str, expected: &str
 }
 
 /// Whether `value` has the shape of a `contentHash`: 64 lowercase hex digits.
+/// Refuse an `expectedHash` that cannot be a `contentHash` a read returned.
+fn check_hash(request: &AuthorizedToolRequest, expected: &str) -> Result<(), ErrorEnvelope> {
+    if valid_hash(expected) {
+        return Ok(());
+    }
+    Err(invalid(
+        request,
+        "`expectedHash` must be the 64-character lowercase `contentHash` a read returned",
+    ))
+}
+
 fn valid_hash(value: &str) -> bool {
     value.len() == 64
         && value
@@ -1225,12 +1225,7 @@ impl FilesystemTools {
         let from = argument(request, "from")?;
         let to = argument(request, "to")?;
         let expected = argument(request, "expectedHash")?;
-        if !valid_hash(expected) {
-            return Err(invalid(
-                request,
-                "`expectedHash` must be the 64-character lowercase `contentHash` a read returned",
-            ));
-        }
+        check_hash(request, expected)?;
 
         let source = resolve_within_grant(request, from)?;
         let target = resolve_within_grant(request, to)?;
@@ -1511,12 +1506,7 @@ impl FilesystemTools {
         };
         let relative = argument(request, "path")?;
         let expected = argument(request, "expectedHash")?;
-        if !valid_hash(expected) {
-            return Err(invalid(
-                request,
-                "`expectedHash` must be the 64-character lowercase `contentHash` a read returned",
-            ));
-        }
+        check_hash(request, expected)?;
         let target = resolve_within_grant(request, relative)?;
         if target.file_name().is_none() {
             return Err(invalid(request, "the path must name a file"));
