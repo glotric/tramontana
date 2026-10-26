@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
-import { asErrorEnvelope, projectChanges } from "./core.js";
+import { errorMessage, projectChanges } from "./core.js";
 import type { ProjectChanges } from "./core.js";
+import { Failure } from "./Failure.js";
+import { useLoad } from "./useLoad.js";
 
 /**
  * The project's working tree, as Git sees it (ADR 0032).
@@ -51,25 +53,16 @@ export function ChangesPanel({ projectId, revision }: ChangesPanelProps): React.
   // asking — makes a new key. The effect only starts the read; a result is
   // kept only if nothing newer has been asked for since.
   const key = `${projectId}\n${revision}\n${refreshes}`;
-  useEffect(() => {
-    let current = true;
-    void projectChanges(projectId).then(
-      (changes) => {
-        if (current) setSettled({ key, changes });
-      },
-      (error: unknown) => {
-        if (current) {
-          setSettled({
-            key,
-            failure: asErrorEnvelope(error)?.message ?? "Could not read the working tree.",
-          });
-        }
-      },
-    );
-    return () => {
-      current = false;
-    };
-  }, [key, projectId]);
+  useLoad(
+    () => projectChanges(projectId),
+    [key, projectId],
+    (changes) => {
+      setSettled({ key, changes });
+    },
+    (error) => {
+      setSettled({ key, failure: errorMessage(error, "Could not read the working tree.") });
+    },
+  );
 
   const reading = settled?.key !== key;
   const changes = settled?.changes;
@@ -89,13 +82,7 @@ export function ChangesPanel({ projectId, revision }: ChangesPanelProps): React.
           {reading ? "Reading…" : "Refresh"}
         </button>
       </div>
-
-      {settled?.failure !== undefined && (
-        <p className="notice notice--error" role="alert">
-          {settled.failure}
-        </p>
-      )}
-
+      <Failure text={settled?.failure} />
       {changes !== undefined && (
         <>
           <pre className="changes-status" role="region" tabIndex={0} aria-label="Git status">

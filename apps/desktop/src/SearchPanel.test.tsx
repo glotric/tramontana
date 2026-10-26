@@ -3,18 +3,16 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ConversationRecord, SearchResults } from "@tramontana/shared";
 
-import type * as CoreModuleShape from "./core.js";
-
-type CoreModule = typeof CoreModuleShape;
-
 const search = vi.hoisted(() => vi.fn());
 const renameConversation = vi.hoisted(() => vi.fn());
 const deleteConversation = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return { ...actual, search, renameConversation, deleteConversation };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  search,
+  renameConversation,
+  deleteConversation,
+}));
 
 const { SearchPanel } = await import("./SearchPanel.js");
 const { ConversationMenu } = await import("./ConversationMenu.js");

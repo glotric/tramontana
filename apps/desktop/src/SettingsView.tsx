@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { AnswerStyle, PersonalProfile } from "@tramontana/shared";
 
 import { errorMessage, forget, personalProfile, remember, updatePersonal } from "./core.js";
@@ -9,6 +9,8 @@ import { Segmented, segmentedTabId } from "./Segmented.js";
 import { chooseTheme, rememberedTheme } from "./theme.js";
 import type { Theme } from "./theme.js";
 import type { GlyphHue, GlyphIcon } from "./Glyph.js";
+import { Failure } from "./Failure.js";
+import { useLoad } from "./useLoad.js";
 
 const STYLES: readonly {
   readonly id: AnswerStyle;
@@ -90,20 +92,9 @@ function GeneralSettings(): React.JSX.Element {
     setMemory(loaded.memoryEnabled);
   };
 
-  useEffect(() => {
-    let active = true;
-    void personalProfile().then(
-      (loaded) => {
-        if (active) show(loaded);
-      },
-      (error: unknown) => {
-        if (active) setFailure(errorMessage(error, "Could not read your profile."));
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, []);
+  useLoad(personalProfile, [], show, (error) => {
+    setFailure(errorMessage(error, "Could not read your profile."));
+  });
 
   const changed =
     profile !== undefined &&
@@ -123,11 +114,7 @@ function GeneralSettings(): React.JSX.Element {
         </p>
       </div>
 
-      {failure !== undefined && (
-        <p className="notice notice--error" role="alert">
-          {failure}
-        </p>
-      )}
+      <Failure text={failure} />
 
       <form
         className="settings-section"

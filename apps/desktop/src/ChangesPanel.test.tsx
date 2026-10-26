@@ -2,16 +2,12 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type * as CoreModuleShape from "./core.js";
-
-type CoreModule = typeof CoreModuleShape;
-
 const projectChanges = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return { ...actual, projectChanges };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  projectChanges,
+}));
 
 const { ChangesPanel } = await import("./ChangesPanel.js");
 

@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { ProjectRecord, TaskRecord } from "@tramontana/shared";
 
 import { ActivityOverview } from "./ActivityOverview.js";
 import { listTasks } from "./core.js";
 import { Glyph } from "./Glyph.js";
+import { useLoad } from "./useLoad.js";
 
 /**
  * Agent mode with no conversation open: a greeting, what this profile's
@@ -26,20 +27,9 @@ export function AgentHome({
 }): React.JSX.Element {
   const [tasks, setTasks] = useState<readonly TaskRecord[] | undefined>();
 
-  useEffect(() => {
-    let active = true;
-    void listTasks().then(
-      (found) => {
-        if (active) setTasks(found);
-      },
-      () => {
-        if (active) setTasks([]);
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [revision]);
+  useLoad(listTasks, [revision], setTasks, () => {
+    setTasks([]);
+  });
 
   const greeting =
     name === undefined || name.trim() === "" ? "What's up next?" : `What's up next, ${name}?`;

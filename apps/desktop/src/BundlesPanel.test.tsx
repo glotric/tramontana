@@ -3,18 +3,16 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExportManifest } from "@tramontana/shared";
 
-import type * as CoreModuleShape from "./core.js";
-
-type CoreModule = typeof CoreModuleShape;
-
 const exportBundle = vi.hoisted(() => vi.fn());
 const inspectBundle = vi.hoisted(() => vi.fn());
 const importStagedBundle = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return { ...actual, exportBundle, inspectBundle, importStagedBundle };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  exportBundle,
+  inspectBundle,
+  importStagedBundle,
+}));
 
 const { BundlesPanel } = await import("./BundlesPanel.js");
 

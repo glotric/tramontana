@@ -7,6 +7,7 @@ import type {
 } from "@tramontana/shared";
 
 import { asErrorEnvelope, resolveApproval } from "./core.js";
+import { Failure } from "./Failure.js";
 
 /**
  * The approval card.
@@ -148,11 +149,7 @@ export function ApprovalCard({
         ))}
       </dl>
 
-      {failure !== undefined && (
-        <p className="notice notice--error" role="alert">
-          {failure}
-        </p>
-      )}
+      <Failure text={failure} />
 
       <div className="approval-actions">
         {request.eligibleDecisions.map((decision) => (

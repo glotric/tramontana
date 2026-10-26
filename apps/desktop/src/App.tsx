@@ -56,6 +56,7 @@ import type { SkillOption } from "./SkillSlash.js";
 import { useComposerOptions } from "./useComposerOptions.js";
 import { useProjectSelection } from "./useProjectSelection.js";
 import { useTaskStream } from "./useTaskStream.js";
+import { useLoad } from "./useLoad.js";
 
 type CoreStatus =
   | { readonly kind: "connecting" }
@@ -251,19 +252,13 @@ export function App(): React.JSX.Element {
     };
   }, []);
 
-  useEffect(() => {
-    if (status.kind !== "ready" || view === "settings") return undefined;
-    let active = true;
-    void personalProfile().then(
-      (profile) => {
-        if (active) setPersonName(profile.name);
-      },
-      () => undefined,
-    );
-    return () => {
-      active = false;
-    };
-  }, [status.kind, view]);
+  useLoad(
+    () => (status.kind !== "ready" || view === "settings" ? undefined : personalProfile()),
+    [status.kind, view],
+    (profile) => {
+      setPersonName(profile.name);
+    },
+  );
 
   // One queue of open questions, in the order they were asked. Questions
   // raised before this window existed are asked for on start, because the

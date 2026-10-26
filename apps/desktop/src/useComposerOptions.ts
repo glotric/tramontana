@@ -3,6 +3,7 @@ import type { RoutingMode } from "@tramontana/shared";
 
 import { listSkills, listWorkers, suggestSkills } from "./core.js";
 import type { SkillView, WorkerView } from "./core.js";
+import { useLoad } from "./useLoad.js";
 
 /** How long typing must settle before skills are suggested again. */
 const SUGGESTION_DELAY_MS = 300;
@@ -43,37 +44,22 @@ export function useComposerOptions(goal: string, projectId: string | undefined) 
 
   // The workers a task can run on (ADR 0048). Without any, the composer
   // shows no choice and every task runs the built-in worker.
-  useEffect(() => {
-    let active = true;
-    void listWorkers().then(
-      (found) => {
-        if (active) setWorkers(found);
-      },
-      () => undefined,
-    );
-    return () => {
-      active = false;
-    };
-  }, []);
+  useLoad(listWorkers, [], setWorkers);
 
   // The skills this project offers (ADR 0053). Held with the project they
   // came from, so another project's list is never shown while the new one
   // loads, and so changing project needs no reset.
-  useEffect(() => {
-    if (projectId === undefined) return;
-    let active = true;
-    void listSkills(projectId).then(
-      (found) => {
-        if (active) setSkills({ projectId, skills: found });
-      },
-      () => {
-        if (active) setSkills({ projectId, skills: [] });
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [projectId]);
+  useLoad(
+    () =>
+      projectId === undefined
+        ? undefined
+        : listSkills(projectId).then(
+            (found) => ({ projectId, skills: found }),
+            () => ({ projectId, skills: [] }),
+          ),
+    [projectId],
+    setSkills,
+  );
 
   // Which of them look relevant to the goal as it stands (ADR 0054). The
   // rule is the core's, asked again when the typing settles rather than on

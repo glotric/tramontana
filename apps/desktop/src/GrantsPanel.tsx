@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { ProjectGrant, RiskClass } from "@tramontana/shared";
 
-import { asErrorEnvelope, listProjectGrants, revokeProjectGrant } from "./core.js";
+import { errorMessage, listProjectGrants, revokeProjectGrant } from "./core.js";
+import { Failure } from "./Failure.js";
+import { useLoad } from "./useLoad.js";
 
 /**
  * Standing permissions: what a person allowed "in this project", and a way to
@@ -42,25 +44,16 @@ export function GrantsPanel({ projectId, revision }: GrantsPanelProps): React.JS
   const [failure, setFailure] = useState<string | undefined>();
 
   const key = `${projectId}\n${revision}\n${reads}`;
-  useEffect(() => {
-    let current = true;
-    void listProjectGrants(projectId).then(
-      (grants) => {
-        if (current) setSettled({ key, grants });
-      },
-      (error: unknown) => {
-        if (current) {
-          setSettled({
-            key,
-            failure: asErrorEnvelope(error)?.message ?? "Could not read the standing permissions.",
-          });
-        }
-      },
-    );
-    return () => {
-      current = false;
-    };
-  }, [key, projectId]);
+  useLoad(
+    () => listProjectGrants(projectId),
+    [key, projectId],
+    (grants) => {
+      setSettled({ key, grants });
+    },
+    (error) => {
+      setSettled({ key, failure: errorMessage(error, "Could not read the standing permissions.") });
+    },
+  );
 
   const revoke = async (grant: ProjectGrant): Promise<void> => {
     setBusy(true);
@@ -72,7 +65,7 @@ export function GrantsPanel({ projectId, revision }: GrantsPanelProps): React.JS
       setNote(`Revoked. ${grant.toolId} will be asked about again.`);
       setReads((count) => count + 1);
     } catch (error: unknown) {
-      setFailure(asErrorEnvelope(error)?.message ?? "Could not revoke the permission.");
+      setFailure(errorMessage(error, "Could not revoke the permission."));
     } finally {
       setBusy(false);
     }
@@ -89,23 +82,13 @@ export function GrantsPanel({ projectId, revision }: GrantsPanelProps): React.JS
           These last until Tramontana quits; after that, each request is asked about again.
         </p>
       )}
-
-      {settled?.failure !== undefined && (
-        <p className="notice notice--error" role="alert">
-          {settled.failure}
-        </p>
-      )}
-      {failure !== undefined && (
-        <p className="notice notice--error" role="alert">
-          {failure}
-        </p>
-      )}
+      <Failure text={settled?.failure} />
+      <Failure text={failure} />
       {note !== undefined && (
         <p className="notice" role="status">
           {note}
         </p>
       )}
-
       {grants === undefined ? null : grants.length === 0 ? (
         <p className="inline-empty">
           None. Every request that needs a decision is asked about each time.

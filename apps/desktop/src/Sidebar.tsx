@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ConversationRecord, ProjectRecord } from "@tramontana/shared";
 
-import { asErrorEnvelope, listConversations } from "./core.js";
+import { errorMessage, listConversations } from "./core.js";
 import { Glyph } from "./Glyph.js";
 import { Icon } from "./icons.js";
 import type { IconName } from "./icons.js";
+import { Failure } from "./Failure.js";
 
 export type Mode = "chat" | "agent";
 export type View = "work" | "projects" | "settings" | "scheduled";
@@ -141,11 +142,7 @@ function RemoveProjectDialog({
           Its conversations, tasks and records are deleted from Tramontana. The folder and its files
           are not touched: <code>{project.roots[0]}</code>
         </p>
-        {failure !== undefined && (
-          <p className="notice notice--error" role="alert">
-            {failure}
-          </p>
-        )}
+        <Failure text={failure} />
         <div className="dialog-actions">
           <button
             ref={keep}
@@ -165,7 +162,7 @@ function RemoveProjectDialog({
               setFailure(undefined);
               onConfirm().catch((error: unknown) => {
                 setBusy(false);
-                setFailure(asErrorEnvelope(error)?.message ?? "Could not remove the project.");
+                setFailure(errorMessage(error, "Could not remove the project."));
               });
             }}
           >

@@ -2,10 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type * as CoreModuleShape from "./core.js";
 import type { ConfiguredEndpoint, ModelEndpointStatus } from "./core.js";
-
-type CoreModule = typeof CoreModuleShape;
 
 const listConfiguredEndpoints = vi.hoisted(() => vi.fn());
 const listModelEndpoints = vi.hoisted(() => vi.fn());
@@ -20,24 +17,21 @@ const addLlamaEndpoint = vi.hoisted(() => vi.fn());
 const trustEndpoint = vi.hoisted(() => vi.fn());
 const checkEndpointModel = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return {
-    ...actual,
-    listConfiguredEndpoints,
-    listModelEndpoints,
-    setEndpointEnabled,
-    setEndpointToolCalls,
-    removeEndpoint,
-    storeCredential,
-    forgetCredential,
-    restartApplication,
-    restartSupported,
-    addLlamaEndpoint,
-    trustEndpoint,
-    checkEndpointModel,
-  };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  listConfiguredEndpoints,
+  listModelEndpoints,
+  setEndpointEnabled,
+  setEndpointToolCalls,
+  removeEndpoint,
+  storeCredential,
+  forgetCredential,
+  restartApplication,
+  restartSupported,
+  addLlamaEndpoint,
+  trustEndpoint,
+  checkEndpointModel,
+}));
 
 const { ModelsView } = await import("./ModelsView.js");
 

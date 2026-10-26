@@ -3,17 +3,14 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationRecord } from "@tramontana/shared";
 
-import type * as CoreModuleShape from "./core.js";
-
-type CoreModule = typeof CoreModuleShape;
-
 const previewTranscript = vi.hoisted(() => vi.fn());
 const saveTranscript = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return { ...actual, previewTranscript, saveTranscript };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  previewTranscript,
+  saveTranscript,
+}));
 
 const { ShareDialog } = await import("./ShareDialog.js");
 

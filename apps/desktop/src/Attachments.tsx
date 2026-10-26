@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import type { TaskAttachment } from "@tramontana/shared";
 
-import { asErrorEnvelope, chooseAttachments, discardAttachment } from "./core.js";
+import { errorMessage, chooseAttachments, discardAttachment } from "./core.js";
 import type { StagedAttachment } from "./core.js";
 import { Glyph } from "./Glyph.js";
 
@@ -47,7 +47,7 @@ export function useAttachments(): {
         setFiles((current) => [...current, ...picked]);
       },
       (failure: unknown) => {
-        setError(asErrorEnvelope(failure)?.message ?? "Could not attach the files.");
+        setError(errorMessage(failure, "Could not attach the files."));
       },
     );
   }, []);

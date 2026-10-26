@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { ConversationRecord } from "@tramontana/shared";
 
-import { asErrorEnvelope, deleteConversation, renameConversation } from "./core.js";
+import { errorMessage, deleteConversation, renameConversation } from "./core.js";
+import { Failure } from "./Failure.js";
 
 /**
  * Rename or delete the open conversation (ADR 0059). Deleting asks first, in
@@ -35,7 +36,7 @@ export function ConversationMenu({
   };
 
   const fail = (error: unknown, fallback: string): void => {
-    setFailure(asErrorEnvelope(error)?.message ?? fallback);
+    setFailure(errorMessage(error, fallback));
   };
 
   return (
@@ -167,11 +168,7 @@ export function ConversationMenu({
               </div>
             </div>
           )}
-          {failure !== undefined && (
-            <p className="notice notice--error" role="alert">
-              {failure}
-            </p>
-          )}
+          <Failure text={failure} />
         </div>
       )}
     </div>

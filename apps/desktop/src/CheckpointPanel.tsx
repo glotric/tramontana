@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import type { PendingAction, ReplaySafety, TaskCheckpoint } from "@tramontana/shared";
 
 import {
-  asErrorEnvelope,
+  errorMessage,
   discardCheckpoint,
   handOffTask,
   handoffOptions,
@@ -10,6 +10,8 @@ import {
   resumeTask,
   type WorkerView,
 } from "./core.js";
+import { Failure } from "./Failure.js";
+import { useLoad } from "./useLoad.js";
 
 /**
  * The checkpoint inspector.
@@ -68,43 +70,31 @@ export function CheckpointPanel({
   // No synchronous reset here: the shell keys this panel by task id, so a
   // different task is a different instance that starts in its own loading
   // state. Resetting inside the effect would re-render for no new information.
-  useEffect(() => {
-    let active = true;
-    void latestCheckpoint(taskId).then(
-      (found) => {
-        if (!active) return;
-        setCheckpoint(found);
-        setLoading(false);
-      },
-      (error: unknown) => {
-        if (!active) return;
-        setFailure(asErrorEnvelope(error)?.message ?? "Could not read the checkpoint.");
-        setLoading(false);
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [taskId]);
+  useLoad(
+    () => latestCheckpoint(taskId),
+    [taskId],
+    (found) => {
+      setCheckpoint(found);
+      setLoading(false);
+    },
+    (error) => {
+      setFailure(errorMessage(error, "Could not read the checkpoint."));
+      setLoading(false);
+    },
+  );
 
   // The workers it could go to, in the core's order: the one that already
   // has the task is left out, a Local Only task is offered nothing off this
   // device, and a task whose model ran out is offered the cloud first
   // (ADR 0055). A failure to list them leaves only resume.
-  useEffect(() => {
-    let active = true;
-    void handoffOptions(taskId).then(
-      (offer) => {
-        if (!active) return;
-        setWorkers(offer.workers);
-        setEscalating(offer.escalating);
-      },
-      () => undefined,
-    );
-    return () => {
-      active = false;
-    };
-  }, [taskId]);
+  useLoad(
+    () => handoffOptions(taskId),
+    [taskId],
+    (offer) => {
+      setWorkers(offer.workers);
+      setEscalating(offer.escalating);
+    },
+  );
 
   const act = useCallback(
     async (action: () => Promise<void>, fallback: string): Promise<void> => {
@@ -116,7 +106,7 @@ export function CheckpointPanel({
       } catch (error: unknown) {
         // The core's refusal is the useful message: it names the rule, such as
         // a stale checkpoint or a changed worker.
-        setFailure(asErrorEnvelope(error)?.message ?? fallback);
+        setFailure(errorMessage(error, fallback));
       } finally {
         setBusy(false);
       }
@@ -140,11 +130,7 @@ export function CheckpointPanel({
         <p className="inline-empty">
           This task stopped without a checkpoint, so there is nothing to resume from.
         </p>
-        {failure !== undefined && (
-          <p className="notice notice--error" role="alert">
-            {failure}
-          </p>
-        )}
+        <Failure text={failure} />
       </section>
     );
   }
@@ -221,11 +207,7 @@ export function CheckpointPanel({
         </p>
       )}
 
-      {failure !== undefined && (
-        <p className="notice notice--error" role="alert">
-          {failure}
-        </p>
-      )}
+      <Failure text={failure} />
 
       <div className="checkpoint-actions">
         <button

@@ -10,6 +10,7 @@ import {
 } from "./core.js";
 import { describeSize } from "./Attachments.js";
 import { Icon } from "./icons.js";
+import { Failure } from "./Failure.js";
 
 /**
  * Settings, Customize, Skills (ADR 0070): the person's own skills, kept as
@@ -100,11 +101,7 @@ export function SkillsSettings(): React.JSX.Element {
         {folder !== undefined && <code>{folder}</code>}
       </p>
 
-      {failure !== undefined && (
-        <p className="notice notice--error" role="alert">
-          {failure}
-        </p>
-      )}
+      <Failure text={failure} />
       {note !== undefined && (
         <p className="notice" role="status">
           {note}

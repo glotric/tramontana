@@ -12,10 +12,6 @@ import type {
   TaskUpdate,
 } from "@tramontana/shared";
 
-import type * as CoreModuleShape from "./core.js";
-
-type CoreModule = typeof CoreModuleShape;
-
 const fetchCoreInfo = vi.hoisted(() => vi.fn());
 const openProject = vi.hoisted(() => vi.fn());
 const listProjects = vi.hoisted(() => vi.fn());
@@ -42,37 +38,34 @@ const suggestSkills = vi.hoisted(() => vi.fn());
 const deleteProject = vi.hoisted(() => vi.fn());
 const listPersonalSkills = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return {
-    ...actual,
-    fetchCoreInfo,
-    openProject,
-    listProjects,
-    inspectProject,
-    createConversation,
-    listConversations,
-    listTasks,
-    replayTaskEvents,
-    startTask,
-    cancelTask,
-    listPendingApprovals,
-    onApprovalRequested,
-    resolveApproval,
-    projectChanges,
-    listConfiguredEndpoints,
-    listModelEndpoints,
-    listProjectGrants,
-    watchTask,
-    latestCheckpoint,
-    listApps,
-    listWorkers,
-    listSkills,
-    suggestSkills,
-    deleteProject,
-    listPersonalSkills,
-  };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  fetchCoreInfo,
+  openProject,
+  listProjects,
+  inspectProject,
+  createConversation,
+  listConversations,
+  listTasks,
+  replayTaskEvents,
+  startTask,
+  cancelTask,
+  listPendingApprovals,
+  onApprovalRequested,
+  resolveApproval,
+  projectChanges,
+  listConfiguredEndpoints,
+  listModelEndpoints,
+  listProjectGrants,
+  watchTask,
+  latestCheckpoint,
+  listApps,
+  listWorkers,
+  listSkills,
+  suggestSkills,
+  deleteProject,
+  listPersonalSkills,
+}));
 
 const { App } = await import("./App.js");
 

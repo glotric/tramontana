@@ -3,10 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PersonalProfile } from "@tramontana/shared";
 
-import type * as CoreModuleShape from "./core.js";
-
-type CoreModule = typeof CoreModuleShape;
-
 const personalProfile = vi.hoisted(() => vi.fn());
 const updatePersonal = vi.hoisted(() => vi.fn());
 const remember = vi.hoisted(() => vi.fn());
@@ -14,18 +10,15 @@ const forget = vi.hoisted(() => vi.fn());
 const dictationStatus = vi.hoisted(() => vi.fn());
 const restartSupported = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return {
-    ...actual,
-    personalProfile,
-    updatePersonal,
-    remember,
-    forget,
-    dictationStatus,
-    restartSupported,
-  };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  personalProfile,
+  updatePersonal,
+  remember,
+  forget,
+  dictationStatus,
+  restartSupported,
+}));
 
 const { SettingsView } = await import("./SettingsView.js");
 

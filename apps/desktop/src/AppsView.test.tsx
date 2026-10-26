@@ -2,20 +2,20 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type * as CoreModuleShape from "./core.js";
 import type { AppView } from "./core.js";
-
-type CoreModule = typeof CoreModuleShape;
 
 const listApps = vi.hoisted(() => vi.fn());
 const setAppEnabled = vi.hoisted(() => vi.fn());
 const appPermissionHistory = vi.hoisted(() => vi.fn());
 const restartSupported = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return { ...actual, listApps, setAppEnabled, appPermissionHistory, restartSupported };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  listApps,
+  setAppEnabled,
+  appPermissionHistory,
+  restartSupported,
+}));
 
 const { AppsView } = await import("./AppsView.js");
 

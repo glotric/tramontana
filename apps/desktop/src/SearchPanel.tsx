@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { ConversationHit, ProjectRecord, SearchResults } from "@tramontana/shared";
 
-import { asErrorEnvelope, search } from "./core.js";
+import { errorMessage, search } from "./core.js";
 import { Glyph } from "./Glyph.js";
+import { Failure } from "./Failure.js";
 
 /** How long the typing settles before searching again. */
 const SEARCH_DELAY_MS = 200;
@@ -49,7 +50,7 @@ export function SearchPanel({
           setFailure(undefined);
         },
         (error: unknown) => {
-          if (active) setFailure(asErrorEnvelope(error)?.message ?? "Could not search.");
+          if (active) setFailure(errorMessage(error, "Could not search."));
         },
       );
     }, SEARCH_DELAY_MS);
@@ -96,11 +97,7 @@ export function SearchPanel({
             }}
           />
         </div>
-        {failure !== undefined && query.trim() !== "" && (
-          <p className="notice notice--error" role="alert">
-            {failure}
-          </p>
-        )}
+        <Failure text={query.trim() !== "" ? failure : undefined} />
         {nothing && <p className="search-empty">Nothing matches “{query.trim()}”.</p>}
         {shown !== undefined && shown.conversations.length > 0 && (
           <section aria-labelledby="search-conversations">

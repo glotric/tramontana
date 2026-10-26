@@ -9,10 +9,7 @@ import type {
   TaskUpdate,
 } from "@tramontana/shared";
 
-import type * as CoreModuleShape from "./core.js";
 import { answerOf, outcomeOf, titleFrom, withEvent } from "./chat.js";
-
-type CoreModule = typeof CoreModuleShape;
 
 const createConversation = vi.hoisted(() => vi.fn());
 const listTasks = vi.hoisted(() => vi.fn());
@@ -23,20 +20,17 @@ const watchTask = vi.hoisted(() => vi.fn());
 const chooseAttachments = vi.hoisted(() => vi.fn());
 const discardAttachment = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return {
-    ...actual,
-    createConversation,
-    listTasks,
-    replayTaskEvents,
-    startTask,
-    cancelTask,
-    watchTask,
-    chooseAttachments,
-    discardAttachment,
-  };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  createConversation,
+  listTasks,
+  replayTaskEvents,
+  startTask,
+  cancelTask,
+  watchTask,
+  chooseAttachments,
+  discardAttachment,
+}));
 
 const { ChatView } = await import("./ChatView.js");
 

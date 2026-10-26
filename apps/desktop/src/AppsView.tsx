@@ -1,14 +1,15 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import {
+  errorMessage,
   appPermissionHistory,
-  asErrorEnvelope,
   listApps,
   restartApplication,
-  restartSupported,
   setAppEnabled,
 } from "./core.js";
 import type { AppHistory, AppStatus, AppView } from "./core.js";
+import { Failure } from "./Failure.js";
+import { useLoad, useRestartable } from "./useLoad.js";
 
 /**
  * Apps: the MCP servers this profile starts, what each offers, how it is
@@ -51,28 +52,16 @@ const GRANT_TEXT: Record<NonNullable<AppHistory["decisions"][number]["grantKind"
 function History({ appId }: { readonly appId: string }): React.JSX.Element {
   const [history, setHistory] = useState<AppHistory | undefined>();
   const [failure, setFailure] = useState<string | undefined>();
-  useEffect(() => {
-    let live = true;
-    appPermissionHistory(appId).then(
-      (found) => {
-        if (live) setHistory(found);
-      },
-      (error: unknown) => {
-        if (live) setFailure(asErrorEnvelope(error)?.message ?? "Could not read the history.");
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [appId]);
+  useLoad(
+    () => appPermissionHistory(appId),
+    [appId],
+    setHistory,
+    (error) => {
+      setFailure(errorMessage(error, "Could not read the history."));
+    },
+  );
 
-  if (failure !== undefined) {
-    return (
-      <p className="notice notice--error" role="alert">
-        {failure}
-      </p>
-    );
-  }
+  if (failure !== undefined) return <Failure text={failure} />;
   if (history === undefined) return <p className="inline-empty">Reading the record…</p>;
   if (history.decisions.length === 0) {
     return <p className="inline-empty">No task has asked to use this App&apos;s tools.</p>;
@@ -118,38 +107,12 @@ export function AppsView({ onClose }: AppsViewProps): React.JSX.Element {
   const [changed, setChanged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [showing, setShowing] = useState<string | undefined>();
-  const [restartable, setRestartable] = useState<boolean | undefined>();
+  const restartable = useRestartable();
   const [reads, setReads] = useState(0);
 
-  useEffect(() => {
-    let live = true;
-    restartSupported().then(
-      (supported) => {
-        if (live) setRestartable(supported);
-      },
-      () => {
-        if (live) setRestartable(false);
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    let current = true;
-    listApps().then(
-      (found) => {
-        if (current) setApps(found);
-      },
-      (error: unknown) => {
-        if (current) setFailure(asErrorEnvelope(error)?.message ?? "Could not read the Apps.");
-      },
-    );
-    return () => {
-      current = false;
-    };
-  }, [reads]);
+  useLoad(listApps, [reads], setApps, (error) => {
+    setFailure(errorMessage(error, "Could not read the Apps."));
+  });
 
   const toggle = (app: AppView): void => {
     setBusy(true);
@@ -161,7 +124,7 @@ export function AppsView({ onClose }: AppsViewProps): React.JSX.Element {
         setReads((count) => count + 1);
       },
       (error: unknown) => {
-        setFailure(asErrorEnvelope(error)?.message ?? "Could not change the App.");
+        setFailure(errorMessage(error, "Could not change the App."));
         setBusy(false);
       },
     );
@@ -187,11 +150,7 @@ export function AppsView({ onClose }: AppsViewProps): React.JSX.Element {
         <code>tramontana app</code>.
       </p>
 
-      {failure !== undefined && (
-        <p className="notice notice--error" role="alert">
-          {failure}
-        </p>
-      )}
+      <Failure text={failure} />
       {changed && (
         <div className="notice models-restart" role="note">
           <p>Changes are saved, and take effect once Tramontana restarts.</p>

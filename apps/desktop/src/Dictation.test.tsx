@@ -3,26 +3,23 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
-import type * as CoreModuleShape from "./core.js";
-import type * as RecorderModuleShape from "./recorder.js";
-
-type CoreModule = typeof CoreModuleShape;
-type RecorderModule = typeof RecorderModuleShape;
-
 const dictationStatus = vi.hoisted(() => vi.fn());
 const chooseDictation = vi.hoisted(() => vi.fn());
 const clearDictation = vi.hoisted(() => vi.fn());
 const transcribe = vi.hoisted(() => vi.fn());
 const startRecording = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return { ...actual, dictationStatus, chooseDictation, clearDictation, transcribe };
-});
-vi.mock("./recorder.js", async () => {
-  const actual = await vi.importActual<RecorderModule>("./recorder.js");
-  return { ...actual, startRecording };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  dictationStatus,
+  chooseDictation,
+  clearDictation,
+  transcribe,
+}));
+vi.mock(import("./recorder.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  startRecording,
+}));
 
 const { DictateButton, DictationSettings, appendDictated, useDictation } =
   await import("./Dictation.js");

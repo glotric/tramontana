@@ -3,10 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectRecord, ScheduleView } from "@tramontana/shared";
 
-import type * as CoreModuleShape from "./core.js";
 import { cadenceFrom, describeCadence, describeNext } from "./schedule.js";
-
-type CoreModule = typeof CoreModuleShape;
 
 const listSchedules = vi.hoisted(() => vi.fn());
 const createSchedule = vi.hoisted(() => vi.fn());
@@ -14,17 +11,14 @@ const setScheduleEnabled = vi.hoisted(() => vi.fn());
 const deleteSchedule = vi.hoisted(() => vi.fn());
 const runScheduleNow = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return {
-    ...actual,
-    listSchedules,
-    createSchedule,
-    setScheduleEnabled,
-    deleteSchedule,
-    runScheduleNow,
-  };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  listSchedules,
+  createSchedule,
+  setScheduleEnabled,
+  deleteSchedule,
+  runScheduleNow,
+}));
 
 const { ScheduledView } = await import("./ScheduledView.js");
 

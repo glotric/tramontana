@@ -3,6 +3,7 @@ import type { ExportManifest, OmissionCategory } from "@tramontana/shared";
 
 import { asErrorEnvelope, exportBundle, importStagedBundle, inspectBundle } from "./core.js";
 import type { BundleCounts, ExportReport, ImportReport, StagedBundle } from "./core.js";
+import { Failure } from "./Failure.js";
 
 /**
  * Export and import, as the CLI's `bundle` commands do them.
@@ -186,11 +187,7 @@ export function BundlesPanel({
         </button>
       </div>
 
-      {failure !== undefined && (
-        <p className="notice notice--error" role="alert">
-          {failure}
-        </p>
-      )}
+      <Failure text={failure} />
 
       {exported !== undefined && (
         <p className="bundle-result" role="status">

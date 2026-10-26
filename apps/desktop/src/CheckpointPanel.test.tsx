@@ -3,27 +3,20 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReplaySafety, TaskCheckpoint } from "@tramontana/shared";
 
-import type * as CoreModuleShape from "./core.js";
-
-type CoreModule = typeof CoreModuleShape;
-
 const latestCheckpoint = vi.hoisted(() => vi.fn());
 const resumeTask = vi.hoisted(() => vi.fn());
 const discardCheckpoint = vi.hoisted(() => vi.fn());
 const handoffOptions = vi.hoisted(() => vi.fn());
 const handOffTask = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return {
-    ...actual,
-    latestCheckpoint,
-    resumeTask,
-    discardCheckpoint,
-    handoffOptions,
-    handOffTask,
-  };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  latestCheckpoint,
+  resumeTask,
+  discardCheckpoint,
+  handoffOptions,
+  handOffTask,
+}));
 
 const { CheckpointPanel } = await import("./CheckpointPanel.js");
 

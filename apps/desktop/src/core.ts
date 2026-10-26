@@ -36,12 +36,6 @@ import type {
  * compile time rather than at runtime.
  */
 
-/** Wire shape of the `core_info` response. */
-interface CoreInfoPayload {
-  readonly schemaVersion: number;
-  readonly appVersion: string;
-}
-
 /** Versioned project-inspection response from the desktop adapter. */
 export interface ProjectInspection {
   readonly schemaVersion: number;
@@ -51,7 +45,7 @@ export interface ProjectInspection {
 
 /** Ask the running core for its contract schema and application version. */
 export async function fetchCoreInfo(): Promise<CoreInfo> {
-  const payload = await invoke<CoreInfoPayload>("core_info");
+  const payload = await invoke<CoreInfo>("core_info");
   return { schemaVersion: payload.schemaVersion, appVersion: payload.appVersion };
 }
 

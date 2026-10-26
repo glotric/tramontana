@@ -3,17 +3,14 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectGrant } from "@tramontana/shared";
 
-import type * as CoreModuleShape from "./core.js";
-
-type CoreModule = typeof CoreModuleShape;
-
 const listProjectGrants = vi.hoisted(() => vi.fn());
 const revokeProjectGrant = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return { ...actual, listProjectGrants, revokeProjectGrant };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  listProjectGrants,
+  revokeProjectGrant,
+}));
 
 const { GrantsPanel } = await import("./GrantsPanel.js");
 

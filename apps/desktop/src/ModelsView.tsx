@@ -1,16 +1,15 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { AddEndpointForm } from "./AddEndpointForm.js";
 import { ModelGuide, describeBytes } from "./ModelGuide.js";
 import {
-  asErrorEnvelope,
+  errorMessage,
   checkEndpointModel,
   forgetCredential,
   listConfiguredEndpoints,
   listModelEndpoints,
   removeEndpoint,
   restartApplication,
-  restartSupported,
   setEndpointEnabled,
   setEndpointToolCalls,
   storeCredential,
@@ -23,6 +22,8 @@ import type {
   ModelEndpointStatus,
   RuntimeFiles,
 } from "./core.js";
+import { Failure } from "./Failure.js";
+import { useLoad, useRestartable } from "./useLoad.js";
 
 /**
  * Models and credentials: what is configured, and whether it is in use.
@@ -102,21 +103,7 @@ export function ModelsView({ onClose }: ModelsViewProps): React.JSX.Element {
   const [configured, setConfigured] = useState<readonly ConfiguredEndpoint[] | undefined>();
   // Asked once: whether "Restart now" would bring the window back, or leave
   // it blank as it does under the development server.
-  const [restartable, setRestartable] = useState<boolean | undefined>();
-  useEffect(() => {
-    let live = true;
-    restartSupported().then(
-      (supported) => {
-        if (live) setRestartable(supported);
-      },
-      () => {
-        if (live) setRestartable(false);
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, []);
+  const restartable = useRestartable();
   const [running, setRunning] = useState<readonly ModelEndpointStatus[]>([]);
   const [failure, setFailure] = useState<string | undefined>();
   const [note, setNote] = useState<string | undefined>();
@@ -128,24 +115,17 @@ export function ModelsView({ onClose }: ModelsViewProps): React.JSX.Element {
   // Every change asks for a fresh read by moving this on. The effect only
   // starts the read; what it finds is kept only if nothing newer was asked for.
   const [reads, setReads] = useState(0);
-  useEffect(() => {
-    let current = true;
-    void Promise.all([listConfiguredEndpoints(), listModelEndpoints()]).then(
-      ([endpoints, health]) => {
-        if (!current) return;
-        setConfigured(endpoints);
-        setRunning(health);
-      },
-      (error: unknown) => {
-        if (current) {
-          setFailure(asErrorEnvelope(error)?.message ?? "Could not read the model settings.");
-        }
-      },
-    );
-    return () => {
-      current = false;
-    };
-  }, [reads]);
+  useLoad(
+    () => Promise.all([listConfiguredEndpoints(), listModelEndpoints()]),
+    [reads],
+    ([endpoints, health]) => {
+      setConfigured(endpoints);
+      setRunning(health);
+    },
+    (error) => {
+      setFailure(errorMessage(error, "Could not read the model settings."));
+    },
+  );
 
   const act = async (
     action: () => Promise<string | undefined>,
@@ -160,7 +140,7 @@ export function ModelsView({ onClose }: ModelsViewProps): React.JSX.Element {
       if (changesSettings) setChanged(true);
       setReads((count) => count + 1);
     } catch (error: unknown) {
-      setFailure(asErrorEnvelope(error)?.message ?? fallback);
+      setFailure(errorMessage(error, fallback));
     } finally {
       setBusy(false);
     }
@@ -195,11 +175,7 @@ export function ModelsView({ onClose }: ModelsViewProps): React.JSX.Element {
         </div>
       )}
 
-      {failure !== undefined && (
-        <p className="notice notice--error" role="alert">
-          {failure}
-        </p>
-      )}
+      <Failure text={failure} />
       {note !== undefined && (
         <p className="notice" role="status">
           {note}

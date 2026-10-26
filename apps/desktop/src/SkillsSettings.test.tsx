@@ -3,19 +3,18 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PersonalSkill } from "@tramontana/shared";
 
-import type * as CoreModuleShape from "./core.js";
-
-type CoreModule = typeof CoreModuleShape;
-
 const listPersonalSkills = vi.hoisted(() => vi.fn());
 const importSkill = vi.hoisted(() => vi.fn());
 const removeSkill = vi.hoisted(() => vi.fn());
 const skillsFolder = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return { ...actual, listPersonalSkills, importSkill, removeSkill, skillsFolder };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  listPersonalSkills,
+  importSkill,
+  removeSkill,
+  skillsFolder,
+}));
 
 const { SkillsSettings } = await import("./SkillsSettings.js");
 

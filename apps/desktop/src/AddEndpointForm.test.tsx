@@ -2,19 +2,18 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type * as CoreModuleShape from "./core.js";
-
-type CoreModule = typeof CoreModuleShape;
-
 const addOpenAiEndpoint = vi.hoisted(() => vi.fn());
 const addAnthropicEndpoint = vi.hoisted(() => vi.fn());
 const addLlamaEndpoint = vi.hoisted(() => vi.fn());
 const addMlxEndpoint = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return { ...actual, addOpenAiEndpoint, addAnthropicEndpoint, addLlamaEndpoint, addMlxEndpoint };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  addOpenAiEndpoint,
+  addAnthropicEndpoint,
+  addLlamaEndpoint,
+  addMlxEndpoint,
+}));
 
 const { AddEndpointForm } = await import("./AddEndpointForm.js");
 

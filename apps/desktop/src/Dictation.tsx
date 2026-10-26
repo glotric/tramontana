@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { DictationStatus } from "@tramontana/shared";
 
 import {
-  asErrorEnvelope,
+  errorMessage,
   chooseDictation,
   clearDictation,
   dictationStatus,
@@ -53,7 +53,7 @@ export function useDictation(onText: (text: string) => void): {
           deliver.current(text);
         },
         (failure: unknown) => {
-          setError(asErrorEnvelope(failure)?.message ?? "The recording could not be transcribed.");
+          setError(errorMessage(failure, "The recording could not be transcribed."));
         },
       )
       .finally(() => {
@@ -89,7 +89,7 @@ export function useDictation(onText: (text: string) => void): {
         setState("recording");
       })
       .catch((failure: unknown) => {
-        setError(asErrorEnvelope(failure)?.message ?? "Dictation is not available.");
+        setError(errorMessage(failure, "Dictation is not available."));
         setState("idle");
       });
   }, [finish, state]);
@@ -203,7 +203,7 @@ export function DictationSettings(): React.JSX.Element {
         setLanguage(loaded.language ?? "");
       },
       (error: unknown) => {
-        if (live) setFailure(asErrorEnvelope(error)?.message ?? "Could not read the setup.");
+        if (live) setFailure(errorMessage(error, "Could not read the setup."));
       },
     );
     return () => {
@@ -219,7 +219,7 @@ export function DictationSettings(): React.JSX.Element {
         if (chosen !== undefined) setStatus(chosen);
       },
       (error: unknown) => {
-        setFailure(asErrorEnvelope(error)?.message ?? "Could not set up dictation.");
+        setFailure(errorMessage(error, "Could not set up dictation."));
       },
     );
   };
@@ -273,7 +273,7 @@ export function DictationSettings(): React.JSX.Element {
             onClick={() => {
               setFailure(undefined);
               void clearDictation().then(setStatus, (error: unknown) => {
-                setFailure(asErrorEnvelope(error)?.message ?? "Could not remove the setup.");
+                setFailure(errorMessage(error, "Could not remove the setup."));
               });
             }}
           >

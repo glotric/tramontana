@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
-import { asErrorEnvelope, eraseAllData, restartApplication, restartSupported } from "./core.js";
+import { errorMessage, eraseAllData, restartApplication } from "./core.js";
+import { Failure } from "./Failure.js";
+import { useRestartable } from "./useLoad.js";
 
 /** What the person types to confirm. */
 const CONFIRMATION = "delete";
@@ -18,21 +20,7 @@ export function EraseAllData(): React.JSX.Element {
   const [erased, setErased] = useState(false);
   // Asked once: whether a restart would bring the window back, or leave it
   // blank as it does under the development server.
-  const [restartable, setRestartable] = useState<boolean | undefined>();
-  useEffect(() => {
-    let live = true;
-    restartSupported().then(
-      (supported) => {
-        if (live) setRestartable(supported);
-      },
-      () => {
-        if (live) setRestartable(false);
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, []);
+  const restartable = useRestartable();
 
   const cancel = (): void => {
     setConfirming(false);
@@ -50,7 +38,7 @@ export function EraseAllData(): React.JSX.Element {
       },
       (error: unknown) => {
         setBusy(false);
-        setFailure(asErrorEnvelope(error)?.message ?? "Could not delete your data.");
+        setFailure(errorMessage(error, "Could not delete your data."));
       },
     );
   };
@@ -101,11 +89,7 @@ export function EraseAllData(): React.JSX.Element {
               setTyped(changed.target.value);
             }}
           />
-          {failure !== undefined && (
-            <p className="notice notice--error" role="alert">
-              {failure}
-            </p>
-          )}
+          <Failure text={failure} />
           <div className="menu-actions">
             <button
               type="button"

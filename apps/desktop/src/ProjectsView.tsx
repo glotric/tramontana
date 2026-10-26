@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { ProjectRecord } from "@tramontana/shared";
 
-import { asErrorEnvelope, listConversations } from "./core.js";
+import { errorMessage, listConversations } from "./core.js";
 import { Glyph } from "./Glyph.js";
 import type { GlyphHue, GlyphIcon } from "./Glyph.js";
+import { Failure } from "./Failure.js";
+import { useLoad } from "./useLoad.js";
 
 /** The icons a project card is drawn with, chosen by its id so it never moves. */
 const LOOKS: readonly (readonly [GlyphIcon, GlyphHue])[] = [
@@ -54,25 +56,23 @@ export function ProjectsView({
   const [removing, setRemoving] = useState<string | undefined>();
   const [failure, setFailure] = useState<string | undefined>();
 
-  useEffect(() => {
-    let active = true;
-    void Promise.all(
-      projects.map(async (project) => {
-        const conversations = await listConversations(project.projectId).catch(() => undefined);
-        return [project.projectId, conversations?.length] as const;
-      }),
-    ).then((found) => {
-      if (!active) return;
+  useLoad(
+    () =>
+      Promise.all(
+        projects.map(async (project) => {
+          const conversations = await listConversations(project.projectId).catch(() => undefined);
+          return [project.projectId, conversations?.length] as const;
+        }),
+      ),
+    [projects],
+    (found) => {
       const known: Record<string, number> = {};
       for (const [projectId, count] of found) {
         if (count !== undefined) known[projectId] = count;
       }
       setCounts(known);
-    });
-    return () => {
-      active = false;
-    };
-  }, [projects]);
+    },
+  );
 
   const shown = useMemo(() => {
     const wanted = filter.trim().toLowerCase();
@@ -117,11 +117,7 @@ export function ProjectsView({
         </div>
       </header>
 
-      {failure !== undefined && (
-        <p className="notice notice--error" role="alert">
-          {failure}
-        </p>
-      )}
+      <Failure text={failure} />
       <ul className="project-cards" aria-label="Projects">
         {shown.map((project) => {
           const [icon, hue] = lookOf(project.projectId);
@@ -160,9 +156,7 @@ export function ProjectsView({
                           },
                           (error: unknown) => {
                             setRemoving(undefined);
-                            setFailure(
-                              asErrorEnvelope(error)?.message ?? "Could not remove the project.",
-                            );
+                            setFailure(errorMessage(error, "Could not remove the project."));
                           },
                         );
                       }}

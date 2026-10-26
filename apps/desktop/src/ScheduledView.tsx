@@ -12,6 +12,7 @@ import {
 } from "./core.js";
 import { Glyph } from "./Glyph.js";
 import { DAY_NAME, WEEKDAYS, cadenceFrom, describeCadence, describeNext } from "./schedule.js";
+import { Failure } from "./Failure.js";
 
 const MODES: readonly RoutingMode[] = ["localOnly", "automatic", "cloudPreferred"];
 
@@ -126,11 +127,7 @@ export function ScheduledView({
         Nothing runs while Tramontana is closed. A run missed then happens once when you open it
         again. A run that needs your approval waits for you.
       </p>
-      {failure !== undefined && (
-        <p className="notice notice--error" role="alert">
-          {failure}
-        </p>
-      )}
+      <Failure text={failure} />
       {notice !== undefined && (
         <p className="notice" role="status">
           {notice}

@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { ConversationRecord, TranscriptFormat } from "@tramontana/shared";
 
-import { asErrorEnvelope, previewTranscript, saveTranscript } from "./core.js";
+import { errorMessage, previewTranscript, saveTranscript } from "./core.js";
+import { Failure } from "./Failure.js";
+import { useLoad } from "./useLoad.js";
 
 /**
  * Share a conversation as a file (ADR 0060). The person reads exactly what
@@ -22,22 +24,17 @@ export function ShareDialog({
   const [saved, setSaved] = useState<string | undefined>();
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-    void previewTranscript(conversation.conversationId, { format, includeAttachments }).then(
-      (preview) => {
-        if (!active) return;
-        setText(preview);
-        setFailure(undefined);
-      },
-      (error: unknown) => {
-        if (active) setFailure(asErrorEnvelope(error)?.message ?? "Could not prepare the file.");
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [conversation.conversationId, format, includeAttachments]);
+  useLoad(
+    () => previewTranscript(conversation.conversationId, { format, includeAttachments }),
+    [conversation.conversationId, format, includeAttachments],
+    (preview) => {
+      setText(preview);
+      setFailure(undefined);
+    },
+    (error) => {
+      setFailure(errorMessage(error, "Could not prepare the file."));
+    },
+  );
 
   return (
     <div
@@ -92,11 +89,7 @@ export function ShareDialog({
         <pre className="share-preview" role="region" aria-label="What will be saved" tabIndex={0}>
           {text ?? "Preparing…"}
         </pre>
-        {failure !== undefined && (
-          <p className="notice notice--error" role="alert">
-            {failure}
-          </p>
-        )}
+        <Failure text={failure} />
         {saved !== undefined && (
           <p className="notice" role="status">
             Saved to {saved}
@@ -118,7 +111,7 @@ export function ShareDialog({
                     if (path !== undefined) setSaved(path);
                   },
                   (error: unknown) => {
-                    setFailure(asErrorEnvelope(error)?.message ?? "Could not save the file.");
+                    setFailure(errorMessage(error, "Could not save the file."));
                   },
                 )
                 .finally(() => {

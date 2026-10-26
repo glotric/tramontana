@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
 import { modelSetupHints } from "./core.js";
 import type { ModelSetupHints } from "./core.js";
 import { Icon } from "./icons.js";
+import { useLoad } from "./useLoad.js";
 
 /** Models that call tools well enough for Agent tasks, smallest first. */
 const MODELS = [
@@ -121,18 +122,7 @@ export function ModelGuide({
       });
   }, []);
   // Looked once on opening; "Check again" looks again.
-  useEffect(() => {
-    let live = true;
-    void modelSetupHints().then(
-      (found) => {
-        if (live) setHints(found);
-      },
-      () => undefined,
-    );
-    return () => {
-      live = false;
-    };
-  }, []);
+  useLoad(modelSetupHints, [], setHints);
 
   const platform = hints?.platform ?? "macos";
   const server = hints?.llamaServer ?? undefined;

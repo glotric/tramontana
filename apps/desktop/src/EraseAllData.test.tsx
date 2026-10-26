@@ -2,18 +2,16 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type * as CoreModuleShape from "./core.js";
-
-type CoreModule = typeof CoreModuleShape;
-
 const eraseAllData = vi.hoisted(() => vi.fn());
 const restartApplication = vi.hoisted(() => vi.fn());
 const restartSupported = vi.hoisted(() => vi.fn());
 
-vi.mock("./core.js", async () => {
-  const actual = await vi.importActual<CoreModule>("./core.js");
-  return { ...actual, eraseAllData, restartApplication, restartSupported };
-});
+vi.mock(import("./core.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  eraseAllData,
+  restartApplication,
+  restartSupported,
+}));
 
 const { EraseAllData } = await import("./EraseAllData.js");
 

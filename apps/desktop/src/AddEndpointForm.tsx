@@ -1,12 +1,13 @@
 import { useState } from "react";
 
 import {
+  errorMessage,
   addAnthropicEndpoint,
   addLlamaEndpoint,
   addMlxEndpoint,
   addOpenAiEndpoint,
-  asErrorEnvelope,
 } from "./core.js";
+import { Failure } from "./Failure.js";
 
 /**
  * Adding a model endpoint, as `tramontana provider add-…` does.
@@ -102,7 +103,7 @@ export function AddEndpointForm({ onAdded }: AddEndpointFormProps): React.JSX.El
       setBaseUrl("");
       setCredentialKey("");
     } catch (error: unknown) {
-      setFailure(asErrorEnvelope(error)?.message ?? "Could not add the endpoint.");
+      setFailure(errorMessage(error, "Could not add the endpoint."));
     } finally {
       setBusy(false);
     }
@@ -209,11 +210,7 @@ export function AddEndpointForm({ onAdded }: AddEndpointFormProps): React.JSX.El
         </>
       )}
 
-      {failure !== undefined && (
-        <p className="notice notice--error" role="alert">
-          {failure}
-        </p>
-      )}
+      <Failure text={failure} />
       {note !== undefined && (
         <p className="notice" role="note">
           {note}
