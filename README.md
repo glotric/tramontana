@@ -193,7 +193,6 @@ tramontana secret forget openai.apiKey
 ```text
 apps/desktop/       Tauri application and React user interface
 apps/cli/           Headless development and recovery adapter
-apps/server/        The host program for shared projects on an always-on machine
 crates/core/        Provider-neutral Rust domain and application services
 crates/persistence/ SQLite implementation of the local operational plane
 crates/platform/    Paths, clock, identifiers, profile lease, bundle files
@@ -203,10 +202,7 @@ crates/adapters-browser/ The built-in browser: an installed Chrome, over DevTool
 crates/adapters-model/  Model provider adapters: chat-completions and Anthropic
 crates/adapters-local/  Supervised local model runtimes (llama.cpp and MLX)
 crates/adapters-documents/ Text from PDF and Word attachments
-crates/adapters-compute/   Rented GPU providers
 crates/composition/     Configured endpoints turned into live providers
-crates/host/            The service a host serves to paired desktops
-crates/test-support/    Helpers shared by end-to-end tests
 packages/shared/    Generated schemas and TypeScript client types
 xtask/              Repository build tooling; not shipped
 scripts/            Repository checks that are not tests

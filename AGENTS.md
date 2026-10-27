@@ -4,7 +4,7 @@ These instructions apply to every file in this repository unless a more specific
 
 ## Mission
 
-Tramontana lets people in industries where privacy is critical use AI models and agents on confidential documents and systems, with the model running on their own computer or their company's own server. Every action is approved, every step is recorded, and models and agents stay replaceable. It is a desktop application for macOS, Windows, and Linux, a CLI, and a host for shared projects.
+Tramontana lets people in industries where privacy is critical use AI models and agents on confidential documents and systems, with the model running on their own computer or their company's own server. Every action is approved, every step is recorded, and models and agents stay replaceable. It is a desktop application for macOS, Windows, and Linux, and a CLI.
 
 ## Architectural boundaries
 
@@ -18,7 +18,7 @@ Tramontana lets people in industries where privacy is critical use AI models and
 - Tramontana owns the versioned project/work format: source references, instructions, skills, policy references, memory/artifact references, task records, and handoff checkpoints. No worker-specific session format is the canonical record.
 - Tools, skills, workflows, and agent definitions are model-provider-neutral.
 - MCP is the primary third-party tool/App integration boundary. Avoid one-off integration APIs in the runtime when an MCP adapter is appropriate.
-- `apps/cli`, `apps/desktop`, and `apps/server` are peer adapters over the same Rust application services. Never duplicate policy or task behavior in one of them.
+- `apps/cli` and `apps/desktop` are peer adapters over the same Rust application services. Never duplicate policy or task behavior in one of them.
 
 If an implementation needs to violate one of these boundaries, stop and propose an architecture change before coding it.
 
