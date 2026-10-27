@@ -1,9 +1,8 @@
 /* Tramontana design system, v2.
 
-   Tokens follow the design reference in design/UI/: a cool, quiet neutral
-   ground, frosted-glass surfaces, one blue accent, and green reserved for
-   "on this device / fine". Light and dark follow the computer. Status is
-   always said in words; color only repeats it. */
+   A cool, quiet neutral ground, frosted-glass surfaces, one blue accent,
+   and green reserved for "on this device / fine". Light and dark follow
+   the computer. Status is always said in words; color only repeats it. */
 
 :root {
   color-scheme: light;

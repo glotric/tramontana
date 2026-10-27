@@ -151,3 +151,13 @@ screenshots/
 
 # Keep dependency lockfiles committed for reproducible builds:
 # Cargo.lock, package-lock.json, pnpm-lock.yaml, yarn.lock
+
+# Local planning material and agent tooling, never published
+docs/
+design/
+yc/
+.claude/
+.claude-flow/
+**/.claude-flow/
+.swarm/
+agentdb.rvf*
