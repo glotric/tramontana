@@ -32,7 +32,7 @@
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "Portable, policy-governed operating layer for AI work.",
-    "copyright": "Copyright (c) 2026 Gašper Lotrič. MIT licensed.",
+    "copyright": "Copyright (c) 2026 Gašper Lotrič. Licensed under Apache-2.0.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

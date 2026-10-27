@@ -11,4 +11,4 @@ read-only SQL into a temporary database, then run the production migrator. Regen
 deterministic: update the copied schema and checksum only if a not-yet-shipped
 migration is intentionally replaced.
 
-License: repository MIT license; no third-party data.
+License: repository Apache-2.0 license; no third-party data.
