@@ -22,85 +22,45 @@ confidential documents and systems.
 Tramontana is pre-release and built from source; see [Status](#status) for
 what works today and what does not.
 
-## Phase 1
-
-Phase 1 establishes the personal desktop product for macOS, Windows, and Linux:
-
-- a Tauri desktop shell with a React + TypeScript interface;
-- Rust core services for orchestration, permissions, persistence, tools, and model routing;
-- local-first inference through `llama.cpp` and MLX on Apple Silicon;
-- optional OpenAI, Anthropic, Ollama, and OpenAI-compatible adapters behind stable interfaces;
-- a durable task/control plane with visible activity, resumable state, explicit approvals, and execution provenance;
-- a worker interface for built-in tools and specialist coding agents, with an ACP-compatible path evaluated and at least one supervised external worker integration;
-- MCP-based Apps and Markdown-based skills, agents, rules, and workflows.
-
-Phase 1 has no enterprise server dependency. The default architecture is personal and local, with cloud use optional, visible, policy-controlled, and minimized.
-
 ## Status
 
-Tramontana is working toward its first beta. Milestones M0–M11 and validation
-gates V1–V3 are closed, and M12 is under way; each left an evidence note in
-[docs/evidence/](docs/evidence/) that says what it proved and what it did not.
-M9 to M12 were built before gate V4's demonstration, at the owner's
-direction and by recorded exception (ADRs 0033, 0038, 0042, 0046, 0047):
-what that demonstration finds may still revise them.
+Tramontana is pre-release: there is no installer yet, and it has not yet been
+used by anyone outside the project.
 
-- **Done and demonstrated:** a desktop application and a CLI over one durable
-  record; a built-in worker that reads, edits files and runs the project's
-  declared commands, each edit and each command approved by you as it
-  happens; a local model through `llama-server`, with Local Only routing;
-  checkpoints, resume without repeating a side effect, and export and import
-  of the work. OpenAI-compatible and Anthropic endpoints can be configured
-  and pass the same contract tests, but no request has yet been made to
-  either vendor.
-- **In progress:** gate V4, whether someone other than the author can operate
-  the desktop from this README. Its automated checks pass; its
-  demonstration has not run.
-- **Built:** MCP Apps over stdio (M9), and remote ones over Streamable HTTP
-  with a token kept in the Keychain (ADR 0050) — obtained by hand, or through
-  an OAuth sign-in with `tramontana app sign-in <ID>` (ADR 0056). Added from the CLI
-  (`tramontana app add`, `tramontana app add-remote`); seen, turned on and
-  off, and their decisions read in the desktop's **Apps** view; allowed for a
-  task with **May use Apps**. A remote App is never used under Local Only.
-- **Built, beyond Beta 1's scope:** a built-in browser (ADR 0047). A task
-  allowed **May browse the web** opens pages in a window of your installed
-  Chrome, Edge or Chromium, with a throwaway profile of its own. The first
-  visit to each site is asked about, and every form it would submit. Tasks
-  run up to 40 steps in 30 minutes.
-- **Built:** choosing the model a task runs on, in the composer's **Worker**
-  choice or the CLI's `--worker` (ADR 0051), and handing a task to another
-  model (ADR 0048). A task whose worker
-  ran out of steps, or whose model failed, stops with a checkpoint instead of
-  failing; **Hand over to…** gives it to the built-in worker on another
-  configured model, such as a larger local one or Claude, which continues
-  from the task's record. It suggests another model on this device first, the
-  cloud last — **unless the task ran out of what its model could do**, in
-  which case the model off this device is offered first, with what would be
-  sent said before the button (ADR 0055). Nothing moves without your click,
-  nothing escalates itself, and a Local Only task is never run on, or handed
-  to, a model off this device.
-- **Built:** a task runs under the project's own instructions (ADR 0052). Its
-  `AGENTS.md`, `CLAUDE.md` and `.tramontana/rules` are read as the task starts
-  and given to the model, strongest first, up to 16 KiB a turn; anything that
-  does not fit is named rather than cut. A credential is removed before they
-  are recorded, so it is removed before they are sent, and the task's record
-  says which files travelled. Nothing in them grants a permission.
-- **Built:** a task can be given the project's **skills** (ADR 0053) — the
-  Markdown procedures in `.tramontana/skills`. The composer lists them with
-  their descriptions, all unticked; the CLI takes `--skill-id`. A ticked
-  skill's text goes to the model with the project's other instructions, and
-  grants nothing. A skill that declares `suggest_when` keywords is marked
-  **suggested for this goal** and listed first when the goal mentions one; the
-  CLI says the same in a note. Nothing is ticked for you (ADR 0054).
-- **Deferred from Beta 1:** an external coding worker (M10, ADR 0038), and
-  the rest listed in the [draft release notes](docs/RELEASE_NOTES_BETA_1.md).
+**Works today**
+
+- A desktop application and a CLI over one durable record of every task.
+- A built-in agent that reads, edits files and runs the project's declared
+  commands, each edit and each command approved by you as it happens.
+- Models on your own machine through `llama-server` or Apple's
+  `mlx_lm.server`, with **Local Only** routing. OpenAI-compatible and
+  Anthropic endpoints can be configured; neither vendor has been tried yet.
+- Checkpoints, resume without repeating a side effect, and export and import
+  of the work.
+- Choosing the model a task runs on, and handing a stopped task to another
+  model, which continues from the task's record. A cloud model is offered
+  only with what would be sent shown first, and a Local Only task is never
+  run on, or handed to, a model off this device.
+- The project's own instructions (`AGENTS.md`, `CLAUDE.md`,
+  `.tramontana/rules`) and skills (`.tramontana/skills`), given to the model
+  with credentials removed. Nothing in them grants a permission.
+- Tools from MCP servers over stdio or HTTP, including OAuth sign-in, each
+  call approved. A remote App is never used under Local Only.
+- A built-in browser in a throwaway profile of your installed Chrome, Edge
+  or Chromium; the first visit to each site and every form submission are
+  approved.
+- Chat, PDF and Word attachments, scheduled tasks, local dictation with
+  `whisper.cpp`, and "delete all my data".
+
+**In progress:** shared projects hosted on a company's own machine or
+server, with desktops paired to it, and private models on rented GPUs.
 
 **What Tramontana does not do:** it does not sandbox the commands you
-approve. An approved command runs with your permissions. Tramontana checks
-file operations against the folders you granted and stops every process a
-command started, but it does not contain them. The
-[execution boundary](docs/EXECUTION_BOUNDARY.md) says exactly what is
-enforced and what is only checked.
+approve. An approved command runs with your permissions and can read, write
+and connect to anything you can. Tramontana checks file operations against
+the folders you granted, runs commands as argument lists with a cleared
+environment, and stops every process a command started, but it does not
+contain them. Local Only covers models, not commands.
 
 ## Getting started
 
@@ -148,8 +108,7 @@ recipes:
 ---
 ```
 
-Declaring a recipe grants nothing; every run is still put to you. See
-[configuration](docs/CONFIGURATION.md) for the rest of that file.
+Declaring a recipe grants nothing; every run is still put to you.
 
 A task is also given the project's own instructions — its `AGENTS.md`,
 `CLAUDE.md` and any `.tramontana/rules` — so what the repository asks for is
@@ -229,37 +188,12 @@ tramontana secret status openai.apiKey                   # configured or not; ne
 tramontana secret forget openai.apiKey
 ```
 
-Prerequisites, root commands, and known gaps: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
-
-Work is sequenced so the differentiating capability is proven against fakes *before* model adapters and workers exist — if the thesis is wrong, that is cheaper to learn now. Validation gates `V1`–`V6` sit between stages; each answers one question with evidence before the next stage begins. Each closed milestone leaves an evidence note in [docs/evidence/](docs/evidence/), including the findings that were wrong along the way.
-
-Implementation agents should start in this order:
-
-- [Implementation order and agent execution guide](docs/BUILD_ORDER.md)
-- [Beta 1 product contract](docs/BETA_1_SCOPE.md)
-- [Development environment and repository contract](docs/DEVELOPMENT.md)
-- [Core contracts and event protocol](docs/CORE_CONTRACTS.md)
-- [Testing and verification strategy](docs/TESTING_STRATEGY.md)
-- [Dependency and repository adoption guide](docs/DEPENDENCY_ADOPTION.md)
-
-Product and architecture references:
-
-- [Phase 1 specification](docs/PHASE_1_SPEC.md)
-- [Strategic positioning and build/integrate choices](docs/STRATEGIC_POSITIONING.md)
-- [Architecture and stable interfaces](docs/ARCHITECTURE.md)
-- [Portable project and work format](docs/PROJECT_FORMAT.md)
-- [Security and permissions](docs/SECURITY_AND_PERMISSIONS.md)
-- [Configuration conventions](docs/CONFIGURATION.md)
-- [Acceptance criteria](docs/PHASE_1_ACCEPTANCE_CRITERIA.md)
-- [Roadmap and explicit scope boundaries](docs/ROADMAP.md)
-- [Open-source foundations](docs/OPEN_SOURCE_FOUNDATIONS.md)
-- [Architecture decision records](docs/decisions/README.md)
-
 ## Repository layout
 
 ```text
 apps/desktop/       Tauri application and React user interface
 apps/cli/           Headless development and recovery adapter
+apps/server/        The host program for shared projects on an always-on machine
 crates/core/        Provider-neutral Rust domain and application services
 crates/persistence/ SQLite implementation of the local operational plane
 crates/platform/    Paths, clock, identifiers, profile lease, bundle files
@@ -268,21 +202,20 @@ crates/adapters-mcp/    MCP Apps over stdio or HTTP, behind the tool port
 crates/adapters-browser/ The built-in browser: an installed Chrome, over DevTools
 crates/adapters-model/  Model provider adapters: chat-completions and Anthropic
 crates/adapters-local/  Supervised local model runtimes (llama.cpp and MLX)
+crates/adapters-documents/ Text from PDF and Word attachments
+crates/adapters-compute/   Rented GPU providers
 crates/composition/     Configured endpoints turned into live providers
+crates/host/            The service a host serves to paired desktops
+crates/test-support/    Helpers shared by end-to-end tests
 packages/shared/    Generated schemas and TypeScript client types
 xtask/              Repository build tooling; not shipped
 scripts/            Repository checks that are not tests
 tests/fixtures/     Cross-language contract fixtures, generated by xtask
-docs/decisions/     Architecture decision records
-docs/evidence/      What each milestone proved, and what it did not
 .tramontana/        Portable Markdown customization examples
-docs/               Product, architecture, security, and delivery contracts
 ```
 
-Crates for each adapter family are created when their first code lands, not in advance.
-
-Implementation agents must read `AGENTS.md` and the milestone entry in `docs/BUILD_ORDER.md` before making changes. Architecture changes require corresponding documentation and, where specified, a decision record in the same change.
+Contributors and coding agents: read `AGENTS.md` before making changes.
 
 ## License
 
-MIT. See `LICENSE`.
+Apache-2.0. See `LICENSE`.
